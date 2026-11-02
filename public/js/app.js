@@ -1584,6 +1584,10 @@ const loginError = document.querySelector("#login-error");
 const gate = document.querySelector("#gate");
 const composeDialog = document.querySelector("#compose");
 const searchInput = document.querySelector("#inbox-search");
+const hubQuery = document.querySelector("#hub-query");
+let hubSearchTimer = 0;
+const ideasCache = new Map();
+let ideasSeq = 0;
 const feedView = document.querySelector("#feed");
 const detailView = document.querySelector("#detail");
 
@@ -1817,6 +1821,7 @@ function saveSession(person, token) {
 
 function clearSession() {
   selectedPerson = null;
+  ideasCache.clear();
   localStorage.removeItem("rd-session");
   closeDrawer();
   stopAlerts();
@@ -2151,12 +2156,55 @@ function ideaHaystack(idea) {
     ...(idea.cons || []),
     author.name,
     author.position,
-    author.department ? deptLabel(author.department) : "",
+    author.department || "",
+    DEPT_LABELS[author.department] || "",
     idea.name,
   ]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
+}
+
+const ARABIC_MARKS = /[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED\u0640]/g;
+
+function foldSearch(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(ARABIC_MARKS, "")
+    .replace(/[أإآٱ]/g, "ا")
+    .replace(/ة/g, "ه")
+    .replace(/ى/g, "ي")
+    .replace(/ؤ/g, "و")
+    .replace(/ئ/g, "ي")
+    .replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 0x660))
+    .replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 0x6f0))
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function searchWords(query) {
+  const folded = foldSearch(query).replace(/^#(?=\d)/, "");
+  return folded ? folded.split(" ").map((word) => word.replace(/^ال(?=\S{2})/, "")) : [];
+}
+
+function searchQuery(query) {
+  const words = searchWords(query);
+  const depts = !words.length ? [] : Object.keys(DEPT_LABELS)
+    .filter((name) => words.every((word) => foldSearch(`${name} ${DEPT_LABELS[name]}`).includes(word)))
+    .slice(0, 12);
+  return { q: query, depts };
+}
+
+const haystacks = new WeakMap();
+
+function ideaMatches(idea, words) {
+  if (!words.length) return true;
+  let text = haystacks.get(idea);
+  if (text === undefined) {
+    text = foldSearch(ideaHaystack(idea));
+    haystacks.set(idea, text);
+  }
+  return words.every((word) => text.includes(word));
 }
 
 function sortedIdeas(list) {
@@ -2258,7 +2306,8 @@ function matchesChip(idea) {
 
 function renderInbox() {
   const list = document.querySelector("#inbox-list");
-  const query = searchInput.value.trim().toLowerCase();
+  const words = searchWords(view === "hub" ? hubQuery.value : searchInput.value);
+  document.body.classList.toggle("hub-searching", view === "hub" && words.length > 0);
   document.querySelectorAll("[data-sort]").forEach((button) => {
     button.classList.toggle("active", button.dataset.sort === sortMode);
   });
@@ -2271,7 +2320,7 @@ function renderInbox() {
   if (view === "explore") renderExplore();
   if (view === "search") renderSearch();
   document.querySelectorAll("[data-hub-order]").forEach((button) => button.classList.toggle("on", button.dataset.hubOrder === hubOrder));
-  const filtered = sortedIdeas(ideas).filter((idea) => idea.type !== "story").filter((idea) => !query || ideaHaystack(idea).includes(query)).filter(matchesChip);
+  const filtered = sortedIdeas(ideas).filter((idea) => idea.type !== "story").filter((idea) => ideaMatches(idea, words)).filter(matchesChip);
   const hub = view === "hub";
   if (hub) {
     const direction = hubOrder === "old" ? 1 : -1;
@@ -2293,7 +2342,7 @@ function renderInbox() {
   if (!filtered.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
-    empty.textContent = hub ? t("hubEmpty") : view === "home" && feedMode === "following" && !query ? t("feedFollowEmpty") : ideas.length ? t("inboxNoMatch") : t("inboxEmpty");
+    empty.textContent = words.length ? t("inboxNoMatch") : hub ? t("hubEmpty") : view === "home" && feedMode === "following" ? t("feedFollowEmpty") : ideas.length ? t("inboxNoMatch") : t("inboxEmpty");
     list.appendChild(empty);
   } else {
     filtered.forEach((idea) => list.appendChild(hub ? hubCard(idea) : feedPost(idea)));
@@ -2745,6 +2794,8 @@ function postPhoto(src, lightbox) {
   const img = document.createElement("img");
   img.className = "post-photo";
   img.alt = "";
+  img.loading = "lazy";
+  img.decoding = "async";
   img.src = src;
   if (lightbox) {
     img.addEventListener("click", (event) => {
@@ -2928,7 +2979,14 @@ function syncFormMode() {
 
 function showView(next) {
   if (next !== "storyboard") pauseReels();
-  if (next !== view) backView = view;
+  if (next !== view) {
+    backView = view;
+    setHubSearch(false);
+    if (searchInput.value) {
+      searchInput.value = "";
+      document.querySelector("#search-panel").hidden = true;
+    }
+  }
   view = next;
   openId = null;
   document.body.dataset.screen = next === "hub" ? "hub" : next;
@@ -3374,28 +3432,45 @@ function writeLocal(list) {
 }
 
 async function loadIdeas() {
+  const feed = view === "home" ? feedMode : "company";
+  const query = view === "groups" && activeGroup ? `group=${encodeURIComponent(activeGroup)}` : `feed=${encodeURIComponent(feed)}`;
+  const seq = ++ideasSeq;
+  const cached = selectedPerson ? ideasCache.get(query) : null;
+  if (cached) {
+    ideas = cached.data.ideas || [];
+    stats = cached.data.stats || computeStats(ideas);
+    paintIdeas();
+  }
   try {
-    const feed = view === "home" ? feedMode : "company";
-    const query = view === "groups" && activeGroup ? `group=${encodeURIComponent(activeGroup)}` : `feed=${encodeURIComponent(feed)}`;
     const response = await fetch(`/api/ideas?${query}`, {
       headers: selectedPerson ? { "x-session": selectedPerson.token } : {},
     });
+    if (seq !== ideasSeq) return;
     if (response.status === 401) {
       clearSession();
       return;
     }
     if (!response.ok) return;
-    const data = await response.json();
-    ideas = data.ideas || [];
-    stats = data.stats || computeStats(ideas);
+    const raw = await response.text();
+    if (seq !== ideasSeq) return;
     mode = "api";
     document.querySelector("#mode-note").hidden = true;
+    if (cached && cached.raw === raw) return;
+    const data = JSON.parse(raw);
+    if (selectedPerson) ideasCache.set(query, { raw, data });
+    ideas = data.ideas || [];
+    stats = data.stats || computeStats(ideas);
   } catch {
+    if (seq !== ideasSeq) return;
     ideas = readLocal();
     stats = computeStats(ideas);
     mode = "local";
     document.querySelector("#mode-note").hidden = false;
   }
+  paintIdeas();
+}
+
+function paintIdeas() {
   renderPulse();
   renderInbox();
   if (view === "profile") renderProfile();
@@ -4080,8 +4155,11 @@ function watchReels(feed) {
       const video = entry.target.querySelector("video");
       if (entry.isIntersecting) markStorySeen(entry.target.dataset.id);
       if (!video) return;
-      if (entry.isIntersecting && !document.querySelector("#storyboard").hidden) playReel(video);
-      else video.pause();
+      if (entry.isIntersecting && !document.querySelector("#storyboard").hidden) {
+        playReel(video);
+        const next = entry.target.nextElementSibling && entry.target.nextElementSibling.querySelector("video");
+        if (next) next.preload = "auto";
+      } else video.pause();
     });
   }, { root: feed, threshold: 0.6 });
   feed.querySelectorAll(".reel-item").forEach((item) => reelsWatcher.observe(item));
@@ -4676,18 +4754,30 @@ document.querySelectorAll("[data-jump]").forEach((button) => {
     showView(button.dataset.jump);
   });
 });
-function toggleSearch() {
-  const wrap = document.querySelector("#search-wrap");
-  const open = !wrap.classList.contains("open");
-  wrap.classList.toggle("open", open);
-  if (open) searchInput.focus();
-  else {
-    searchInput.value = "";
-    document.querySelector("#search-panel").hidden = true;
-    renderInbox();
+function setHubSearch(open) {
+  document.querySelector("#hub-search-row").classList.toggle("open", open);
+  document.querySelector("#hub-search").setAttribute("aria-expanded", String(open));
+  if (open) {
+    hubQuery.focus();
+    return;
   }
+  clearTimeout(hubSearchTimer);
+  if (!hubQuery.value) return;
+  hubQuery.value = "";
+  if (view === "hub") renderInbox();
 }
-document.querySelector("#hub-search").addEventListener("click", toggleSearch);
+
+document.querySelector("#hub-search").addEventListener("click", () => {
+  setHubSearch(!document.querySelector("#hub-search-row").classList.contains("open"));
+});
+hubQuery.addEventListener("input", () => {
+  clearTimeout(hubSearchTimer);
+  hubSearchTimer = setTimeout(renderInbox, 80);
+});
+hubQuery.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") setHubSearch(false);
+  if (event.key === "Enter") hubQuery.blur();
+});
 document.querySelector("#hub-new").addEventListener("click", () => openCompose({ type: "idea" }));
 document.querySelector("#rank-all").addEventListener("click", () => {
   rankAll = !rankAll;
@@ -5062,7 +5152,7 @@ function queueSearch(value, panel, onPick) {
     return;
   }
   searchTimer = setTimeout(async () => {
-    const data = await social("search", { q: query });
+    const data = await social("search", searchQuery(query));
     if (!data) return;
     panel.hidden = false;
     panel.replaceChildren();

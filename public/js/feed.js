@@ -266,6 +266,7 @@ Object.assign(dict.ar, {
   hubStepReview: "قيد المراجعة",
   hubStepProject: "صارت مشروع",
   hubEmpty: "ما فيه أفكار هنا بعد — كن أول من يشارك.",
+  hubSearchPh: "ابحث بكلمة أو اسم أو قسم أو رقم الفكرة",
   achAuto: "تلقائي",
   achKindProject: "فكرة صارت مشروع",
   achKindResolved: "شكوى انحلّت",
@@ -553,6 +554,7 @@ Object.assign(dict.en, {
   hubStepReview: "In review",
   hubStepProject: "Became a project",
   hubEmpty: "No ideas here yet. Be the first to share one.",
+  hubSearchPh: "Search by word, name, department or idea number",
   achAuto: "Auto",
   achKindProject: "Idea became a project",
   achKindResolved: "Complaint resolved",
@@ -1591,10 +1593,10 @@ function exPeopleSection(limit) {
 function exSearchResults(body, query) {
   const tag = query.startsWith("#") ? normalizeTag(query) : "";
   const ready = Boolean(tag) || exHits.query === query;
-  const lower = query.toLowerCase();
+  const words = searchWords(query);
   const posts = ideas
     .filter((idea) => idea.type !== "story")
-    .filter((idea) => (tag ? ideaTags(idea).includes(tag) : ideaHaystack(idea).includes(lower)));
+    .filter((idea) => (tag ? ideaTags(idea).includes(tag) : ideaMatches(idea, words)));
   const byDate = (a, b) => new Date(b.createdAt) - new Date(a.createdAt);
 
   if (exQTab === "people") {
@@ -1738,7 +1740,7 @@ function sxTypeahead(body, draft) {
 async function fetchSearchHits(query) {
   if (query.length < 2 || query.startsWith("#")) return;
   loadExDepts();
-  const data = await social("search", { q: query });
+  const data = await social("search", searchQuery(query));
   if (!data) return;
   exHits = { query, people: data.people || [], departments: data.departments || [] };
   const draft = document.querySelector("#sx-input").value.trim();

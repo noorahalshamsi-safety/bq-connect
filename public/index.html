@@ -553,13 +553,17 @@
     <section id="feed">
       <div class="screen-bar hub-only">
         <h1 data-i18n="bqIdeaHub">مركز الأفكار</h1>
-        <button class="icon-btn" type="button" id="hub-search" data-i18n-aria="inboxSearch" aria-label="بحث">
+        <button class="icon-btn" type="button" id="hub-search" data-i18n-aria="inboxSearch" aria-label="بحث" aria-expanded="false" aria-controls="hub-search-row">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
         </button>
         <button class="pill-red" type="button" id="hub-new">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
           <span data-i18n="bqNewIdea">فكرة جديدة</span>
         </button>
+      </div>
+      <div class="hub-search" id="hub-search-row" role="search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
+        <input id="hub-query" type="search" enterkeyhint="search" autocomplete="off" maxlength="80" data-i18n-placeholder="hubSearchPh" data-i18n-aria="inboxSearch" placeholder="ابحث بكلمة أو اسم أو قسم أو رقم الفكرة" aria-label="بحث">
       </div>
       <article class="spark" id="spark">
         <div class="spark-copy">

@@ -206,7 +206,6 @@ main { padding-bottom: 6.6rem; }
 }
 
 body:not([data-screen="home"]) .app > header { display: none; }
-body[data-screen="hub"] .app > header:has(.search-wrap.open) { display: grid; }
 
 .top-side { display: flex; align-items: center; gap: 0.05rem; }
 .top-side.end { justify-content: flex-end; }
@@ -986,7 +985,13 @@ img.face { width: 44px; height: 44px; flex: none; border-radius: 50%; object-fit
 .hub-filters { flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.85rem 0.95rem 0.7rem; }
 .hub-date { position: relative; display: flex; align-items: center; height: 38px; padding-inline: 0.75rem 0.4rem; border: 1px solid var(--line); border-radius: 999px; background: var(--card); color: var(--ink-2); }
 .hub-date svg { flex: none; width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; }
-.hub-date select { height: 100%; padding-inline: 0.4rem 0.2rem; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 0.86rem; font-weight: 700; cursor: pointer; }
+.hub-search { display: none; position: relative; margin: 0.1rem 0.95rem 0.6rem; }
+body[data-screen="hub"] .hub-search.open { display: block; }
+.hub-search svg { position: absolute; inset-inline-start: 0.9rem; top: 50%; width: 18px; height: 18px; transform: translateY(-50%); fill: none; stroke: var(--muted); stroke-width: 2; stroke-linecap: round; pointer-events: none; }
+#hub-query { height: 44px; padding-block: 0; padding-inline: 2.6rem 1rem; border: 1px solid var(--line); border-radius: 999px; background: var(--card); line-height: 1.4; }
+#hub-query:focus { border-color: var(--red); }
+body.hub-searching #spark { display: none !important; }
+.hub-date select { height: 100%; padding-block: 0; line-height: 1.4; padding-inline: 0.4rem 0.2rem; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 0.86rem; font-weight: 700; cursor: pointer; }
 .hub-date select:focus { outline: none; }
 .hub-date:focus-within { border-color: var(--red); }
 .hub-day { height: 38px; padding: 0 0.75rem; border: 1px solid var(--line); border-radius: 999px; background: var(--card); color: var(--ink); font: inherit; font-size: 0.86rem; font-weight: 700; }

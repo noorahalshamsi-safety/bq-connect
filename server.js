@@ -96,6 +96,50 @@ function loadDirectory() {
 const directory = loadDirectory();
 const byBadge = new Map(directory.map((person) => [String(person.badge), person]));
 
+const ARABIC_MARKS = /[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED\u0640]/g;
+
+function foldSearch(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(ARABIC_MARKS, "")
+    .replace(/[أإآٱ]/g, "ا")
+    .replace(/ة/g, "ه")
+    .replace(/ى/g, "ي")
+    .replace(/ؤ/g, "و")
+    .replace(/ئ/g, "ي")
+    .replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 0x660))
+    .replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 0x6f0))
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function searchWords(query) {
+  const folded = foldSearch(String(query || "").slice(0, 80));
+  return folded ? folded.split(" ").slice(0, 8).map((word) => word.replace(/^ال(?=\S{2})/, "")) : [];
+}
+
+function wordsIn(words, text) {
+  return words.every((word) => text.includes(word));
+}
+
+const directoryTexts = new WeakMap();
+
+function directoryText(item) {
+  let text = directoryTexts.get(item);
+  if (text === undefined) {
+    text = foldSearch(`${item.name || ""} ${item.department || ""} ${item.position || ""}`);
+    directoryTexts.set(item, text);
+  }
+  return text;
+}
+
+let departmentList = null;
+
+function allDepartments() {
+  if (!departmentList) departmentList = [...new Set(directory.map((item) => item.department).filter((name) => name && !HIDDEN_DEPTS.has(name)))];
+  return departmentList;
+}
+
 function readJson(file, fallback) {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -2828,9 +2872,10 @@ async function handleApi(req, res, urlPath, params) {
     }
     const action = String(body.action || "");
     if (action === "search") {
-      const query = String(body.q || "").trim().toLowerCase();
-      const people = query.length < 2 ? [] : directory.filter((item) => `${item.name} ${item.department} ${item.position}`.toLowerCase().includes(query)).slice(0, 8).map(cardOf);
-      const departments = [...new Set(directory.map((item) => item.department).filter((name) => name && !HIDDEN_DEPTS.has(name)))].filter((name) => name.toLowerCase().includes(query)).slice(0, 6);
+      const words = String(body.q || "").trim().length < 2 ? [] : searchWords(body.q);
+      const asked = new Set((Array.isArray(body.depts) ? body.depts : []).filter((name) => typeof name === "string" && name.length <= 80).slice(0, 12));
+      const people = words.length ? directory.filter((item) => wordsIn(words, directoryText(item))).slice(0, 8).map(cardOf) : [];
+      const departments = !words.length ? [] : allDepartments().filter((name) => asked.has(name) || wordsIn(words, foldSearch(name))).slice(0, 6);
       send(res, 200, { people, departments });
       return;
     }
@@ -2840,11 +2885,11 @@ async function handleApi(req, res, urlPath, params) {
         send(res, 404, { error: "not_found" });
         return;
       }
-      const query = String(body.q || "").trim().toLowerCase();
+      const words = searchWords(body.q);
       const page = Math.max(0, Math.min(200, Number(body.page) || 0));
       const all = directory.filter((item) => item.department === name);
-      const matched = (query
-        ? all.filter((item) => `${item.name} ${item.position}`.toLowerCase().includes(query))
+      const matched = (words.length
+        ? all.filter((item) => wordsIn(words, directoryText(item)))
         : all
       ).slice().sort(byImportance);
       const following = new Set(followsFor(person.badge).people.map(String));
