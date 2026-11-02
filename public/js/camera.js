@@ -53,7 +53,7 @@ let camBusy = false;
 let camTool = "";
 let camFilter = 0;
 let camHands = false;
-let camTimer = false;
+let camTimer = 0;
 let camFlash = false;
 let camMode = "story";
 let camGradient = 0;
@@ -61,6 +61,22 @@ let camLayoutCells = 0;
 let camLayoutShots = [];
 let camToastTimer = 0;
 let camSwipe = null;
+let camEditUrl = "";
+let camZoom = 1;
+let camZoomRange = { min: 1, max: 5, hw: false };
+let camZoomFrame = 0;
+let camZoomAnim = 0;
+let camExposure = 0;
+let camExposureRange = null;
+let camFocusModes = [];
+let camFocusPoint = false;
+let camFocusTimer = 0;
+let camTapTimer = 0;
+let camLastTap = 0;
+let camPinch = null;
+let camShutterStart = null;
+const camPointers = new Map();
+const CAM_ZOOM_STOPS = [0.5, 1, 2, 3, 5];
 
 function camWait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -97,10 +113,173 @@ function camSetTorch(on) {
   return track.applyConstraints({ advanced: [{ torch: on }] }).catch(() => {});
 }
 
+function camCaps() {
+  const track = camTrack();
+  try {
+    return track && track.getCapabilities ? track.getCapabilities() || {} : {};
+  } catch {
+    return {};
+  }
+}
+
+function camDigitalZoom() {
+  return camZoomRange.hw ? 1 : camZoom;
+}
+
+function camLiveFilter() {
+  const parts = [];
+  const css = CAM_FILTERS[camFilter].css;
+  if (css !== "none") parts.push(css);
+  if (!camExposureRange && camExposure) parts.push(`brightness(${(1 + camExposure * 0.6).toFixed(2)})`);
+  return parts.join(" ") || "none";
+}
+
+function camPaintLive() {
+  const zoom = camDigitalZoom();
+  camLive.style.transform = `${camFront ? "scaleX(-1) " : ""}scale(${zoom.toFixed(3)})`;
+  camLive.style.filter = camLiveFilter();
+}
+
+function camSetupZoom() {
+  const caps = camCaps();
+  const track = camTrack();
+  if (caps.zoom && caps.zoom.max > caps.zoom.min) {
+    camZoomRange = { min: caps.zoom.min, max: Math.min(caps.zoom.max, 10), hw: true };
+    const settings = track.getSettings ? track.getSettings() : {};
+    camZoom = settings.zoom || Math.max(1, caps.zoom.min);
+  } else {
+    camZoomRange = { min: 1, max: 5, hw: false };
+    camZoom = 1;
+  }
+  const exposure = caps.exposureCompensation;
+  camExposureRange = exposure && exposure.max > exposure.min ? exposure : null;
+  camExposure = 0;
+  camFocusModes = Array.isArray(caps.focusMode) ? caps.focusMode : [];
+  camFocusPoint = "pointsOfInterest" in caps;
+  document.querySelector("#cam-exposure").value = "0";
+  document.querySelector("#cam-focus").hidden = true;
+  camPaintLive();
+  paintCamZoom();
+}
+
+function camApplyZoom(value) {
+  camZoom = Math.min(camZoomRange.max, Math.max(camZoomRange.min, value));
+  if (camZoomRange.hw) {
+    cancelAnimationFrame(camZoomFrame);
+    camZoomFrame = requestAnimationFrame(() => {
+      const track = camTrack();
+      if (track) track.applyConstraints({ advanced: [{ zoom: camZoom }] }).catch(() => {});
+    });
+  }
+  camPaintLive();
+  paintCamZoom();
+}
+
+function camZoomTo(target) {
+  cancelAnimationFrame(camZoomAnim);
+  const from = camZoom;
+  const started = performance.now();
+  const step = (now) => {
+    const part = Math.min(1, (now - started) / 220);
+    camApplyZoom(from + (target - from) * (1 - (1 - part) * (1 - part)));
+    if (part < 1) camZoomAnim = requestAnimationFrame(step);
+  };
+  camZoomAnim = requestAnimationFrame(step);
+}
+
+function camZoomLabel(value) {
+  const rounded = Math.round(value * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}x`;
+}
+
+function paintCamZoom() {
+  const box = document.querySelector("#cam-zoom");
+  const stops = CAM_ZOOM_STOPS.filter((stop) => stop >= camZoomRange.min - 0.01 && stop <= camZoomRange.max + 0.01);
+  if (camZoomRange.min < 1 && !stops.includes(camZoomRange.min) && camZoomRange.min > 0.5) stops.unshift(Math.round(camZoomRange.min * 10) / 10);
+  const active = stops.reduce((best, stop) => (stop <= camZoom + 0.05 ? stop : best), stops[0]);
+  if (box.childElementCount !== stops.length) {
+    box.replaceChildren(...stops.map((stop) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.zoom = String(stop);
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        camZoomTo(stop);
+      });
+      return button;
+    }));
+  }
+  box.querySelectorAll("button").forEach((button) => {
+    const stop = Number(button.dataset.zoom);
+    const on = stop === active;
+    button.classList.toggle("on", on);
+    button.textContent = on ? camZoomLabel(camZoom) : camZoomLabel(stop).replace("x", "");
+  });
+  box.hidden = stops.length < 2 || !camStream;
+}
+
+function camStagePoint(clientX, clientY) {
+  const rect = camStage.getBoundingClientRect();
+  const vw = camLive.videoWidth || rect.width;
+  const vh = camLive.videoHeight || rect.height;
+  const scale = Math.max(rect.width / vw, rect.height / vh) * camDigitalZoom();
+  let x = (clientX - rect.left - rect.width / 2) / (vw * scale) + 0.5;
+  const y = (clientY - rect.top - rect.height / 2) / (vh * scale) + 0.5;
+  if (camFront) x = 1 - x;
+  return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
+}
+
+function camFocusAt(clientX, clientY) {
+  const focus = document.querySelector("#cam-focus");
+  const rect = camStage.getBoundingClientRect();
+  focus.style.left = `${clientX - rect.left}px`;
+  focus.style.top = `${clientY - rect.top}px`;
+  focus.classList.toggle("flip-side", clientX - rect.left > rect.width - 90);
+  focus.hidden = false;
+  focus.classList.remove("pulse");
+  void focus.offsetWidth;
+  focus.classList.add("pulse");
+  const track = camTrack();
+  if (track && (camFocusPoint || camFocusModes.length)) {
+    const advanced = {};
+    if (camFocusPoint) advanced.pointsOfInterest = [camStagePoint(clientX, clientY)];
+    if (camFocusModes.includes("single-shot")) advanced.focusMode = "single-shot";
+    else if (camFocusModes.includes("continuous")) advanced.focusMode = "continuous";
+    track.applyConstraints({ advanced: [advanced] }).catch(() => {});
+  }
+  camKeepFocus();
+}
+
+function camKeepFocus() {
+  clearTimeout(camFocusTimer);
+  camFocusTimer = setTimeout(() => {
+    document.querySelector("#cam-focus").hidden = true;
+  }, 3200);
+}
+
+function camSetExposure(value) {
+  camExposure = Math.min(1, Math.max(-1, value));
+  const track = camTrack();
+  if (camExposureRange && track) {
+    const range = camExposureRange;
+    let target = camExposure >= 0 ? camExposure * range.max : -camExposure * range.min;
+    if (range.step) target = Math.round(target / range.step) * range.step;
+    track.applyConstraints({ advanced: [{ exposureCompensation: target }] }).catch(() => {});
+  }
+  camPaintLive();
+  camKeepFocus();
+}
+
+function camLiveReady() {
+  return !storyCam.hidden && document.querySelector("#cam-review").hidden && camTool !== "text" && camStream && !camBusy;
+}
+
 function stopCamStream() {
   if (camStream) camStream.getTracks().forEach((track) => track.stop());
   camStream = null;
   camLive.srcObject = null;
+  document.querySelector("#cam-zoom").hidden = true;
+  document.querySelector("#cam-focus").hidden = true;
 }
 
 function paintCamBlocked() {
@@ -120,7 +299,7 @@ async function startCamStream() {
     paintCamBlocked();
     return;
   }
-  const video = { facingMode: camFacing, width: { ideal: 1080 }, height: { ideal: 1920 } };
+  const video = { facingMode: camFacing, width: { ideal: 1080 }, height: { ideal: 1920 }, zoom: true };
   let stream = null;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ video, audio: true });
@@ -144,6 +323,7 @@ async function startCamStream() {
   camLive.classList.toggle("mirror", camFront);
   camLive.srcObject = stream;
   camLive.play().catch(() => {});
+  camSetupZoom();
   navigator.mediaDevices.enumerateDevices().then((devices) => {
     document.querySelector("#cam-flip").hidden = devices.filter((device) => device.kind === "videoinput").length < 2;
   }).catch(() => {});
@@ -159,13 +339,13 @@ function camDrawLive(context, x, y, w, h, mirror) {
   const vw = camLive.videoWidth;
   const vh = camLive.videoHeight;
   if (!vw || !vh) return;
-  const scale = Math.max(w / vw, h / vh);
+  const scale = Math.max(w / vw, h / vh) * camDigitalZoom();
   const sw = w / scale;
   const sh = h / scale;
   const sx = (vw - sw) / 2;
   const sy = (vh - sh) / 2;
   context.save();
-  context.filter = CAM_FILTERS[camFilter].css;
+  context.filter = camLiveFilter();
   if (mirror) {
     context.translate(x + w, y);
     context.scale(-1, 1);
@@ -205,7 +385,7 @@ function paintCamTools() {
     const on = tool === camTool || (tool === "filter" && camFilter > 0) || (tool === "handsfree" && camHands) || (tool === "timer" && camTimer);
     button.classList.toggle("on", on);
   });
-  camLive.style.filter = CAM_FILTERS[camFilter].css;
+  camPaintLive();
   const text = camTool === "text";
   document.querySelector("#cam-text").hidden = !text;
   document.querySelector("#cam-text").style.setProperty("--g1", CAM_GRADIENTS[camGradient][0]);
@@ -273,8 +453,8 @@ function setCamTool(tool) {
     camHands = !camHands;
     camToast(camHands ? t("bqHandsOn") : t("bqToolOff"));
   } else if (tool === "timer") {
-    camTimer = !camTimer;
-    camToast(camTimer ? t("bqTimerOn") : t("bqToolOff"));
+    camTimer = camTimer === 0 ? 3 : camTimer === 3 ? 10 : 0;
+    camToast(camTimer ? tf("bqTimerOn", { n: camTimer }) : t("bqToolOff"));
   } else if (tool === "more") {
     const open = !storyCam.classList.contains("tools-open");
     storyCam.classList.toggle("tools-open", open);
@@ -312,25 +492,77 @@ function camClearReview() {
   camUrl = "";
   camBlob = null;
   camEdits = null;
-  camPaintEdits();
+  if (camEditUrl) URL.revokeObjectURL(camEditUrl);
+  camEditUrl = "";
+  camClip.style.filter = "";
+  document.querySelector("#cam-over").hidden = true;
+  document.querySelector("#cam-edit").classList.remove("on");
 }
 
-function camPaintEdits() {
-  const filter = camEdits && camEdits.filter ? CAM_FILTERS[camEdits.filter].css : "";
-  camShot.style.filter = filter;
-  camClip.style.filter = filter;
-  if (camClip.src) camClip.muted = Boolean(camEdits && camEdits.mute);
-  document.querySelector("#cam-edit").classList.toggle("on", mediaEdited(camEdits));
+async function camPaintEdits() {
+  const blob = camBlob;
+  const edits = camEdits;
+  const video = Boolean(blob && /^video\//.test(blob.type));
+  const filter = video ? meFilterCss(edits) : "none";
+  camClip.style.filter = filter === "none" ? "" : filter;
+  if (camClip.src) camClip.muted = Boolean(edits && edits.mute);
+  document.querySelector("#cam-edit").classList.toggle("on", mediaEdited(edits));
+  if (video) {
+    if (edits && edits.trim && camClip.src) camClip.currentTime = edits.trim.start;
+    camPaintOverlay();
+    return;
+  }
+  let shown = camUrl;
+  if (blob && mediaEdited(edits)) {
+    try {
+      const out = await renderPhoto(blob, edits);
+      if (camBlob !== blob || camEdits !== edits) return;
+      if (camEditUrl) URL.revokeObjectURL(camEditUrl);
+      camEditUrl = URL.createObjectURL(out);
+      shown = camEditUrl;
+    } catch {}
+  }
+  if (shown && camBlob === blob) camShot.src = shown;
 }
 
-async function camEditReview() {
+function camPaintOverlay() {
+  const canvas = document.querySelector("#cam-over");
+  const edits = camEdits;
+  const show = Boolean(edits && !camClip.hidden && camClip.videoWidth && meHasLayer(edits));
+  canvas.hidden = !show;
+  if (!show) return;
+  const box = camStage.getBoundingClientRect();
+  const scale = Math.min(box.width / camClip.videoWidth, box.height / camClip.videoHeight);
+  const width = camClip.videoWidth * scale;
+  const height = camClip.videoHeight * scale;
+  canvas.style.left = `${(box.width - width) / 2}px`;
+  canvas.style.top = `${(box.height - height) / 2}px`;
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.max(1, Math.round(width * ratio));
+  canvas.height = Math.max(1, Math.round(height * ratio));
+  const context = canvas.getContext("2d");
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  paintOverlay(context, canvas.width, canvas.height, edits);
+}
+
+async function camEditReview(auto) {
   if (!camBlob || camSending) return;
+  const first = auto === true;
+  const blob = camBlob;
   camClip.pause();
-  const edits = await openMediaEditor(camBlob, camEdits);
-  if (edits && camBlob) {
+  const edits = await openMediaEditor(blob, camEdits, { doneKey: first ? "bqCamNext" : "meDone" });
+  if (camBlob !== blob) return;
+  if (edits) {
     camEdits = edits;
     camPaintEdits();
-    if (mediaEdited(edits)) camToast(t("meSaved"));
+    if (!first && mediaEdited(edits)) camToast(t("meSaved"));
+  } else if (first) {
+    camClearReview();
+    camCaptureMode();
+    if (!camStream) startCamStream();
+    return;
   }
   if (!camClip.hidden && camClip.src) camClip.play().catch(() => {});
 }
@@ -347,7 +579,7 @@ function openStoryCamera(mode) {
   camTool = "";
   camFilter = 0;
   camHands = false;
-  camTimer = false;
+  camTimer = 0;
   camLayoutShots = [];
   camTextInput.value = "";
   storyCam.classList.remove("tools-open");
@@ -374,7 +606,7 @@ function closeStoryCamera() {
   storyCam.hidden = true;
 }
 
-function camShowReview(blob) {
+function camShowReview(blob, skipEditor) {
   camClearReview();
   camBlob = blob;
   camUrl = URL.createObjectURL(blob);
@@ -398,9 +630,11 @@ function camShowReview(blob) {
   storyCam.classList.add("reviewing");
   document.querySelector("#cam-capture").hidden = true;
   document.querySelector("#cam-review").hidden = false;
+  document.querySelector("#cam-focus").hidden = true;
   paintAvatar(document.querySelector("#cam-avatar"), selectedPerson);
   camError.textContent = "";
   paintCamMode();
+  if (!skipEditor) camEditReview(true);
 }
 
 async function camTakePhoto() {
@@ -663,7 +897,7 @@ async function camCountdown() {
   const count = document.querySelector("#cam-count");
   camBusy = true;
   count.hidden = false;
-  for (let left = 3; left > 0 && !storyCam.hidden; left -= 1) {
+  for (let left = camTimer || 3; left > 0 && !storyCam.hidden; left -= 1) {
     count.textContent = String(left);
     await camWait(1000);
   }
@@ -749,13 +983,22 @@ camShutter.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   if (camShutter.setPointerCapture) camShutter.setPointerCapture(event.pointerId);
   camHolding = false;
+  camShutterStart = { y: event.clientY, zoom: camZoom };
   clearTimeout(camHoldTimer);
   if (camTool || camHands || camTimer || camRecorder) return;
   camHoldTimer = setTimeout(() => {
     camHolding = camStartRecording();
   }, 280);
 });
+camShutter.addEventListener("pointermove", (event) => {
+  if (!camShutterStart || !camHolding || !camRecorder) return;
+  const rise = camShutterStart.y - event.clientY;
+  if (Math.abs(rise) < 12) return;
+  cancelAnimationFrame(camZoomAnim);
+  camApplyZoom(camShutterStart.zoom * Math.pow(2, (rise - Math.sign(rise) * 12) / 150));
+});
 camShutter.addEventListener("pointerup", () => {
+  camShutterStart = null;
   clearTimeout(camHoldTimer);
   if (camHolding) {
     camHolding = false;
@@ -849,11 +1092,19 @@ document.querySelector("#cam-file").addEventListener("change", async (event) => 
     camToast(t(problem));
     return;
   }
-  camShowReview(file);
+  camShowReview(file, Boolean(edits));
   if (edits) {
     camEdits = edits;
     camPaintEdits();
   }
+});
+camClip.addEventListener("loadedmetadata", camPaintOverlay);
+camClip.addEventListener("timeupdate", () => {
+  const trim = camEdits && camEdits.trim;
+  if (trim && (camClip.currentTime >= trim.end || camClip.currentTime < trim.start - 0.3)) camClip.currentTime = trim.start;
+});
+window.addEventListener("resize", () => {
+  if (!storyCam.hidden && camEdits) camPaintOverlay();
 });
 document.querySelector("#cam-edit").addEventListener("click", camEditReview);
 document.querySelector("#cam-retake").addEventListener("click", () => {
@@ -868,23 +1119,78 @@ document.querySelector("#cam-caption").addEventListener("keydown", (event) => {
     camShare();
   }
 });
+function camPinchDistance() {
+  const [first, second] = [...camPointers.values()];
+  return Math.hypot(first.x - second.x, first.y - second.y) || 1;
+}
+
 camStage.addEventListener("pointerdown", (event) => {
   if (event.target.closest("button, textarea, input, label, .cam-sheet")) return;
-  camSwipe = { x: event.clientX, y: event.clientY };
+  camPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (camPointers.size === 2 && camLiveReady()) {
+    camSwipe = null;
+    clearTimeout(camTapTimer);
+    camPinch = { distance: camPinchDistance(), zoom: camZoom };
+    return;
+  }
+  camSwipe = { x: event.clientX, y: event.clientY, at: Date.now() };
   const sheet = document.querySelector("#cam-sheet");
   if (!sheet.hidden) sheet.hidden = true;
 });
-camStage.addEventListener("pointerup", (event) => {
-  if (!camSwipe) return;
-  const dx = event.clientX - camSwipe.x;
-  const dy = event.clientY - camSwipe.y;
-  camSwipe = null;
-  if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-  if (camTool === "text" || !document.querySelector("#cam-review").hidden) return;
-  camFilter = (camFilter + (dx < 0 ? 1 : CAM_FILTERS.length - 1)) % CAM_FILTERS.length;
-  camToast(t(CAM_FILTERS[camFilter].key));
-  paintCamTools();
+camStage.addEventListener("pointermove", (event) => {
+  if (!camPointers.has(event.pointerId)) return;
+  camPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (camPinch && camPointers.size === 2) {
+    cancelAnimationFrame(camZoomAnim);
+    camApplyZoom(camPinch.zoom * (camPinchDistance() / camPinch.distance));
+  }
 });
+["pointerup", "pointercancel"].forEach((name) => {
+  camStage.addEventListener(name, (event) => {
+    camPointers.delete(event.pointerId);
+    if (camPinch) {
+      if (!camPointers.size) camPinch = null;
+      camSwipe = null;
+      return;
+    }
+    if (!camSwipe || name === "pointercancel") {
+      camSwipe = null;
+      return;
+    }
+    const dx = event.clientX - camSwipe.x;
+    const dy = event.clientY - camSwipe.y;
+    const quick = Date.now() - camSwipe.at < 350;
+    camSwipe = null;
+    if (Math.abs(dx) < 12 && Math.abs(dy) < 12 && quick) {
+      if (!camLiveReady() || event.target.closest(".cam-focus, .cam-zoom")) return;
+      const now = Date.now();
+      clearTimeout(camTapTimer);
+      if (now - camLastTap < 300) {
+        camLastTap = 0;
+        if (!camRecorder) document.querySelector("#cam-flip").click();
+        return;
+      }
+      camLastTap = now;
+      const x = event.clientX;
+      const y = event.clientY;
+      camTapTimer = setTimeout(() => camFocusAt(x, y), 260);
+      return;
+    }
+    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    if (camTool === "text" || !document.querySelector("#cam-review").hidden) return;
+    camFilter = (camFilter + (dx < 0 ? 1 : CAM_FILTERS.length - 1)) % CAM_FILTERS.length;
+    camToast(t(CAM_FILTERS[camFilter].key));
+    paintCamTools();
+  });
+});
+camStage.addEventListener("wheel", (event) => {
+  if (!camLiveReady()) return;
+  event.preventDefault();
+  cancelAnimationFrame(camZoomAnim);
+  camApplyZoom(camZoom * (event.deltaY < 0 ? 1.08 : 1 / 1.08));
+}, { passive: false });
+document.querySelector("#cam-exposure").addEventListener("input", (event) => camSetExposure(Number(event.target.value)));
+document.querySelector("#cam-exposure").addEventListener("pointerdown", (event) => event.stopPropagation());
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !storyCam.hidden && !document.querySelector("#media-edit").open) closeStoryCamera();
 });

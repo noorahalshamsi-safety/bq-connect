@@ -708,10 +708,18 @@ document.querySelector("#hl-delete").addEventListener("click", async () => {
   document.querySelector("#hl-editor").close();
   if (view === "profile") paintProfile();
 });
+let hlResume = null;
 document.querySelector("#story-hl").addEventListener("click", (event) => {
   event.stopPropagation();
-  const item = viewerRows()[storyGroup]?.items[storyIndex];
+  const row = viewerRows()[storyGroup];
+  const item = row?.items[storyIndex];
   if (!item) return;
+  hlResume = storyDeck ? null : { key: row.key, index: storyIndex };
   closeStoryViewer();
   openHighlightEditor(null, item.id);
+});
+document.querySelector("#hl-editor").addEventListener("close", () => {
+  const resume = hlResume;
+  hlResume = null;
+  if (resume) openStoryViewer(resume.key, resume.index);
 });

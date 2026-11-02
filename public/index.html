@@ -1106,7 +1106,13 @@
       <video id="cam-live" autoplay playsinline muted></video>
       <img id="cam-shot" alt="" hidden>
       <video id="cam-clip" loop playsinline hidden></video>
+      <canvas class="cam-over" id="cam-over" hidden></canvas>
       <div class="cam-lines" id="cam-lines" hidden></div>
+      <div class="cam-focus" id="cam-focus" hidden>
+        <i></i>
+        <input type="range" id="cam-exposure" min="-1" max="1" step="0.05" value="0" data-i18n-aria="bqCamExposure" aria-label="الإضاءة">
+      </div>
+      <div class="cam-zoom" id="cam-zoom" role="group" data-i18n-aria="bqCamZoom" aria-label="التقريب"></div>
       <div class="cam-layout" id="cam-layout" hidden></div>
       <div class="cam-text" id="cam-text" hidden>
         <textarea id="cam-text-input" dir="auto" maxlength="160" rows="3" data-i18n-placeholder="bqCamTextPh" placeholder="اكتب شيئاً..."></textarea>
@@ -1193,7 +1199,9 @@
     <div class="me-panel" id="me-panel"></div>
     <nav class="me-tools" id="me-tools">
       <button type="button" data-me-tool="filter"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="9" r="5.5"/><circle cx="15" cy="9" r="5.5"/><circle cx="12" cy="15" r="5.5"/></svg><span data-i18n="meFilter">فلاتر</span></button>
+      <button type="button" data-me-tool="adjust"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg><span data-i18n="meAdjust">ضبط</span></button>
       <button type="button" data-me-tool="text"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6V4.5h14V6M12 4.5v15M9 19.5h6"/></svg><span data-i18n="meText">نص</span></button>
+      <button type="button" data-me-tool="draw"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20c2.5 0 4-1.2 4-3.2 0-1.3-1-2.3-2.3-2.3C4.4 14.5 4 15.6 4 17v3z"/><path d="M8.6 14.4 19 4l1 1L9.6 15.4"/></svg><span data-i18n="meDraw">رسم</span></button>
       <button type="button" data-me-tool="trim" data-me-video><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="7" r="2.5"/><circle cx="6" cy="17" r="2.5"/><path d="M8 8.5 20 18M8 15.5 20 6"/></svg><span data-i18n="meTrim">قص</span></button>
       <button type="button" data-me-tool="sound" data-me-video><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg><span data-i18n="meSound">الصوت</span></button>
       <button type="button" id="me-rotate" data-me-photo><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.4-5.7M20 4.5v4h-4"/></svg><span data-i18n="meRotate">تدوير</span></button>
