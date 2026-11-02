@@ -115,11 +115,13 @@ const dict = {
     bqStoryCaption: "أضف تعليقاً على القصة (اختياري)",
     bqStoryNeedsMedia: "القصة لازم تكون صورة أو فيديو.",
     bqAddMedia: "أضف صورة أو فيديو",
-    bqAddMediaSub: "فيديو حتى 60 ثانية و30 ميجابايت",
+    bqAddMediaSub: "فيديو حتى 60 ثانية، ونضغطه تلقائياً قبل الرفع",
     bqUploading: "جارٍ رفع الملف...",
+    bqPreparing: "جارٍ تجهيز الفيديو... {n}%",
+    bqUploadingPct: "جارٍ الرفع... {n}%",
     bqUploadFail: "تعذّر رفع الملف. حاول مرة ثانية.",
     bqMediaBad: "نوع الملف غير مدعوم. استخدم صورة أو فيديو MP4 / WebM / MOV.",
-    bqVideoBig: "الفيديو أكبر من 30 ميجابايت.",
+    bqVideoBig: "الفيديو كبير جداً. اختر مقطعاً أقصر أو بجودة أقل.",
     bqVideoLong: "الفيديو أطول من 60 ثانية.",
     bqReelsEmpty: "ما فيه ريلز حالياً. الريلز فيديوهات بس، صوّر أول فيديو من موقعك.",
     bqAddStory: "أضف قصة",
@@ -836,11 +838,13 @@ const dict = {
     bqStoryCaption: "Add a caption (optional)",
     bqStoryNeedsMedia: "A story has to be a photo or a video.",
     bqAddMedia: "Add a photo or video",
-    bqAddMediaSub: "Videos up to 60 seconds and 30 MB",
+    bqAddMediaSub: "Videos up to 60 seconds, compressed automatically before upload",
     bqUploading: "Uploading...",
+    bqPreparing: "Preparing video... {n}%",
+    bqUploadingPct: "Uploading... {n}%",
     bqUploadFail: "Upload failed. Please try again.",
     bqMediaBad: "Unsupported file. Use a photo or an MP4 / WebM / MOV video.",
-    bqVideoBig: "That video is larger than 30 MB.",
+    bqVideoBig: "That video is too large. Pick a shorter or lower-quality clip.",
     bqVideoLong: "That video is longer than 60 seconds.",
     bqReelsEmpty: "No reels yet. Reels are videos only, record the first one from your site.",
     bqAddStory: "Add a story",
@@ -5481,20 +5485,111 @@ function videoSeconds(file) {
   });
 }
 
-async function uploadMedia(blob) {
-  const response = await fetch("/api/media", {
-    method: "POST",
-    headers: { "Content-Type": blob.type, "X-Session": selectedPerson ? selectedPerson.token : "" },
-    body: blob,
-  });
-  if (response.status === 401) {
-    clearSession();
-    throw new Error("employee");
+const VIDEO_SOURCE_MAX = 500 * 1024 * 1024;
+const VIDEO_TARGET = { long: 1280, short: 720, bitrate: 1800000, audio: 96000 };
+let videoKit = null;
+
+function videoCompressor() {
+  if (typeof VideoEncoder === "undefined" || typeof VideoDecoder === "undefined") return Promise.resolve(null);
+  if (!videoKit) videoKit = import("/js/vendor/mediabunny.min.mjs").catch(() => null);
+  return videoKit;
+}
+
+async function prepareVideo(file, onProgress) {
+  if (file.size < 3 * 1024 * 1024 && file.type !== "video/quicktime") return file;
+  const kit = await videoCompressor();
+  if (!kit) return file;
+  let input = null;
+  try {
+    input = new kit.Input({ source: new kit.BlobSource(file), formats: kit.ALL_FORMATS });
+    const track = await input.getPrimaryVideoTrack();
+    if (!track || !(await track.canDecode())) return file;
+    const audio = await input.getPrimaryAudioTrack();
+    const width = await track.getDisplayWidth();
+    const height = await track.getDisplayHeight();
+    const scale = Math.min(1, VIDEO_TARGET.long / Math.max(width, height), VIDEO_TARGET.short / Math.min(width, height));
+    const output = new kit.Output({ format: new kit.Mp4OutputFormat({ fastStart: "in-memory" }), target: new kit.BufferTarget() });
+    const video = { codec: "avc", bitrate: VIDEO_TARGET.bitrate, forceTranscode: true, allowTransformationMetadata: false };
+    if (scale < 1) video.width = Math.max(2, Math.round((width * scale) / 2) * 2);
+    const conversion = await kit.Conversion.init({
+      input,
+      output,
+      tracks: "primary",
+      showWarnings: false,
+      video,
+      audio: { codec: "aac", bitrate: VIDEO_TARGET.audio },
+    });
+    if (!conversion.isValid || (audio && conversion.discardedTracks.some((row) => row.track === audio))) return file;
+    if (onProgress) conversion.onProgress = (progress) => onProgress(Math.min(1, progress));
+    await conversion.execute();
+    const buffer = output.target.buffer;
+    if (!buffer || !buffer.byteLength) return file;
+    return buffer.byteLength < file.size || file.size > VIDEO_MAX ? new Blob([buffer], { type: "video/mp4" }) : file;
+  } catch {
+    return file;
+  } finally {
+    if (input) input.dispose();
   }
-  if (response.status === 413) throw new Error("big");
-  if (!response.ok) throw new Error("upload");
-  const data = await response.json();
-  return data.url;
+}
+
+async function trackSeconds(file) {
+  const kit = await videoCompressor();
+  if (!kit) return -1;
+  const input = new kit.Input({ source: new kit.BlobSource(file), formats: kit.ALL_FORMATS });
+  try {
+    return await input.computeDuration();
+  } catch {
+    return -1;
+  } finally {
+    input.dispose();
+  }
+}
+
+function uploadMedia(blob, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/media");
+    xhr.setRequestHeader("Content-Type", blob.type);
+    xhr.setRequestHeader("X-Session", selectedPerson ? selectedPerson.token : "");
+    xhr.responseType = "json";
+    if (onProgress) {
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress(event.loaded / event.total);
+      };
+    }
+    xhr.onload = () => {
+      if (xhr.status === 401) {
+        clearSession();
+        reject(new Error("employee"));
+        return;
+      }
+      if (xhr.status === 413) {
+        reject(new Error("big"));
+        return;
+      }
+      const data = xhr.response;
+      if (xhr.status < 200 || xhr.status >= 300 || !data || !data.url) {
+        reject(new Error("upload"));
+        return;
+      }
+      resolve(data.url);
+    };
+    xhr.onerror = () => reject(new Error("upload"));
+    xhr.send(blob);
+  });
+}
+
+function percentStatus(target, key) {
+  return (part) => {
+    target.textContent = tf(key, { n: Math.round(part * 100) });
+  };
+}
+
+async function sendMediaFile(file, target) {
+  const video = /^video\//.test(file.type);
+  const ready = video ? await prepareVideo(file, percentStatus(target, "bqPreparing")) : await shrinkImage(file);
+  if (video && ready.size > VIDEO_MAX) throw new Error("big");
+  return uploadMedia(ready, percentStatus(target, "bqUploadingPct"));
 }
 
 let mediaBusy = false;
@@ -5508,8 +5603,10 @@ async function mediaFileError(file) {
   if (!video && !/^image\//.test(file.type)) return "bqMediaBad";
   if (!video) return "";
   if (!VIDEO_ACCEPT.split(",").includes(file.type)) return "bqMediaBad";
-  if (file.size > VIDEO_MAX) return "bqVideoBig";
-  if ((await videoSeconds(file)) > VIDEO_SECONDS + 0.5) return "bqVideoLong";
+  if (file.size > VIDEO_SOURCE_MAX || (file.size > VIDEO_MAX && !(await videoCompressor()))) return "bqVideoBig";
+  let seconds = await videoSeconds(file);
+  if (seconds === Infinity) seconds = await trackSeconds(file);
+  if (seconds > VIDEO_SECONDS + 0.5) return "bqVideoLong";
   return "";
 }
 
@@ -5549,7 +5646,7 @@ document.querySelector("#post-file").addEventListener("change", async (event) =>
   for (const file of files) {
     const video = /^video\//.test(file.type);
     try {
-      const url = await uploadMedia(video ? file : await shrinkImage(file));
+      const url = await sendMediaFile(file, formError);
       if (single || video || !postMedia || isVideoSrc(postMedia)) {
         postMedia = url;
         postExtra = [];

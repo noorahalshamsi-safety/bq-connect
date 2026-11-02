@@ -155,6 +155,27 @@ async function browserTranslate(text, from, to) {
   return withinTime(translator.translate(text));
 }
 
+async function serverTranslate(text, from, to) {
+  if (!selectedPerson) return null;
+  const stop = new AbortController();
+  const timer = setTimeout(() => stop.abort(), 45000);
+  try {
+    const response = await fetch("/api/translate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: selectedPerson.token, text: text.slice(0, 3000), from, to }),
+      signal: stop.signal,
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return typeof data.text === "string" && data.text.trim() ? data.text : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function webTranslateLink(text, from, to) {
   const link = document.createElement("a");
   link.href = `https://translate.google.com/?sl=${from}&tl=${to}&op=translate&text=${encodeURIComponent(text.slice(0, 4000))}`;
@@ -188,7 +209,7 @@ function translateControl(text) {
     button.textContent = t("translating");
     let result = null;
     try {
-      result = await browserTranslate(source, from, to);
+      result = (await serverTranslate(source, from, to)) || (await browserTranslate(source, from, to));
     } catch {
       result = null;
     }

@@ -686,9 +686,7 @@ async function camShare() {
   share.disabled = true;
   camError.textContent = t("bqUploading");
   try {
-    const video = /^video\//.test(blob.type);
-    if (video && blob.size > VIDEO_MAX) throw new Error("big");
-    const media = await uploadMedia(video ? blob : await shrinkImage(blob));
+    const media = await sendMediaFile(blob, camError);
     if (camMode === "story") {
       await saveIdea({
         token: selectedPerson.token,

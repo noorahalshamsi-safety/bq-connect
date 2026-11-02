@@ -3,7 +3,9 @@ const https = require("https");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const zlib = require("zlib");
 const sparkAgent = require("./spark-agent");
+const translator = require("./translate");
 const auth = require("./auth");
 const backup = require("./backup");
 const moderation = require("./moderation");
@@ -401,7 +403,7 @@ function serveMedia(req, res, urlPath) {
     const headers = {
       "Content-Type": MEDIA_MIME[stored[2]],
       "Accept-Ranges": "bytes",
-      "Cache-Control": "private, max-age=86400",
+      "Cache-Control": "private, max-age=2592000, immutable",
       "X-Content-Type-Options": "nosniff",
     };
     const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || ""));
@@ -903,6 +905,21 @@ function tooManyAttempts(ip) {
   return row.n > 8;
 }
 
+const translateUse = new Map();
+
+function translateLimited(badge) {
+  const now = Date.now();
+  const row = translateUse.get(String(badge)) || { n: 0, reset: now + 60 * 1000 };
+  if (now > row.reset) {
+    row.n = 0;
+    row.reset = now + 60 * 1000;
+  }
+  row.n += 1;
+  translateUse.set(String(badge), row);
+  if (translateUse.size > 5000) translateUse.forEach((value, key) => { if (now > value.reset) translateUse.delete(key); });
+  return row.n > 30;
+}
+
 function codesMatch(person, badge, code) {
   const actual = Buffer.from(String(person.check || ""));
   const expected = Buffer.from(codeHash(badge, code));
@@ -1016,6 +1033,8 @@ const MIME = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".txt": "text/plain; charset=utf-8",
   ".svg": "image/svg+xml",
   ".json": "application/json; charset=utf-8",
   ".webmanifest": "application/manifest+json; charset=utf-8",
@@ -2113,12 +2132,24 @@ function publicList(ideas, voter) {
   return ideas.filter((idea) => visibleTo(idea, voter)).map((idea) => publicIdea(idea, voter));
 }
 
+function acceptsGzip(req) {
+  return Boolean(req) && /\bgzip\b/.test(String(req.headers["accept-encoding"] || ""));
+}
+
 function send(res, code, data) {
-  res.writeHead(code, {
+  const headers = {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
-  });
-  res.end(JSON.stringify(data));
+    Vary: "Accept-Encoding",
+  };
+  let body = Buffer.from(JSON.stringify(data));
+  if (body.length > 1400 && acceptsGzip(res.req)) {
+    body = zlib.gzipSync(body, { level: 5 });
+    headers["Content-Encoding"] = "gzip";
+  }
+  headers["Content-Length"] = body.length;
+  res.writeHead(code, headers);
+  res.end(body);
 }
 
 function readBody(req) {
@@ -2565,6 +2596,44 @@ async function handleApi(req, res, urlPath, params) {
       needSetup: true,
       ticket: auth.signTicket(badge, "2fa", SETUP_TICKET_MS),
     });
+    return;
+  }
+
+  if (req.method === "POST" && urlPath === "/api/translate") {
+    let body;
+    try {
+      body = await readBody(req);
+    } catch {
+      send(res, 400, { error: "bad_json" });
+      return;
+    }
+    const person = personFromToken(body.token);
+    if (!person) {
+      send(res, 401, { error: "employee_required" });
+      return;
+    }
+    if (!translator.enabled()) {
+      send(res, 503, { error: "translate_off" });
+      return;
+    }
+    const from = body.from === "en" ? "en" : "ar";
+    const to = body.to === "ar" ? "ar" : "en";
+    const text = typeof body.text === "string" ? body.text.trim() : "";
+    if (from === to || !text || text.length > translator.MAX_TEXT) {
+      send(res, 400, { error: "bad_text" });
+      return;
+    }
+    if (translateLimited(person.badge)) {
+      res.setHeader("Retry-After", "60");
+      send(res, 429, { error: "limited" });
+      return;
+    }
+    try {
+      const translated = await translator.translate(text, from, to);
+      send(res, translated ? 200 : 503, translated ? { text: translated, from, to } : { error: "translate_failed" });
+    } catch {
+      send(res, 503, { error: "translate_failed" });
+    }
     return;
   }
 
@@ -3724,17 +3793,52 @@ function serveStatic(req, res, urlPath) {
     res.end("Forbidden");
     return;
   }
-  fs.readFile(resolved, (error, data) => {
-    if (error) {
+  fs.stat(resolved, (statError, info) => {
+    if (statError || !info.isFile()) {
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("Not found");
       return;
     }
-    const type = MIME[path.extname(resolved).toLowerCase()] || "application/octet-stream";
-    res.writeHead(200, requested === "/sw.js" ? { "Content-Type": type, "Cache-Control": "no-cache" } : { "Content-Type": type });
-    res.end(data);
+    const ext = path.extname(resolved).toLowerCase();
+    const type = MIME[ext] || "application/octet-stream";
+    const etag = `"${info.size.toString(36)}-${Math.floor(info.mtimeMs).toString(36)}"`;
+    const headers = { "Content-Type": type, "Cache-Control": "no-cache", ETag: etag, Vary: "Accept-Encoding" };
+    if (req.headers["if-none-match"] === etag) {
+      res.writeHead(304, headers);
+      res.end();
+      return;
+    }
+    const accept = String(req.headers["accept-encoding"] || "");
+    const encoding = COMPRESSIBLE.has(ext) ? (/\bbr\b/.test(accept) ? "br" : /\bgzip\b/.test(accept) ? "gzip" : "") : "";
+    const cacheKey = `${resolved}|${encoding}`;
+    const cached = staticCache.get(cacheKey);
+    const reply = (body) => {
+      if (encoding) headers["Content-Encoding"] = encoding;
+      headers["Content-Length"] = body.length;
+      res.writeHead(200, headers);
+      res.end(req.method === "HEAD" ? undefined : body);
+    };
+    if (cached && cached.etag === etag) {
+      reply(cached.body);
+      return;
+    }
+    fs.readFile(resolved, (error, data) => {
+      if (error) {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Not found");
+        return;
+      }
+      let body = data;
+      if (encoding === "br") body = zlib.brotliCompressSync(data, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 9, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: data.length } });
+      else if (encoding === "gzip") body = zlib.gzipSync(data, { level: 9 });
+      if (data.length < 4 * 1024 * 1024) staticCache.set(cacheKey, { etag, body });
+      reply(body);
+    });
   });
 }
+
+const COMPRESSIBLE = new Set([".html", ".css", ".js", ".mjs", ".svg", ".json", ".webmanifest", ".txt"]);
+const staticCache = new Map();
 
 function announcementsFor(badge) {
   const rows = readJson(ANNOUNCE, []);
@@ -3759,7 +3863,7 @@ function markAnnouncementsRead(badge) {
   writeJson(SEEN, seen);
 }
 
-const API_PATHS = new Set(["/api/ideas", "/api/login", "/api/login-2fa", "/api/2fa", "/api/email", "/api/register", "/api/forgot", "/api/password", "/api/logout-all", "/api/terms", "/api/sessions", "/api/views", "/api/spark", "/api/session", "/api/notifications", "/api/notifications/read", "/api/social"]);
+const API_PATHS = new Set(["/api/ideas", "/api/login", "/api/login-2fa", "/api/2fa", "/api/email", "/api/register", "/api/forgot", "/api/password", "/api/logout-all", "/api/terms", "/api/sessions", "/api/views", "/api/translate", "/api/spark", "/api/session", "/api/notifications", "/api/notifications/read", "/api/social"]);
 
 function securityHeaders(res) {
   res.setHeader("Content-Security-Policy", CSP);
@@ -3826,6 +3930,7 @@ server.listen(PORT, HOST, () => {
   ensureDailySparks();
   console.log(`BQ Connect: http://${HOST}:${PORT}`);
   if (!auth.mailConfigured()) console.log("Password email is off: add the Gmail address and app password to data/smtp.json");
+  setTimeout(() => translator.warm(), 3000);
   setInterval(ensureDailySparks, 15 * 60 * 1000);
   remindEvents();
   setInterval(remindEvents, 60 * 1000);
