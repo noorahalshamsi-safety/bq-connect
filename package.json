@@ -1,0 +1,14 @@
+{
+  "name": "bq-connect",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "replit": "node start.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@replit/object-storage": "^1.0.0"
+  }
+}

@@ -1,0 +1,17 @@
+modules = ["nodejs-22"]
+run = "node start.js"
+entrypoint = "server.js"
+hidden = [".config", "node_modules", "package-lock.json"]
+
+[env]
+PORT = "4173"
+HOST = "0.0.0.0"
+
+[[ports]]
+localPort = 4173
+externalPort = 80
+
+[deployment]
+deploymentTarget = "vm"
+build = ["npm", "install", "--omit=dev"]
+run = ["node", "start.js"]
