@@ -352,6 +352,97 @@ function camDrawLive(context, x, y, w, h, mirror) {
     context.drawImage(camLive, sx, sy, sw, sh, 0, 0, w, h);
   } else context.drawImage(camLive, sx, sy, sw, sh, x, y, w, h);
   context.restore();
+  canvasFilterFallback(context, camLiveFilter(), x, y, w, h);
+}
+
+// Safari ignores CanvasRenderingContext2D.filter, so filters are baked in pixel by pixel there.
+const CANVAS_FILTER_OK = (() => {
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1;
+    canvas.height = 1;
+    const context = canvas.getContext("2d");
+    context.filter = "invert(1)";
+    context.fillStyle = "#000";
+    context.fillRect(0, 0, 1, 1);
+    return context.getImageData(0, 0, 1, 1).data[0] > 128;
+  } catch {
+    return false;
+  }
+})();
+const canvasFilterMatrices = new Map();
+
+function saturateMatrix(s) {
+  return [
+    0.213 + 0.787 * s, 0.715 - 0.715 * s, 0.072 - 0.072 * s, 0,
+    0.213 - 0.213 * s, 0.715 + 0.285 * s, 0.072 - 0.072 * s, 0,
+    0.213 - 0.213 * s, 0.715 - 0.715 * s, 0.072 + 0.928 * s, 0,
+  ];
+}
+
+function canvasFilterMatrix(css) {
+  if (canvasFilterMatrices.has(css)) return canvasFilterMatrices.get(css);
+  let matrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];
+  const then = (next) => {
+    const out = [];
+    for (let row = 0; row < 3; row += 1) {
+      for (let col = 0; col < 4; col += 1) {
+        let sum = col === 3 ? next[row * 4 + 3] : 0;
+        for (let k = 0; k < 3; k += 1) sum += next[row * 4 + k] * matrix[k * 4 + col];
+        out.push(sum);
+      }
+    }
+    matrix = out;
+  };
+  for (const [, name, raw, unit] of css.matchAll(/([a-z-]+)\(\s*(-?[\d.]+)(deg|%)?\s*\)/g)) {
+    const v = unit === "%" ? Number(raw) / 100 : Number(raw);
+    if (name === "brightness") then([v, 0, 0, 0, 0, v, 0, 0, 0, 0, v, 0]);
+    else if (name === "contrast") {
+      const o = 127.5 * (1 - v);
+      then([v, 0, 0, o, 0, v, 0, o, 0, 0, v, o]);
+    } else if (name === "saturate") then(saturateMatrix(v));
+    else if (name === "grayscale") then(saturateMatrix(1 - Math.min(1, v)));
+    else if (name === "sepia") {
+      const s = 1 - Math.min(1, v);
+      then([
+        0.393 + 0.607 * s, 0.769 - 0.769 * s, 0.189 - 0.189 * s, 0,
+        0.349 - 0.349 * s, 0.686 + 0.314 * s, 0.168 - 0.168 * s, 0,
+        0.272 - 0.272 * s, 0.534 - 0.534 * s, 0.131 + 0.869 * s, 0,
+      ]);
+    } else if (name === "hue-rotate") {
+      const turn = (v * Math.PI) / 180;
+      const c = Math.cos(turn);
+      const s = Math.sin(turn);
+      then([
+        0.213 + c * 0.787 - s * 0.213, 0.715 - c * 0.715 - s * 0.715, 0.072 - c * 0.072 + s * 0.928, 0,
+        0.213 - c * 0.213 + s * 0.143, 0.715 + c * 0.285 + s * 0.14, 0.072 - c * 0.072 - s * 0.283, 0,
+        0.213 - c * 0.213 - s * 0.787, 0.715 - c * 0.715 + s * 0.715, 0.072 + c * 0.928 + s * 0.072, 0,
+      ]);
+    }
+  }
+  canvasFilterMatrices.set(css, matrix);
+  return matrix;
+}
+
+function canvasFilterFallback(context, css, x, y, w, h) {
+  if (CANVAS_FILTER_OK || !css || css === "none") return;
+  const m = canvasFilterMatrix(css);
+  let image;
+  try {
+    image = context.getImageData(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+  } catch {
+    return;
+  }
+  const d = image.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i];
+    const g = d[i + 1];
+    const b = d[i + 2];
+    d[i] = m[0] * r + m[1] * g + m[2] * b + m[3];
+    d[i + 1] = m[4] * r + m[5] * g + m[6] * b + m[7];
+    d[i + 2] = m[8] * r + m[9] * g + m[10] * b + m[11];
+  }
+  context.putImageData(image, Math.round(x), Math.round(y));
 }
 
 function canvasBlob(canvas) {

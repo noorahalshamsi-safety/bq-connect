@@ -223,6 +223,7 @@ function drawTurned(context, picture, width, height, turn, filter) {
   context.rotate((turn * Math.PI) / 180);
   context.drawImage(picture, 0, 0, sourceWidth, sourceHeight, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
   context.restore();
+  canvasFilterFallback(context, filter, 0, 0, width, height);
 }
 
 async function renderPhoto(file, edits) {
@@ -259,6 +260,7 @@ function videoEditOptions(kit, edits, width, height) {
       context.filter = filter;
       sample.draw(context, 0, 0, width, height);
       context.filter = "none";
+      canvasFilterFallback(context, filter, 0, 0, width, height);
       if (overlay) context.drawImage(overlay, 0, 0);
       return new kit.VideoSample(canvas, { timestamp: sample.timestamp, duration: sample.duration });
     };

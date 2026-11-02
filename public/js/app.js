@@ -3189,7 +3189,13 @@ function renderThread() {
     empty.textContent = t("noComments");
     replies.appendChild(empty);
   } else {
-    list.forEach((comment) => replies.appendChild(commentCard(comment)));
+    const ids = new Set(list.map((comment) => comment.id));
+    const nested = (comment) => Boolean(comment.parentId && ids.has(comment.parentId));
+    const onReply = idea.canReply !== false ? (comment) => replyToComment(comment) : null;
+    list.filter((comment) => !nested(comment)).forEach((comment) => {
+      replies.appendChild(commentCard(comment, onReply));
+      list.filter((child) => nested(child) && child.parentId === comment.id).forEach((child) => replies.appendChild(commentCard(child, onReply, true)));
+    });
   }
 
   const commentForm = document.createElement("form");
@@ -3212,7 +3218,27 @@ function renderThread() {
   replyingTo.className = "twd-replying";
   const replyName = document.createElement("b");
   replyName.textContent = bits.name;
-  replyingTo.append(`${t("twdReplyingTo")} `, replyName);
+  const replyCancel = document.createElement("button");
+  replyCancel.type = "button";
+  replyCancel.className = "twd-replying-x";
+  replyCancel.textContent = "×";
+  replyCancel.setAttribute("aria-label", t("twdReplyCancel"));
+  replyCancel.hidden = true;
+  replyingTo.append(`${t("twdReplyingTo")} `, replyName, replyCancel);
+  let replyTarget = null;
+  const replyToComment = (comment) => {
+    replyTarget = comment || null;
+    replyName.textContent = comment ? authorBits(comment).name : bits.name;
+    replyCancel.hidden = !comment;
+    if (!comment) return;
+    commentForm.classList.add("open");
+    commentForm.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    commentInput.focus({ preventScroll: true });
+  };
+  replyCancel.addEventListener("click", () => {
+    replyToComment(null);
+    commentInput.focus();
+  });
   const row = document.createElement("div");
   row.className = "twd-reply-row";
   const replyTools = document.createElement("div");
@@ -3325,7 +3351,7 @@ function renderThread() {
       return;
     }
     if (!(await termsCheck(text))) return;
-    const result = await addComment(idea.id, text, commentMedia);
+    const result = await addComment(idea.id, text, commentMedia, replyTarget && replyTarget.id);
     if (result === "verify") commentError.textContent = t("needVerify");
     else if (result === "terms") openTerms(true);
     else if (result === "closed") commentError.textContent = t("repliesClosed");
@@ -3383,10 +3409,10 @@ function statusLogNode(idea) {
   return section;
 }
 
-function commentCard(comment) {
+function commentCard(comment, onReply, nested) {
   const bits = authorBits(comment);
   const card = document.createElement("article");
-  card.className = "tw twr";
+  card.className = nested ? "tw twr twr-child" : "tw twr";
   const main = document.createElement("div");
   main.className = "tw-main";
   const head = document.createElement("header");
@@ -3406,6 +3432,14 @@ function commentCard(comment) {
   time.textContent = timeAgo(comment.createdAt);
   head.append(name, role, time);
   main.appendChild(head);
+  if (nested && comment.replyToName) {
+    const to = document.createElement("p");
+    to.className = "twd-replying twr-to";
+    const target = document.createElement("b");
+    target.textContent = comment.replyToName;
+    to.append(`${t("twdReplyingTo")} `, target);
+    main.appendChild(to);
+  }
   if (comment.text) {
     const text = document.createElement("p");
     text.className = "twr-text";
@@ -3417,6 +3451,17 @@ function commentCard(comment) {
     frame.className = "twr-media";
     frame.appendChild(postPhoto(comment.media, true));
     main.appendChild(frame);
+  }
+  if (onReply && comment.id) {
+    const answer = document.createElement("button");
+    answer.type = "button";
+    answer.className = "twr-answer";
+    answer.textContent = t("twdReply");
+    answer.addEventListener("click", (event) => {
+      event.stopPropagation();
+      onReply(comment);
+    });
+    main.appendChild(answer);
   }
   card.append(personLink(avatarNode(bits), authorPid(comment)), main);
   return card;
@@ -3732,7 +3777,7 @@ async function rateIdea(id, vote) {
   loadAlerts();
 }
 
-async function addComment(id, text, media) {
+async function addComment(id, text, media, replyTo) {
   if (!text && !media) return "failed";
   if (!selectedPerson || !selectedPerson.token) return "verify";
   const response = await fetch(`/api/ideas/${encodeURIComponent(id)}/comments`, {
@@ -3742,6 +3787,7 @@ async function addComment(id, text, media) {
       token: selectedPerson.token,
       text,
       media: media || "",
+      replyTo: replyTo || "",
       voter: voterId(),
     }),
   });
@@ -3874,6 +3920,7 @@ const NOTICE_ICONS = {
   repost: ICONS.repost,
   message: ICONS.reply,
   comment: ICONS.reply,
+  reply: ICONS.reply,
   status: "M9 18h6M10 21h4M12 3a6 6 0 0 1 3.5 10.9c-.7.5-1.1 1.2-1.2 2.1h-4.6c-.1-.9-.5-1.6-1.2-2.1A6 6 0 0 1 12 3z",
   mention: "M16 12a4 4 0 1 1-1.2-2.8M16 8v5.5a2.5 2.5 0 0 0 5 0V12a9 9 0 1 0-3.5 7.1",
   complaint: "M12 4 3.5 19h17zM12 10v4M12 16.5v.5",
@@ -3921,6 +3968,7 @@ function renderAlerts() {
       repost: "alertRepost",
       complaint: "alertComplaint",
       message: "alertMessage",
+      reply: "alertReply",
       announce: "alertAnnounce",
       report: note.text === "auto" ? "alertReportAuto" : "alertReport",
       hidden: "alertHidden",

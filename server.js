@@ -1393,12 +1393,17 @@ function exportCsv(kind, days) {
   return toCsv([header, ...list]);
 }
 
-function publicComment(comment) {
+function publicComment(comment, all) {
+  const list = Array.isArray(all) ? all : [];
+  const parent = comment.parentId ? list.find((item) => item.id === comment.parentId) : null;
+  const target = comment.replyTo ? list.find((item) => item.id === comment.replyTo) : null;
   return {
     id: comment.id,
     text: comment.text,
     media: safeMedia(comment.media),
     createdAt: comment.createdAt,
+    parentId: parent ? parent.id : "",
+    replyToName: parent && target ? target.name || "" : "",
     author: { name: comment.name || "", department: comment.department || "", position: comment.position || "", pid: comment.badge ? publicId(comment.badge) : "", photo: avatarOf(comment.badge), official: isOfficialBadge(comment.badge) },
   };
 }
@@ -2164,7 +2169,7 @@ function publicIdea(idea, voter) {
     views: viewsOf(idea.id),
     author: { name: idea.name || "", department: idea.department || "", position: idea.position || "", pid: idea.badge ? publicId(idea.badge) : "", photo: avatarOf(idea.badge), official: isOfficialBadge(idea.badge) },
     rating: ratingSummary(idea, voter),
-    comments: (Array.isArray(idea.comments) ? idea.comments : []).map(publicComment),
+    comments: (Array.isArray(idea.comments) ? idea.comments : []).map((comment, index, all) => publicComment(comment, all)),
     pinned: PINNABLE.has(type) && Boolean(idea.pinned),
     canPin: pinner,
     ack: type === "announcement" ? { mine: acks.includes(String(voter)), count: acks.length, total: pinner ? audienceCount() : 0 } : null,
@@ -3186,8 +3191,9 @@ async function handleApi(req, res, urlPath, params) {
             send(res, 404, { error: "not_found" });
             return;
           }
-          removeStoredMedia(comment.media);
-          idea.comments = comments.filter((item) => item !== comment);
+          const gone = comments.filter((item) => item === comment || item.parentId === comment.id);
+          gone.forEach((item) => removeStoredMedia(item.media));
+          idea.comments = comments.filter((item) => !gone.includes(item));
           writeIdeas(ideas);
           auth.audit("admin_delete_comment", comment.badge ? publicId(comment.badge) : "unknown");
         }
@@ -3695,9 +3701,15 @@ async function handleApi(req, res, urlPath, params) {
         send(res, 400, { error: "text_required" });
         return;
       }
-      if (screenText(res, person, "comment", [text])) return;
       const comments = Array.isArray(ideas[index].comments) ? ideas[index].comments : [];
-      comments.push({
+      const target = body.replyTo ? comments.find((item) => item.id === String(body.replyTo)) : null;
+      if (body.replyTo && !target) {
+        send(res, 404, { error: "comment_not_found" });
+        return;
+      }
+      if (screenText(res, person, "comment", [text])) return;
+      const parent = target && target.parentId && comments.some((item) => item.id === target.parentId) ? target.parentId : target ? target.id : "";
+      const comment = {
         id: crypto.randomUUID(),
         text,
         media,
@@ -3706,17 +3718,23 @@ async function handleApi(req, res, urlPath, params) {
         department: person.department,
         position: person.position,
         createdAt: new Date().toISOString(),
-      });
+      };
+      if (target) {
+        comment.parentId = parent;
+        comment.replyTo = target.id;
+      }
+      comments.push(comment);
       ideas[index].comments = comments;
       writeIdeas(ideas);
-      pushNote(ideas[index].badge, {
-        type: "comment",
+      const note = {
         ideaId: ideas[index].id,
         ideaTitle: ideas[index].title || "",
         actorName: person.name,
         actorBadge: person.badge,
         text: text.slice(0, 140),
-      });
+      };
+      if (target) pushNote(target.badge, { ...note, type: "reply" });
+      if (!target || String(target.badge) !== String(ideas[index].badge)) pushNote(ideas[index].badge, { ...note, type: "comment" });
       const voter = String(person.badge);
       send(res, 201, { idea: publicIdea(ideas[index], voter), ideas: publicList(ideas, voter), stats: statsFor(ideas) });
       return;

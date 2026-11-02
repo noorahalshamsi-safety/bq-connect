@@ -4313,4 +4313,11 @@ dialog#compose:not([data-kind="idea"]) .row-input { flex-basis: 100%; margin: 0.
 .twr-text { margin: 0; font-size: 0.95rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .twr-media { margin-top: 0.35rem; overflow: hidden; border: 1px solid var(--line); border-radius: 16px; }
 .twr-media .post-photo { display: block; width: 100%; max-height: 360px; margin: 0; border-radius: 0; object-fit: cover; }
+.twr-child { grid-template-columns: 32px minmax(0, 1fr); padding-inline-start: 3.6rem; }
+.twr-child > .avatar { width: 32px; height: 32px; }
+.twr .twr-to { display: block; font-size: 0.82rem; }
+.twr-answer { align-self: flex-start; padding: 0.15rem 0; border: 0; background: transparent; color: var(--muted); font-size: 0.82rem; font-weight: 700; cursor: pointer; }
+.twr-answer:hover { color: var(--red); }
+.twd-replying-x { display: inline-grid; place-items: center; width: 22px; height: 22px; margin-inline-start: 0.4rem; padding: 0; border: 0; border-radius: 50%; background: var(--line); color: var(--ink); font-size: 0.95rem; line-height: 1; vertical-align: middle; cursor: pointer; }
+.twd-replying-x[hidden] { display: none; }
 .twd-replies > .empty { padding: 1.4rem 1rem; color: var(--muted); text-align: center; }

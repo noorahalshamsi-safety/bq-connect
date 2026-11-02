@@ -1,4 +1,4 @@
-const CACHE = "bq-shell-v47";
+const CACHE = "bq-shell-v48";
 const SHELL = [
   "/",
   "/css/app.css",
