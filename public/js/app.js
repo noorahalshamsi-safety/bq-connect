@@ -1541,6 +1541,9 @@ let sending = false;
 let selectedPerson = null;
 let sortMode = "new";
 let openId = null;
+let openComment = null;
+let threadWrite = false;
+let threadJump = false;
 let view = "home";
 let backView = "home";
 let profileTab = "grid";
@@ -2955,6 +2958,7 @@ function postMetaLine(idea, bits) {
 
 function openThread(id) {
   openId = id;
+  openComment = null;
   SCREEN_IDS.forEach((selector) => {
     const node = document.querySelector(selector);
     if (node) node.hidden = true;
@@ -2968,6 +2972,7 @@ function openThread(id) {
 
 function closeThread() {
   openId = null;
+  openComment = null;
   if (location.hash.startsWith("#idea=")) history.replaceState(null, "", location.pathname + location.search);
   showView(view);
 }
@@ -2993,6 +2998,7 @@ function showView(next) {
   }
   view = next;
   openId = null;
+  openComment = null;
   document.body.dataset.screen = next === "hub" ? "hub" : next;
   if (location.hash.startsWith("#idea=")) history.replaceState(null, "", location.pathname + location.search);
   SCREEN_IDS.forEach((id) => {
@@ -3180,21 +3186,41 @@ function renderThread() {
     tools.append(state, note);
   }
 
+  const list = Array.isArray(idea.comments) ? idea.comments : [];
+  const byId = new Map(list.map((comment) => [comment.id, comment]));
+  const parentOf = (comment) => (comment.parentId && byId.has(comment.parentId) ? comment.parentId : "");
+  const focus = openComment ? byId.get(openComment) || null : null;
+  if (!focus) openComment = null;
+  const canAnswer = idea.canReply !== false;
+  const goTo = (comment, write) => {
+    openComment = comment ? comment.id : null;
+    threadWrite = Boolean(write);
+    threadJump = true;
+    renderThread();
+  };
+  const actions = { open: (comment) => goTo(comment), reply: canAnswer ? (comment) => goTo(comment, true) : null };
   const replies = document.createElement("div");
   replies.className = "replies twd-replies";
-  const list = Array.isArray(idea.comments) ? idea.comments : [];
-  if (!list.length && idea.canReply !== false) {
+  const children = list.filter((comment) => parentOf(comment) === (focus ? focus.id : ""));
+  if (!children.length && canAnswer && !focus) {
     const empty = document.createElement("p");
     empty.className = "empty";
     empty.textContent = t("noComments");
     replies.appendChild(empty);
   } else {
-    const ids = new Set(list.map((comment) => comment.id));
-    const nested = (comment) => Boolean(comment.parentId && ids.has(comment.parentId));
-    const onReply = idea.canReply !== false ? (comment) => replyToComment(comment) : null;
-    list.filter((comment) => !nested(comment)).forEach((comment) => {
-      replies.appendChild(commentCard(comment, onReply));
-      list.filter((child) => nested(child) && child.parentId === comment.id).forEach((child) => replies.appendChild(commentCard(child, onReply, true)));
+    children.forEach((comment) => replies.appendChild(commentCard(comment, actions)));
+  }
+  let chain = null;
+  let focusCard = null;
+  if (focus) {
+    const path = [];
+    for (let node = focus; node && path.length <= list.length; node = byId.get(parentOf(node))) path.unshift(node);
+    chain = document.createElement("div");
+    chain.className = "twr-chain";
+    path.forEach((comment) => {
+      const card = commentCard(comment, comment === focus ? { reply: actions.reply, focus: true } : { ...actions, linked: true });
+      if (comment === focus) focusCard = card;
+      chain.appendChild(card);
     });
   }
 
@@ -3207,7 +3233,8 @@ function renderThread() {
   commentInput.setAttribute("aria-label", t("twdReplyPh"));
   replyFocus.addEventListener("click", (event) => {
     event.stopPropagation();
-    commentInput.focus();
+    if (focus) goTo(null, true);
+    else commentInput.focus();
   });
   let commentMedia = "";
   const preview = document.createElement("img");
@@ -3217,28 +3244,8 @@ function renderThread() {
   const replyingTo = document.createElement("p");
   replyingTo.className = "twd-replying";
   const replyName = document.createElement("b");
-  replyName.textContent = bits.name;
-  const replyCancel = document.createElement("button");
-  replyCancel.type = "button";
-  replyCancel.className = "twd-replying-x";
-  replyCancel.textContent = "×";
-  replyCancel.setAttribute("aria-label", t("twdReplyCancel"));
-  replyCancel.hidden = true;
-  replyingTo.append(`${t("twdReplyingTo")} `, replyName, replyCancel);
-  let replyTarget = null;
-  const replyToComment = (comment) => {
-    replyTarget = comment || null;
-    replyName.textContent = comment ? authorBits(comment).name : bits.name;
-    replyCancel.hidden = !comment;
-    if (!comment) return;
-    commentForm.classList.add("open");
-    commentForm.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    commentInput.focus({ preventScroll: true });
-  };
-  replyCancel.addEventListener("click", () => {
-    replyToComment(null);
-    commentInput.focus();
-  });
+  replyName.textContent = focus ? authorBits(focus).name : bits.name;
+  replyingTo.append(`${t("twdReplyingTo")} `, replyName);
   const row = document.createElement("div");
   row.className = "twd-reply-row";
   const replyTools = document.createElement("div");
@@ -3351,7 +3358,7 @@ function renderThread() {
       return;
     }
     if (!(await termsCheck(text))) return;
-    const result = await addComment(idea.id, text, commentMedia, replyTarget && replyTarget.id);
+    const result = await addComment(idea.id, text, commentMedia, focus && focus.id);
     if (result === "verify") commentError.textContent = t("needVerify");
     else if (result === "terms") openTerms(true);
     else if (result === "closed") commentError.textContent = t("repliesClosed");
@@ -3360,9 +3367,10 @@ function renderThread() {
   });
 
   body.appendChild(post);
-  if (tools.childElementCount) body.appendChild(tools);
-  const history = statusLogNode(idea);
+  if (!focus && tools.childElementCount) body.appendChild(tools);
+  const history = focus ? null : statusLogNode(idea);
   if (history) body.appendChild(history);
+  if (chain) body.appendChild(chain);
   if (idea.canReply === false) {
     const closed = document.createElement("p");
     closed.className = "replies-closed";
@@ -3373,6 +3381,28 @@ function renderThread() {
   }
   body.appendChild(replies);
   queueView(idea);
+  const write = threadWrite && canAnswer;
+  const jump = threadJump;
+  threadWrite = false;
+  threadJump = false;
+  if (write) {
+    commentForm.classList.add("open");
+    commentInput.focus({ preventScroll: true });
+  }
+  if (jump) requestAnimationFrame(() => (focusCard || (write ? commentForm : post)).scrollIntoView({ block: focusCard ? "center" : "start" }));
+}
+
+function threadBack() {
+  const idea = ideas.find((item) => item.id === openId) || (typeof admPeek !== "undefined" ? admPeek.get(openId) : null);
+  const focus = openComment && idea && Array.isArray(idea.comments) ? idea.comments.find((comment) => comment.id === openComment) : null;
+  if (!focus) {
+    closeThread();
+    return;
+  }
+  const parent = focus.parentId && idea.comments.find((comment) => comment.id === focus.parentId);
+  openComment = parent ? parent.id : null;
+  threadJump = true;
+  renderThread();
 }
 
 function statusEntryNode(entry, compact) {
@@ -3409,10 +3439,11 @@ function statusLogNode(idea) {
   return section;
 }
 
-function commentCard(comment, onReply, nested) {
+function commentCard(comment, options) {
+  const opts = options || {};
   const bits = authorBits(comment);
   const card = document.createElement("article");
-  card.className = nested ? "tw twr twr-child" : "tw twr";
+  card.className = ["tw", "twr", opts.focus ? "twr-focus" : "", opts.linked ? "twr-linked" : "", opts.open ? "twr-open" : ""].filter(Boolean).join(" ");
   const main = document.createElement("div");
   main.className = "tw-main";
   const head = document.createElement("header");
@@ -3432,7 +3463,7 @@ function commentCard(comment, onReply, nested) {
   time.textContent = timeAgo(comment.createdAt);
   head.append(name, role, time);
   main.appendChild(head);
-  if (nested && comment.replyToName) {
+  if (opts.focus && comment.replyToName) {
     const to = document.createElement("p");
     to.className = "twd-replying twr-to";
     const target = document.createElement("b");
@@ -3452,16 +3483,42 @@ function commentCard(comment, onReply, nested) {
     frame.appendChild(postPhoto(comment.media, true));
     main.appendChild(frame);
   }
-  if (onReply && comment.id) {
+  const count = Number(comment.replies) || 0;
+  const foot = document.createElement("div");
+  foot.className = "twr-foot";
+  if (opts.reply && comment.id) {
     const answer = document.createElement("button");
     answer.type = "button";
     answer.className = "twr-answer";
     answer.textContent = t("twdReply");
     answer.addEventListener("click", (event) => {
       event.stopPropagation();
-      onReply(comment);
+      opts.reply(comment);
     });
-    main.appendChild(answer);
+    foot.appendChild(answer);
+  }
+  if (count && opts.open) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "twr-answer twr-more";
+    more.textContent = tf("twrShowReplies", { n: count });
+    more.addEventListener("click", (event) => {
+      event.stopPropagation();
+      opts.open(comment);
+    });
+    foot.appendChild(more);
+  } else if (count) {
+    const label = document.createElement("span");
+    label.className = "twr-count";
+    label.textContent = tf("twrReplyCount", { n: count });
+    foot.appendChild(label);
+  }
+  if (foot.childElementCount) main.appendChild(foot);
+  if (opts.open) {
+    card.addEventListener("click", (event) => {
+      if (event.target.closest("button, a, img, video, .person-link")) return;
+      opts.open(comment);
+    });
   }
   card.append(personLink(avatarNode(bits), authorPid(comment)), main);
   return card;
@@ -4852,7 +4909,7 @@ document.querySelector("#idea-back").addEventListener("click", () => advanceIdea
     paintStrength();
   });
 });
-document.querySelector("#detail-back").addEventListener("click", closeThread);
+document.querySelector("#detail-back").addEventListener("click", threadBack);
 document.querySelector("#people-close").addEventListener("click", () => document.querySelector("#people").close());
 document.querySelector("#people").addEventListener("click", (event) => {
   if (event.target.id === "people") document.querySelector("#people").close();

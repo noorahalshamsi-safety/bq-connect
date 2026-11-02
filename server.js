@@ -1393,17 +1393,46 @@ function exportCsv(kind, days) {
   return toCsv([header, ...list]);
 }
 
-function publicComment(comment, all) {
+function commentParentId(comment, byId) {
+  return [comment.replyTo, comment.parentId].find((id) => id && byId.has(id)) || "";
+}
+
+function commentThread(comment, list) {
+  const byId = new Map(list.map((item) => [item.id, item]));
+  const ids = new Set([comment.id]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    list.forEach((item) => {
+      if (!ids.has(item.id) && ids.has(commentParentId(item, byId))) {
+        ids.add(item.id);
+        grew = true;
+      }
+    });
+  }
+  return list.filter((item) => ids.has(item.id));
+}
+
+function publicComments(all) {
   const list = Array.isArray(all) ? all : [];
-  const parent = comment.parentId ? list.find((item) => item.id === comment.parentId) : null;
-  const target = comment.replyTo ? list.find((item) => item.id === comment.replyTo) : null;
+  const byId = new Map(list.map((item) => [item.id, item]));
+  const parents = list.map((item) => commentParentId(item, byId));
+  const counts = new Map();
+  parents.forEach((id) => {
+    if (id) counts.set(id, (counts.get(id) || 0) + 1);
+  });
+  return list.map((comment, index) => publicComment(comment, byId.get(parents[index]), counts.get(comment.id) || 0));
+}
+
+function publicComment(comment, parent, replies) {
   return {
     id: comment.id,
     text: comment.text,
     media: safeMedia(comment.media),
     createdAt: comment.createdAt,
     parentId: parent ? parent.id : "",
-    replyToName: parent && target ? target.name || "" : "",
+    replyToName: parent ? parent.name || "" : "",
+    replies: replies || 0,
     author: { name: comment.name || "", department: comment.department || "", position: comment.position || "", pid: comment.badge ? publicId(comment.badge) : "", photo: avatarOf(comment.badge), official: isOfficialBadge(comment.badge) },
   };
 }
@@ -2169,7 +2198,7 @@ function publicIdea(idea, voter) {
     views: viewsOf(idea.id),
     author: { name: idea.name || "", department: idea.department || "", position: idea.position || "", pid: idea.badge ? publicId(idea.badge) : "", photo: avatarOf(idea.badge), official: isOfficialBadge(idea.badge) },
     rating: ratingSummary(idea, voter),
-    comments: (Array.isArray(idea.comments) ? idea.comments : []).map((comment, index, all) => publicComment(comment, all)),
+    comments: publicComments(idea.comments),
     pinned: PINNABLE.has(type) && Boolean(idea.pinned),
     canPin: pinner,
     ack: type === "announcement" ? { mine: acks.includes(String(voter)), count: acks.length, total: pinner ? audienceCount() : 0 } : null,
@@ -3191,7 +3220,7 @@ async function handleApi(req, res, urlPath, params) {
             send(res, 404, { error: "not_found" });
             return;
           }
-          const gone = comments.filter((item) => item === comment || item.parentId === comment.id);
+          const gone = commentThread(comment, comments);
           gone.forEach((item) => removeStoredMedia(item.media));
           idea.comments = comments.filter((item) => !gone.includes(item));
           writeIdeas(ideas);
@@ -3708,7 +3737,6 @@ async function handleApi(req, res, urlPath, params) {
         return;
       }
       if (screenText(res, person, "comment", [text])) return;
-      const parent = target && target.parentId && comments.some((item) => item.id === target.parentId) ? target.parentId : target ? target.id : "";
       const comment = {
         id: crypto.randomUUID(),
         text,
@@ -3719,10 +3747,7 @@ async function handleApi(req, res, urlPath, params) {
         position: person.position,
         createdAt: new Date().toISOString(),
       };
-      if (target) {
-        comment.parentId = parent;
-        comment.replyTo = target.id;
-      }
+      if (target) comment.parentId = target.id;
       comments.push(comment);
       ideas[index].comments = comments;
       writeIdeas(ideas);
