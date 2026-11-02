@@ -46,6 +46,7 @@ let camHolding = false;
 let camTick = 0;
 let camStarted = 0;
 let camBlob = null;
+let camEdits = null;
 let camUrl = "";
 let camSending = false;
 let camBusy = false;
@@ -310,6 +311,28 @@ function camClearReview() {
   if (camUrl) URL.revokeObjectURL(camUrl);
   camUrl = "";
   camBlob = null;
+  camEdits = null;
+  camPaintEdits();
+}
+
+function camPaintEdits() {
+  const filter = camEdits && camEdits.filter ? CAM_FILTERS[camEdits.filter].css : "";
+  camShot.style.filter = filter;
+  camClip.style.filter = filter;
+  if (camClip.src) camClip.muted = Boolean(camEdits && camEdits.mute);
+  document.querySelector("#cam-edit").classList.toggle("on", mediaEdited(camEdits));
+}
+
+async function camEditReview() {
+  if (!camBlob || camSending) return;
+  camClip.pause();
+  const edits = await openMediaEditor(camBlob, camEdits);
+  if (edits && camBlob) {
+    camEdits = edits;
+    camPaintEdits();
+    if (mediaEdited(edits)) camToast(t("meSaved"));
+  }
+  if (!camClip.hidden && camClip.src) camClip.play().catch(() => {});
 }
 
 function openStoryCamera(mode) {
@@ -686,7 +709,7 @@ async function camShare() {
   share.disabled = true;
   camError.textContent = t("bqUploading");
   try {
-    const media = await sendMediaFile(blob, camError);
+    const media = await sendMediaFile(blob, camError, camEdits);
     if (camMode === "story") {
       await saveIdea({
         token: selectedPerson.token,
@@ -711,7 +734,7 @@ async function camShare() {
       paintIdeaStudio();
     }
   } catch (error) {
-    camError.textContent = error.message === "big" ? t("bqVideoBig") : error.message === "offensive" ? t("conductBlocked") : t("bqUploadFail");
+    camError.textContent = error.message === "big" ? t("bqVideoBig") : error.message === "offensive" ? t("conductBlocked") : error.message === "edit" ? t("meFailed") : t("bqUploadFail");
   } finally {
     camSending = false;
     share.disabled = false;
@@ -818,12 +841,21 @@ document.querySelector("#cam-file").addEventListener("change", async (event) => 
   event.target.removeAttribute("capture");
   if (!file) return;
   const problem = await mediaFileError(file);
-  if (problem) {
+  let edits = null;
+  if (problem === "bqVideoLong" && (await videoCompressor())) {
+    edits = await openMediaEditor(file);
+    if (!edits) return;
+  } else if (problem) {
     camToast(t(problem));
     return;
   }
   camShowReview(file);
+  if (edits) {
+    camEdits = edits;
+    camPaintEdits();
+  }
 });
+document.querySelector("#cam-edit").addEventListener("click", camEditReview);
 document.querySelector("#cam-retake").addEventListener("click", () => {
   camClearReview();
   camCaptureMode();
@@ -854,5 +886,5 @@ camStage.addEventListener("pointerup", (event) => {
   paintCamTools();
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && !storyCam.hidden) closeStoryCamera();
+  if (event.key === "Escape" && !storyCam.hidden && !document.querySelector("#media-edit").open) closeStoryCamera();
 });

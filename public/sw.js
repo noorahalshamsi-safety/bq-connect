@@ -1,10 +1,11 @@
-const CACHE = "bq-shell-v45";
+const CACHE = "bq-shell-v46";
 const SHELL = [
   "/",
   "/css/app.css",
   "/js/boot.js",
   "/js/app.js",
   "/js/camera.js",
+  "/js/editor.js",
   "/js/profile.js",
   "/js/extras.js",
   "/js/feed.js",

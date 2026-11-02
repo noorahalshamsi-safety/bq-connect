@@ -1159,6 +1159,7 @@
         <p class="cam-error" id="cam-error" role="alert" dir="auto"></p>
         <div class="cam-review-row">
           <button type="button" class="cam-retake" id="cam-retake"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7M4 4.5v4h4"/></svg><span data-i18n="bqCamRetake">إعادة</span></button>
+          <button type="button" class="cam-retake cam-edit" id="cam-edit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16v4z"/><path d="m13.5 6.5 4 4"/></svg><span data-i18n="meEdit">تعديل</span></button>
           <button type="button" class="cam-share" id="cam-share"><span class="avatar" id="cam-avatar"></span><span id="cam-share-label" data-i18n="bqYourStory">قصتك</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
         </div>
       </div>
@@ -1176,8 +1177,32 @@
     <input id="cam-file" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/webm,video/quicktime" hidden>
   </div>
 
+  <dialog class="media-edit" id="media-edit" aria-labelledby="me-title">
+    <header class="me-top">
+      <button type="button" class="me-icon" id="me-cancel" data-i18n-aria="igCancel" aria-label="إلغاء"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      <h2 id="me-title" data-i18n="meEdit">تعديل</h2>
+      <button type="button" class="me-done" id="me-done" data-i18n="meDone">تم</button>
+    </header>
+    <div class="me-stage" id="me-stage">
+      <div class="me-frame" id="me-frame">
+        <canvas id="me-base"></canvas>
+        <video id="me-video" playsinline loop hidden></video>
+        <canvas id="me-layer"></canvas>
+      </div>
+    </div>
+    <div class="me-panel" id="me-panel"></div>
+    <nav class="me-tools" id="me-tools">
+      <button type="button" data-me-tool="filter"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="9" r="5.5"/><circle cx="15" cy="9" r="5.5"/><circle cx="12" cy="15" r="5.5"/></svg><span data-i18n="meFilter">فلاتر</span></button>
+      <button type="button" data-me-tool="text"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6V4.5h14V6M12 4.5v15M9 19.5h6"/></svg><span data-i18n="meText">نص</span></button>
+      <button type="button" data-me-tool="trim" data-me-video><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="7" r="2.5"/><circle cx="6" cy="17" r="2.5"/><path d="M8 8.5 20 18M8 15.5 20 6"/></svg><span data-i18n="meTrim">قص</span></button>
+      <button type="button" data-me-tool="sound" data-me-video><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg><span data-i18n="meSound">الصوت</span></button>
+      <button type="button" id="me-rotate" data-me-photo><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.4-5.7M20 4.5v4h-4"/></svg><span data-i18n="meRotate">تدوير</span></button>
+    </nav>
+  </dialog>
+
   <script src="js/app.js"></script>
   <script src="js/camera.js"></script>
+  <script src="js/editor.js"></script>
   <script src="js/profile.js"></script>
   <script src="js/extras.js"></script>
   <script src="js/feed.js"></script>

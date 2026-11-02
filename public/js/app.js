@@ -5585,37 +5585,50 @@ function videoCompressor() {
   return videoKit;
 }
 
-async function prepareVideo(file, onProgress) {
-  if (file.size < 3 * 1024 * 1024 && file.type !== "video/quicktime") return file;
+async function prepareVideo(file, onProgress, edits) {
+  const edited = typeof mediaEdited === "function" && mediaEdited(edits);
+  if (!edited && file.size < 3 * 1024 * 1024 && file.type !== "video/quicktime") return file;
   const kit = await videoCompressor();
-  if (!kit) return file;
+  const fallback = () => {
+    if (edited) throw new Error("edit");
+    return file;
+  };
+  if (!kit) return fallback();
   let input = null;
   try {
     input = new kit.Input({ source: new kit.BlobSource(file), formats: kit.ALL_FORMATS });
     const track = await input.getPrimaryVideoTrack();
-    if (!track || !(await track.canDecode())) return file;
+    if (!track || !(await track.canDecode())) return fallback();
     const audio = await input.getPrimaryAudioTrack();
     const width = await track.getDisplayWidth();
     const height = await track.getDisplayHeight();
     const scale = Math.min(1, VIDEO_TARGET.long / Math.max(width, height), VIDEO_TARGET.short / Math.min(width, height));
+    const outWidth = Math.max(2, Math.round((width * scale) / 2) * 2);
+    const outHeight = Math.max(2, Math.round((height * scale) / 2) * 2);
     const output = new kit.Output({ format: new kit.Mp4OutputFormat({ fastStart: "in-memory" }), target: new kit.BufferTarget() });
     const video = { codec: "avc", bitrate: VIDEO_TARGET.bitrate, forceTranscode: true, allowTransformationMetadata: false };
-    if (scale < 1) video.width = Math.max(2, Math.round((width * scale) / 2) * 2);
-    const conversion = await kit.Conversion.init({
+    const custom = edited ? videoEditOptions(kit, edits, outWidth, outHeight) : {};
+    if (custom.process) Object.assign(video, custom);
+    else if (scale < 1) video.width = outWidth;
+    const mute = Boolean(edited && edits.mute);
+    const options = {
       input,
       output,
       tracks: "primary",
       showWarnings: false,
       video,
-      audio: { codec: "aac", bitrate: VIDEO_TARGET.audio },
-    });
-    if (!conversion.isValid || (audio && conversion.discardedTracks.some((row) => row.track === audio))) return file;
+      audio: mute ? { discard: true } : { codec: "aac", bitrate: VIDEO_TARGET.audio },
+    };
+    if (edited && edits.trim) options.trim = { start: edits.trim.start, end: edits.trim.end };
+    const conversion = await kit.Conversion.init(options);
+    if (!conversion.isValid || (audio && !mute && conversion.discardedTracks.some((row) => row.track === audio))) return fallback();
     if (onProgress) conversion.onProgress = (progress) => onProgress(Math.min(1, progress));
     await conversion.execute();
     const buffer = output.target.buffer;
-    if (!buffer || !buffer.byteLength) return file;
-    return buffer.byteLength < file.size || file.size > VIDEO_MAX ? new Blob([buffer], { type: "video/mp4" }) : file;
-  } catch {
+    if (!buffer || !buffer.byteLength) return fallback();
+    return edited || buffer.byteLength < file.size || file.size > VIDEO_MAX ? new Blob([buffer], { type: "video/mp4" }) : file;
+  } catch (error) {
+    if (edited) throw error && error.message === "edit" ? error : new Error("edit");
     return file;
   } finally {
     if (input) input.dispose();
@@ -5675,9 +5688,12 @@ function percentStatus(target, key) {
   };
 }
 
-async function sendMediaFile(file, target) {
+async function sendMediaFile(file, target, edits) {
   const video = /^video\//.test(file.type);
-  const ready = video ? await prepareVideo(file, percentStatus(target, "bqPreparing")) : await shrinkImage(file);
+  const edited = typeof mediaEdited === "function" && mediaEdited(edits);
+  let ready = file;
+  if (video) ready = await prepareVideo(file, percentStatus(target, "bqPreparing"), edits);
+  else ready = edited ? await renderPhoto(file, edits) : await shrinkImage(file);
   if (video && ready.size > VIDEO_MAX) throw new Error("big");
   return uploadMedia(ready, percentStatus(target, "bqUploadingPct"));
 }
@@ -5720,7 +5736,8 @@ document.querySelector("#post-file").addEventListener("change", async (event) =>
   files = files.slice(0, Math.max(0, room));
   for (const file of files) {
     const problem = await mediaFileError(file);
-    if (problem) {
+    const trimmable = problem === "bqVideoLong" && files.length === 1 && (await videoCompressor());
+    if (problem && !trimmable) {
       formError.textContent = t(problem);
       return;
     }
@@ -5729,6 +5746,12 @@ document.querySelector("#post-file").addEventListener("change", async (event) =>
     formError.textContent = t("bqGalleryMax");
     return;
   }
+  let edits = null;
+  if (files.length === 1) {
+    formError.textContent = "";
+    edits = await openMediaEditor(files[0]);
+    if (!edits) return;
+  }
   mediaBusy = true;
   formError.textContent = t("bqUploading");
   document.querySelector("#compose-tools").classList.add("busy");
@@ -5736,7 +5759,7 @@ document.querySelector("#post-file").addEventListener("change", async (event) =>
   for (const file of files) {
     const video = /^video\//.test(file.type);
     try {
-      const url = await sendMediaFile(file, formError);
+      const url = await sendMediaFile(file, formError, edits);
       if (single || video || !postMedia || isVideoSrc(postMedia)) {
         postMedia = url;
         postExtra = [];
@@ -5746,7 +5769,7 @@ document.querySelector("#post-file").addEventListener("change", async (event) =>
       paintPostMedia();
     } catch (error) {
       if (error.message === "employee") break;
-      failed = error.message === "big" ? t(video ? "bqVideoBig" : "photoBig") : error.message === "image" ? t("bqMediaBad") : t("bqUploadFail");
+      failed = error.message === "big" ? t(video ? "bqVideoBig" : "photoBig") : error.message === "image" ? t("bqMediaBad") : error.message === "edit" ? t("meFailed") : t("bqUploadFail");
     }
   }
   mediaBusy = false;
