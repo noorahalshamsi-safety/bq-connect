@@ -90,6 +90,8 @@ Object.assign(dict.ar, {
   termsT9: "المحتوى المخالف",
   termsT10: "الأنظمة واللوائح",
   termsAccept: "موافق، ادخل",
+  termsReadAll: "اقرأ الشروط كاملة",
+  termsReadFirst: "مرّر لآخر الشروط عشان تقدر توافق",
   termsClose: "إغلاق",
   termsNeeded: "لازم توافق على شروط الاستخدام قبل النشر.",
   termsWarnTitle: "راجع منشورك قبل النشر",
@@ -281,6 +283,8 @@ Object.assign(dict.en, {
   termsT9: "Offensive content",
   termsT10: "Laws and policies",
   termsAccept: "Accept and continue",
+  termsReadAll: "Read the full terms",
+  termsReadFirst: "Scroll to the end of the terms to accept",
   termsClose: "Close",
   termsNeeded: "Accept the terms of use before posting.",
   termsWarnTitle: "Review before posting",
@@ -1297,18 +1301,39 @@ function openTerms(required) {
     langs.appendChild(button);
   });
   hero.append(langs, badge, tfaNode("h2", "", t("termsTitle")), tfaNode("p", "terms-lead", t("termsLead")), chips);
+  const body = termsBody();
   const foot = document.createElement("div");
   foot.className = "terms-foot";
+  let markRead = null;
   if (required) {
+    const progress = tfaNode("div", "terms-progress");
+    const bar = tfaNode("span", "");
+    progress.appendChild(bar);
+    const more = tfaNode("button", "terms-more");
+    more.type = "button";
+    more.append(tfaNode("span", "", t("termsReadAll")), termsIcon("M12 5v14M6 13l6 6 6-6"));
+    more.addEventListener("click", () => body.scrollBy({ top: body.clientHeight * 0.8, behavior: "smooth" }));
     const agree = document.createElement("label");
-    agree.className = "terms-agree";
+    agree.className = "terms-agree is-locked";
     const box = document.createElement("input");
     box.type = "checkbox";
     box.className = "terms-switch";
     box.setAttribute("role", "switch");
+    box.disabled = true;
     const text = document.createElement("span");
-    text.textContent = t("termsAgree");
+    text.textContent = t("termsReadFirst");
     agree.append(text, box);
+    markRead = () => {
+      const room = body.scrollHeight - body.clientHeight;
+      bar.style.width = `${room > 0 ? Math.min(100, Math.round((body.scrollTop / room) * 100)) : 100}%`;
+      if (!box.disabled || body.scrollTop < room - 24) return;
+      box.disabled = false;
+      agree.classList.remove("is-locked");
+      text.textContent = t("termsAgree");
+      more.hidden = true;
+    };
+    body.addEventListener("scroll", markRead, { passive: true });
+    foot.append(progress, more);
     const accept = document.createElement("button");
     accept.type = "button";
     accept.className = "btn";
@@ -1348,9 +1373,10 @@ function openTerms(required) {
     close.addEventListener("click", () => dialog.close());
     foot.appendChild(close);
   }
-  dialog.replaceChildren(hero, termsBody(), foot);
+  dialog.replaceChildren(hero, body, foot);
   if (!dialog.open) dialog.showModal();
-  dialog.querySelector(".terms-body").scrollTop = 0;
+  body.scrollTop = 0;
+  if (markRead) requestAnimationFrame(markRead);
 }
 
 function refreshTerms() {
