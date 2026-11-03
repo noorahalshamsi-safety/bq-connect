@@ -3903,6 +3903,11 @@ small.pw-good, .pw-form small.pw-good { color: #15803d; font-weight: 700; }
 .terms-copy { display: grid; gap: 0.15rem; }
 .terms-copy strong { font-size: 0.92rem; font-weight: 800; }
 .terms-copy p { margin: 0; color: var(--ink-2); font-size: 0.86rem; line-height: 1.7; }
+.tfa-help-pick { display: inline-flex; gap: 0.2rem; margin-top: 0.35rem; padding: 0.22rem; border-radius: 999px; background: rgba(0, 0, 0, 0.24); }
+.tfa-help-pick button { min-width: 6.5rem; padding: 0.45rem 1rem; border: 0; border-radius: 999px; background: transparent; color: rgba(255, 255, 255, 0.82); font: inherit; font-size: 0.88rem; font-weight: 800; cursor: pointer; }
+.tfa-help-pick button.on { background: #fff; color: #b30000; }
+.tfa-help-lead { margin: 0 0.2rem 0.5rem; color: var(--ink-2); font-size: 0.84rem; font-weight: 700; }
+.tfa-help-open { justify-self: stretch; width: 100%; margin-bottom: 0.8rem; padding: 0.75rem 0.9rem; border: 1px solid var(--red); border-radius: 14px; background: var(--red-soft); color: var(--red); font: inherit; font-size: 0.9rem; font-weight: 800; cursor: pointer; }
 .terms-foot { flex: none; display: grid; gap: 0.6rem; padding: 0.9rem 1rem calc(0.9rem + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--card); }
 .terms-foot .btn { width: 100%; padding: 0.9rem; font-size: 1rem; }
 .terms-foot .btn:disabled { opacity: 0.45; }

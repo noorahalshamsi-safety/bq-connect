@@ -207,6 +207,96 @@ Object.assign(dict.ar, {
   tfaScan1: "افتح تطبيق المصادقة في جوالك واضغط علامة +.",
   tfaScan2: "اختر حساب آخر، ثم مسح رمز QR، ووجّه الكاميرا على الرمز.",
   tfaStep3Hint: "بيطلع في التطبيق تحت اسم BQ Connect كود من 6 أرقام يتغير كل 30 ثانية. اكتبه هنا قبل ما يتغير.",
+  gdOpen: "ما فهمت؟ افتح الدليل المفصل خطوة بخطوة",
+  gdOpenLogin: "وين ألقى الكود؟ افتح الدليل",
+  gdTitle: "دليل التحقق بخطوتين",
+  gdLead: "خطوة بخطوة للآيفون والأندرويد. تسويه مرة وحدة بس، ويأخذ تقريباً 3 دقائق.",
+  gdPick: "اختر نوع جوالك",
+  gdIos: "آيفون",
+  gdAndroid: "أندرويد",
+  gdDone: "فهمت",
+  gdSecWhat: "وش هو التحقق بخطوتين؟",
+  gdWhat1: "قفل ثاني على حسابك",
+  gdWhat1p: "بعد كلمة المرور نطلب كود من 6 أرقام يطلع في تطبيق على جوالك. فحتى لو أحد عرف كلمة مرورك، ما يقدر يدخل بدون جوالك.",
+  gdWhat2: "وش تحتاج",
+  gdWhat2p: "جوالك، وتطبيق مصادقة مجاني (ننصح بـ Microsoft Authenticator)، و3 دقائق. ما تحتاج حساب Microsoft ولا إنترنت عشان يطلع الكود.",
+  gdWhat3: "كمّل كل الخطوات مرة وحدة",
+  gdWhat3p: "لا تقفل صفحة التفعيل في BQ Connect لين تخلص. إذا قفلتها وفتحتها من جديد يطلع مفتاح جديد، وتحتاج تضيف الحساب مرة ثانية.",
+  gdSecInstall: "الخطوة 1: حمّل تطبيق المصادقة",
+  gdInstallIos1: "افتح App Store",
+  gdInstallIos1p: "اضغط أيقونة App Store الزرقاء، وبعدها «بحث» تحت.",
+  gdInstallIos2: "ابحث عن Microsoft Authenticator",
+  gdInstallIos2p: "اختر التطبيق اللي من Microsoft Corporation، واضغط «تنزيل» (Get)، وأكّد بـ Face ID أو رمز الجوال.",
+  gdInstallIos3: "افتح التطبيق أول مرة",
+  gdInstallIos3p: "اضغط «أوافق» (Accept) على رسالة الخصوصية. إذا طلب تسجيل دخول بحساب Microsoft، اضغط «تخطي» (Skip) فوق. إذا سأل عن الإشعارات، اختيارك.",
+  gdInstallAndroid1: "افتح Google Play",
+  gdInstallAndroid1p: "اضغط أيقونة متجر Play، وبعدها خانة البحث فوق.",
+  gdInstallAndroid2: "ابحث عن Microsoft Authenticator",
+  gdInstallAndroid2p: "اختر التطبيق اللي من Microsoft Corporation، واضغط «تثبيت» (Install)، وانتظر لين يخلص.",
+  gdInstallAndroid3: "افتح التطبيق أول مرة",
+  gdInstallAndroid3p: "اضغط «أوافق» (Accept) على رسالة الخصوصية. إذا طلب تسجيل دخول بحساب Microsoft، اضغط «تخطي» (Skip). ما تحتاجه.",
+  gdSecAdd: "الخطوة 2: أضف حساب BQ Connect (الأسهل)",
+  gdAddLead: "إذا فاتح BQ Connect من نفس الجوال:",
+  gdAdd1: "اضغط «افتح في تطبيق المصادقة»",
+  gdAdd1p: "الزر الأحمر في الخطوة 2 داخل صفحة التفعيل في BQ Connect.",
+  gdAddIos2: "اضغط «فتح»",
+  gdAddIos2p: "الآيفون بيسألك «فتح في Authenticator؟». اضغط «فتح» (Open). بيضيف الحساب لحاله باسم BQ Connect.",
+  gdAddIos3: "ارجع لـ BQ Connect",
+  gdAddIos3p: "اضغط «◀ BQ Connect» أو «◀ Safari» في الزاوية فوق على اليسار، أو اسحب من تحت الشاشة لفوق واختر BQ Connect.",
+  gdAddAndroid2: "اختر Authenticator",
+  gdAddAndroid2p: "إذا سألك الجوال بأي تطبيق تفتح، اختر Authenticator. بيضيف الحساب لحاله باسم BQ Connect.",
+  gdAddAndroid3: "ارجع لـ BQ Connect",
+  gdAddAndroid3p: "اضغط زر الرجوع في الجوال، أو افتح التطبيقات المفتوحة واختر BQ Connect.",
+  gdSecManual: "الزر ما فتح شي؟ أضفه يدوياً",
+  gdManual1: "انسخ المفتاح",
+  gdManual1p: "في صفحة التفعيل اضغط «الزر ما فتح التطبيق؟ أضفه يدوياً»، وبعدها «نسخ».",
+  gdManualIos2: "اضغط + فوق على اليمين",
+  gdManualIos2p: "داخل Microsoft Authenticator.",
+  gdManualAndroid2: "اضغط + فوق",
+  gdManualAndroid2p: "داخل Microsoft Authenticator. إذا ما شفته، اضغط ⋮ واختر «إضافة حساب».",
+  gdManual3: "اختر «حساب آخر»",
+  gdManual3p: "مكتوب عليه «حساب آخر (Google، Facebook، إلخ)» أو Other account. بتنفتح الكاميرا، تجاهلها.",
+  gdManual4: "اضغط «أو أدخل الرمز يدوياً»",
+  gdManual4p: "تحت الكاميرا: «Or enter code manually».",
+  gdManual5: "عبّي الخانتين واحفظ",
+  gdManual5p: "اسم الحساب: BQ Connect. المفتاح السري: اضغط مطوّل على الخانة واختر «لصق». وبعدها اضغط «إنهاء» (Finish).",
+  gdSecScan: "فاتح BQ Connect من كمبيوتر؟ امسح الرمز",
+  gdScan1: "افتح صفحة التفعيل على الكمبيوتر",
+  gdScan1p: "بيطلع لك مربع QR أسود وأبيض.",
+  gdScan2: "في جوالك: + ثم «حساب آخر»",
+  gdScan2p: "داخل Microsoft Authenticator. إذا طلب إذن الكاميرا اضغط «السماح».",
+  gdScan3: "وجّه الكاميرا على المربع",
+  gdScan3p: "خلّ المربع كامل داخل الإطار. بيضيف الحساب لحاله باسم BQ Connect.",
+  gdSecCode: "الخطوة 3: اكتب الكود",
+  gdCode1: "افتح Authenticator",
+  gdCode1p: "تحت اسم BQ Connect بتشوف 6 أرقام، مثل 123 456، وجنبها دائرة تنقص.",
+  gdCode2: "اكتبه في BQ Connect",
+  gdCode2p: "اكتب الأرقام الستة بدون مسافة في خانة الكود. الكود يتغير كل 30 ثانية. إذا الدائرة قربت تخلص، انتظر الكود الجديد.",
+  gdCode3: "احفظ الأكواد الاحتياطية",
+  gdCode3p: "بعد التفعيل يطلع لك 10 أكواد. صوّرها أو اكتبها في ورقة واحفظها بعيد عن جوالك. إذا ضاع جوالك تدخل بواحد منها، وكل كود يشتغل مرة وحدة.",
+  gdCode4: "كل مرة تدخل",
+  gdCode4p: "بعد كلمة المرور افتح Authenticator واكتب الكود اللي طالع وقتها تحت BQ Connect.",
+  gdSecGoogle: "تستخدم Google Authenticator؟",
+  gdGoogle1: "اضغط + الملوّن تحت على اليمين",
+  gdGoogle1p: "داخل Google Authenticator.",
+  gdGoogle2: "اختر «إدخال مفتاح الإعداد»",
+  gdGoogle2p: "أو «مسح رمز QR» إذا فاتح BQ Connect من كمبيوتر.",
+  gdGoogle3: "عبّي البيانات واضغط «إضافة»",
+  gdGoogle3p: "الحساب: BQ Connect. المفتاح: الصقه. نوع المفتاح: مستند إلى الوقت (Time based).",
+  gdSecFix: "مشاكل شائعة وحلها",
+  gdFix1: "يقول الكود غلط",
+  gdFixIos1p: "غالباً ساعة الجوال مو مضبوطة. افتح الإعدادات ← عام ← التاريخ والوقت، وشغّل «تعيين تلقائياً». وبعدها جرّب الكود الجديد.",
+  gdFixAndroid1p: "غالباً ساعة الجوال مو مضبوطة. افتح الإعدادات ← النظام (في سامسونج: الإدارة العامة) ← التاريخ والوقت، وشغّل «التاريخ والوقت التلقائي». وبعدها جرّب الكود الجديد.",
+  gdFix2: "قفلت الصفحة وفتحتها من جديد",
+  gdFix2p: "صار فيه مفتاح جديد، والحساب اللي أضفته قبل ما عاد يشتغل. احذف BQ Connect من Authenticator (اضغط عليه ← الترس ← إزالة الحساب)، وأضفه من جديد.",
+  gdFix3: "ما أقدر ألصق المفتاح",
+  gdFix3p: "اكتبه بيدك حرف حرف كما هو في صفحة التفعيل. المسافات ما تفرق.",
+  gdFix4: "عندي أكثر من BQ Connect في التطبيق",
+  gdFix4p: "اللي يشتغل هو آخر واحد أضفته. احذف القديم عشان ما تتلخبط.",
+  gdFix5: "غيّرت جوالي أو ضاع",
+  gdFix5p: "ادخل بكلمة المرور، وبعدها اضغط «ما عندي الجوال؟ استخدم كود احتياطي». بعد ما تدخل فعّل التحقق من جديد من الإعدادات. إذا ما عندك أكواد احتياطية، كلّم إدارة التطبيق تعيد تعيين حسابك.",
+  gdFix6: "صفحة التفعيل انتهى وقتها",
+  gdFix6p: "عندك 15 دقيقة تكمّل فيها. إذا انتهت، ارجع وابدأ من جديد واحذف الحساب القديم من Authenticator.",
   tfaQrAlt: "رمز QR لإضافة الحساب في تطبيق المصادقة",
   tfaOpenApp: "افتح في تطبيق المصادقة",
   tfaCopy: "نسخ",
@@ -432,6 +522,96 @@ Object.assign(dict.en, {
   tfaScan1: "Open the authenticator app on your phone and tap +.",
   tfaScan2: "Choose Other account, then Scan a QR code, and point the camera at the code.",
   tfaStep3Hint: "The app shows a 6-digit code under BQ Connect that changes every 30 seconds. Type it here before it changes.",
+  gdOpen: "Not sure? Open the step-by-step guide",
+  gdOpenLogin: "Where do I find the code? Open the guide",
+  gdTitle: "Two-step verification guide",
+  gdLead: "Step by step for iPhone and Android. You do it once, and it takes about 3 minutes.",
+  gdPick: "Choose your phone",
+  gdIos: "iPhone",
+  gdAndroid: "Android",
+  gdDone: "Got it",
+  gdSecWhat: "What is two-step verification?",
+  gdWhat1: "A second lock on your account",
+  gdWhat1p: "After your password we ask for a 6-digit code from an app on your phone. Even if someone learns your password, they can't get in without your phone.",
+  gdWhat2: "What you need",
+  gdWhat2p: "Your phone, a free authenticator app (we recommend Microsoft Authenticator) and 3 minutes. You don't need a Microsoft account, and the code works without internet.",
+  gdWhat3: "Finish all steps in one go",
+  gdWhat3p: "Keep the BQ Connect setup page open until you finish. If you close and reopen it, a new key appears and you need to add the account again.",
+  gdSecInstall: "Step 1: Install the authenticator app",
+  gdInstallIos1: "Open the App Store",
+  gdInstallIos1p: "Tap the blue App Store icon, then Search at the bottom.",
+  gdInstallIos2: "Search for Microsoft Authenticator",
+  gdInstallIos2p: "Pick the app by Microsoft Corporation, tap Get and confirm with Face ID or your passcode.",
+  gdInstallIos3: "Open the app the first time",
+  gdInstallIos3p: "Tap Accept on the privacy message. If it asks you to sign in with Microsoft, tap Skip at the top. Notifications are up to you.",
+  gdInstallAndroid1: "Open Google Play",
+  gdInstallAndroid1p: "Tap the Play Store icon, then the search box at the top.",
+  gdInstallAndroid2: "Search for Microsoft Authenticator",
+  gdInstallAndroid2p: "Pick the app by Microsoft Corporation, tap Install and wait for it to finish.",
+  gdInstallAndroid3: "Open the app the first time",
+  gdInstallAndroid3p: "Tap Accept on the privacy message. If it asks you to sign in with Microsoft, tap Skip. You don't need it.",
+  gdSecAdd: "Step 2: Add the BQ Connect account (easiest)",
+  gdAddLead: "If BQ Connect is open on the same phone:",
+  gdAdd1: "Tap Open in authenticator app",
+  gdAdd1p: "The red button in step 2 on the BQ Connect setup page.",
+  gdAddIos2: "Tap Open",
+  gdAddIos2p: "Your iPhone asks “Open in Authenticator?”. Tap Open. The account is added by itself as BQ Connect.",
+  gdAddIos3: "Go back to BQ Connect",
+  gdAddIos3p: "Tap “◀ BQ Connect” or “◀ Safari” in the top-left corner, or swipe up from the bottom and pick BQ Connect.",
+  gdAddAndroid2: "Choose Authenticator",
+  gdAddAndroid2p: "If your phone asks which app to open with, choose Authenticator. The account is added by itself as BQ Connect.",
+  gdAddAndroid3: "Go back to BQ Connect",
+  gdAddAndroid3p: "Press your phone's back button, or open recent apps and pick BQ Connect.",
+  gdSecManual: "Button did nothing? Add it by hand",
+  gdManual1: "Copy the key",
+  gdManual1p: "On the setup page tap “Button did not open the app? Add it by hand”, then Copy.",
+  gdManualIos2: "Tap + at the top right",
+  gdManualIos2p: "Inside Microsoft Authenticator.",
+  gdManualAndroid2: "Tap + at the top",
+  gdManualAndroid2p: "Inside Microsoft Authenticator. If you don't see it, tap ⋮ and choose Add account.",
+  gdManual3: "Choose Other account",
+  gdManual3p: "It says “Other account (Google, Facebook, etc.)”. The camera opens; ignore it.",
+  gdManual4: "Tap Or enter code manually",
+  gdManual4p: "Below the camera view.",
+  gdManual5: "Fill in both fields and save",
+  gdManual5p: "Account name: BQ Connect. Secret key: long-press the field and choose Paste. Then tap Finish.",
+  gdSecScan: "BQ Connect open on a computer? Scan the code",
+  gdScan1: "Open the setup page on the computer",
+  gdScan1p: "A black and white QR square appears.",
+  gdScan2: "On your phone: + then Other account",
+  gdScan2p: "Inside Microsoft Authenticator. If it asks for camera access, tap Allow.",
+  gdScan3: "Point the camera at the square",
+  gdScan3p: "Keep the whole square inside the frame. The account is added by itself as BQ Connect.",
+  gdSecCode: "Step 3: Enter the code",
+  gdCode1: "Open Authenticator",
+  gdCode1p: "Under BQ Connect you see 6 digits, like 123 456, with a shrinking circle next to them.",
+  gdCode2: "Type it in BQ Connect",
+  gdCode2p: "Type the six digits without a space in the code box. The code changes every 30 seconds. If the circle is almost empty, wait for the new code.",
+  gdCode3: "Save the backup codes",
+  gdCode3p: "After turning it on you get 10 codes. Take a screenshot or write them on paper and keep them away from your phone. If you lose your phone, sign in with one of them. Each works once.",
+  gdCode4: "Every time you sign in",
+  gdCode4p: "After your password, open Authenticator and type the code shown under BQ Connect at that moment.",
+  gdSecGoogle: "Using Google Authenticator?",
+  gdGoogle1: "Tap the colorful + at the bottom right",
+  gdGoogle1p: "Inside Google Authenticator.",
+  gdGoogle2: "Choose Enter a setup key",
+  gdGoogle2p: "Or Scan a QR code if BQ Connect is open on a computer.",
+  gdGoogle3: "Fill it in and tap Add",
+  gdGoogle3p: "Account: BQ Connect. Key: paste it. Type of key: Time based.",
+  gdSecFix: "Common problems",
+  gdFix1: "It says the code is wrong",
+  gdFixIos1p: "Your phone's clock is probably off. Open Settings, General, Date & Time, and turn on Set Automatically. Then try the new code.",
+  gdFixAndroid1p: "Your phone's clock is probably off. Open Settings, System (on Samsung: General management), Date and time, and turn on Automatic date and time. Then try the new code.",
+  gdFix2: "I closed the page and opened it again",
+  gdFix2p: "There is a new key now and the account you added no longer works. Remove BQ Connect from Authenticator (tap it, the gear, Remove account) and add it again.",
+  gdFix3: "I can't paste the key",
+  gdFix3p: "Type it by hand exactly as it appears on the setup page. Spaces don't matter.",
+  gdFix4: "I have more than one BQ Connect in the app",
+  gdFix4p: "Only the one you added last works. Remove the old ones so you don't mix them up.",
+  gdFix5: "I changed or lost my phone",
+  gdFix5p: "Sign in with your password, then tap “No phone? Use a backup code”. Once in, set up verification again from Settings. If you have no backup codes, ask the app admins to reset your account.",
+  gdFix6: "The setup page timed out",
+  gdFix6p: "You have 15 minutes to finish. If it runs out, start again and remove the old account from Authenticator.",
   tfaQrAlt: "QR code to add the account to an authenticator app",
   tfaOpenApp: "Open in authenticator app",
   tfaCopy: "Copy",
@@ -737,6 +917,7 @@ document.querySelector("#totp-code").addEventListener("input", (event) => {
   if (!totpRecovery && digitsOnly(event.target.value).length === 6) submitTotp();
 });
 document.querySelector("#totp-switch").addEventListener("click", () => setTotpMode(!totpRecovery));
+document.querySelector("#totp-help").addEventListener("click", openTfaGuide);
 
 let welcomeTicket = "";
 
@@ -1186,7 +1367,95 @@ function tfaSetupView(body, setup, submit) {
   });
   three.append(tfaNode("strong", "", t("tfaStep3")), tfaNode("small", "", t("tfaStep3Hint")), code, error, confirm);
   steps.append(one, two, three);
-  body.replaceChildren(steps);
+  const help = tfaNode("button", "tfa-help-open", t("gdOpen"));
+  help.type = "button";
+  help.addEventListener("click", openTfaGuide);
+  body.replaceChildren(help, steps);
+}
+
+const TFA_GUIDE = [
+  { title: "gdSecWhat", tone: "slate", icon: "M12 3l7.5 3v5.5c0 4.6-3.2 8.4-7.5 9.5-4.3-1.1-7.5-4.9-7.5-9.5V6zM9 12l2 2 4-4", items: ["gdWhat1", "gdWhat2", "gdWhat3"] },
+  { title: "gdSecInstall", tone: "red", icon: "M12 4v11M7 10.5l5 5 5-5M5 19.5h14", ios: ["gdInstallIos1", "gdInstallIos2", "gdInstallIos3"], android: ["gdInstallAndroid1", "gdInstallAndroid2", "gdInstallAndroid3"] },
+  { title: "gdSecAdd", tone: "red", lead: "gdAddLead", icon: "M12 5v14M5 12h14", ios: ["gdAdd1", "gdAddIos2", "gdAddIos3"], android: ["gdAdd1", "gdAddAndroid2", "gdAddAndroid3"] },
+  { title: "gdSecManual", tone: "blue", icon: "M8 4.5h8a1.5 1.5 0 0 1 1.5 1.5v13.5h-11V6A1.5 1.5 0 0 1 8 4.5zM9.5 9h5M9.5 12.5h5M9.5 16h3", ios: ["gdManual1", "gdManualIos2", "gdManual3", "gdManual4", "gdManual5"], android: ["gdManual1", "gdManualAndroid2", "gdManual3", "gdManual4", "gdManual5"] },
+  { title: "gdSecScan", tone: "blue", icon: "M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16M8 12h8", items: ["gdScan1", "gdScan2", "gdScan3"] },
+  { title: "gdSecCode", tone: "red", icon: "M12 7v5l3 2M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z", items: ["gdCode1", "gdCode2", "gdCode3", "gdCode4"] },
+  { title: "gdSecGoogle", tone: "slate", icon: "M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17zM12 8v4.5l3 1.8", items: ["gdGoogle1", "gdGoogle2", "gdGoogle3"] },
+  { title: "gdSecFix", tone: "amber", icon: "M12 4l9 16H3zM12 10v4M12 17v.5", ios: [["gdFix1", "gdFixIos1p"], "gdFix2", "gdFix3", "gdFix4", "gdFix5", "gdFix6"], android: [["gdFix1", "gdFixAndroid1p"], "gdFix2", "gdFix3", "gdFix4", "gdFix5", "gdFix6"] },
+];
+
+function tfaDevice() {
+  const agent = navigator.userAgent;
+  if (/iPhone|iPad|iPod/i.test(agent) || (/Macintosh/.test(agent) && navigator.maxTouchPoints > 1)) return "ios";
+  return /Android/i.test(agent) ? "android" : "";
+}
+
+function tfaGuideSection(group, platform) {
+  const section = tfaNode("section", `terms-group is-${group.tone}`);
+  const head = tfaNode("h3", "terms-group-head");
+  const icon = tfaNode("span", "terms-group-icon");
+  icon.appendChild(termsIcon(group.icon));
+  head.append(icon, tfaNode("span", "", t(group.title)));
+  section.appendChild(head);
+  if (group.lead) section.appendChild(tfaNode("p", "tfa-help-lead", t(group.lead)));
+  const list = tfaNode("ol", "terms-items");
+  (group.items || group[platform]).forEach((item, index) => {
+    const [title, text] = Array.isArray(item) ? item : [item, `${item}p`];
+    const row = tfaNode("li", "terms-item");
+    const copy = tfaNode("div", "terms-copy");
+    copy.append(tfaNode("strong", "", t(title)), tfaNode("p", "", t(text)));
+    row.append(tfaNode("span", "terms-num", String(index + 1)), copy);
+    list.appendChild(row);
+  });
+  section.appendChild(list);
+  return section;
+}
+
+function openTfaGuide() {
+  let dialog = document.querySelector("#tfa-guide");
+  if (!dialog) {
+    dialog = document.createElement("dialog");
+    dialog.id = "tfa-guide";
+    dialog.className = "terms-dialog tfa-help";
+    dialog.addEventListener("close", () => dialog.remove());
+    document.body.appendChild(dialog);
+  }
+  let platform = tfaDevice() || "ios";
+  const hero = tfaNode("header", "terms-hero");
+  const badge = tfaNode("span", "terms-hero-icon");
+  badge.appendChild(termsIcon(TFA_GUIDE[0].icon));
+  const pick = tfaNode("div", "tfa-help-pick");
+  pick.setAttribute("role", "group");
+  pick.setAttribute("aria-label", t("gdPick"));
+  const body = tfaNode("div", "terms-body");
+  const tabs = [["ios", "gdIos"], ["android", "gdAndroid"]].map(([kind, label]) => {
+    const button = tfaNode("button", "", t(label));
+    button.type = "button";
+    button.dataset.kind = kind;
+    button.addEventListener("click", () => {
+      platform = kind;
+      paint();
+    });
+    pick.appendChild(button);
+    return button;
+  });
+  const paint = () => {
+    tabs.forEach((button) => {
+      const on = button.dataset.kind === platform;
+      button.classList.toggle("on", on);
+      button.setAttribute("aria-pressed", String(on));
+    });
+    body.replaceChildren(...TFA_GUIDE.map((group) => tfaGuideSection(group, platform)));
+    body.scrollTop = 0;
+  };
+  hero.append(badge, tfaNode("h2", "", t("gdTitle")), tfaNode("p", "terms-lead", t("gdLead")), pick);
+  const foot = tfaNode("div", "terms-foot");
+  const done = tfaButton(t("gdDone"));
+  done.addEventListener("click", () => dialog.close());
+  foot.appendChild(done);
+  dialog.replaceChildren(hero, body, foot);
+  paint();
+  if (!dialog.open) dialog.showModal();
 }
 
 function tfaRecoveryView(body, codes, fresh, onDone, doneLabel) {
@@ -1672,3 +1941,4 @@ async function conductReply(response) {
 }
 
 document.querySelector("#open-terms").addEventListener("click", () => openTerms(false));
+if (new URLSearchParams(location.search).get("guide") === "2fa") window.addEventListener("load", openTfaGuide);
