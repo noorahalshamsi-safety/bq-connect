@@ -81,14 +81,24 @@ class Repository {
     } catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
   }
   async load(c,selected) {
-    const files=await c.query("SELECT * FROM dev.files ORDER BY name"),records=[];
+    const files=await c.query("SELECT * FROM dev.files ORDER BY name"),records=new Map();
     for(const table of codec.tables.keys()) {
       if(selected&&!selected.some(file=>codecFileTables(file).has(table)))continue;
       const r=await c.query(`SELECT id,file_name,parent,entry_key,ordinal,attrs,shape FROM dev.${table}`);
-      records.push(...r.rows.map(row=>({...row,table})));
+      // Driver rows are owned by this load, not shared with another request.
+      // Transfer them into file buckets rather than cloning every row and
+      // repeatedly filtering the complete social graph for each entity.
+      for(const row of r.rows){
+        row.table=table;
+        if(!records.has(row.file_name))records.set(row.file_name,[]);
+        records.get(row.file_name).push(row);
+      }
     }
     const result=new Map();
-    for(const file of files.rows)if(!selected||selected.includes(file.name))result.set(file.name,{value:codec.decode(file.name,records.filter(r=>r.file_name===file.name)),revision:Number(file.revision)});
+    for(const file of files.rows)if(!selected||selected.includes(file.name)){
+      result.set(file.name,{value:codec.decode(file.name,records.get(file.name)||[]),revision:Number(file.revision)});
+      records.delete(file.name);
+    }
     result.allRevisions=new Map(files.rows.map(f=>[f.name,{revision:Number(f.revision)}]));
     return result;
   }

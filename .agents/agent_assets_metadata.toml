@@ -168,3 +168,17 @@ mtime_ms = 1793724935422
 storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/c3fae88a-8a87-4480-b3ef-3837d27dee14/c02659e2-0c31-4712-991b-fb2a5213400c"
 storage_version_token = "1793725008347832"
 content_type = "text/html"
+
+[[outputs]]
+id = "-CAxjJZvNY4Q5LbMCUkjF"
+uri = "file://generated-artifacts/phase2d/phase2d-review.html"
+type = "html"
+title = "Phase 2D reliability review"
+description = "Confirmed background root cause and repair, allocation-stage evidence, guarded before/after loads, unchanged regressions, remaining limits and release verdicts."
+logical_id = "f926408f-0454-4d1e-96ce-28c7f5f9ceb9"
+content_hash = "sha256:fa3281e992af2b089a470ec7ec36640e3796d1bdd0717acb30e7ad67a78de75e"
+size = 25923
+mtime_ms = 1793728574853
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/f926408f-0454-4d1e-96ce-28c7f5f9ceb9/356264a3-ccba-44d2-8712-e6c91cbf9c2e"
+storage_version_token = "1793728624752989"
+content_type = "text/html"

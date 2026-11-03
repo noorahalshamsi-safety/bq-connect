@@ -12,7 +12,8 @@ async function start(root) {
   await repo.hardenControls();
   const nativeEnabled=!process.argv.includes("--reference");
   if(nativeEnabled)await nativeProfile.prepare(repo);
-  let poisoned=false,ingress=0,pending=0;
+  let poisoned=false,stopping=false,ingress=0,pending=0;
+  const jobTimers=new Set();
   const timings=[];
   let context=null,queue=Promise.resolve(),auth,app,readyResolve;
   const ready=new Promise(resolve=>readyResolve=resolve);
@@ -87,16 +88,37 @@ async function start(root) {
     context.events.push({topic,payload});
     return Promise.resolve();
   };
-  async function job(fn) {
+  async function job(fn,label) {
     return serial(async()=>{
-      if(poisoned)return;
-      const c=context=await hydrate(await repo.begin());
-      try {await refresh();await fn();await finish(c,true);}
-      catch(e){if(context)await finish(c,false);console.error("Synthetic PostgreSQL job refused:",e.code||"transaction_error");}
+      if(poisoned||stopping)return {committed:false,skipped:true};
+      let c,timer;
+      try {
+        c=context=await hydrate(await repo.begin());
+        const work=(async()=>{await refresh();await fn();})();
+        const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>{poisoned=true;reject(Error("background_deadline"));},25000);});
+        await Promise.race([work,deadline]);
+        clearTimeout(timer); // Commit uses the existing bounded SQL operations.
+        await finish(c,true);
+        return {committed:true};
+      }catch(e){
+        if(c&&context===c)await finish(c,false).catch(()=>{});
+        const frames=(e.stack||"").split("\n").slice(1,4).map(l=>l.match(/[\w.-]+\.(?:c?js):\d+:\d+/)?.[0]).filter(Boolean);
+        console.error("Synthetic PostgreSQL job refused:",JSON.stringify({job:label||fn.name||"scheduled",category:e.name,code:e.code||null,frames}));
+        if(poisoned)setTimeout(()=>process.exit(1),100).unref();
+        return {committed:false};
+      }finally{clearTimeout(timer);}
     });
   }
-  global.__bqDevInterval=(fn,ms)=>{const timer=setInterval(()=>job(fn),ms);timer.unref();return timer;};
-  const boot=context=await hydrate(await repo.begin());
+  global.__bqDevInterval=(fn,ms)=>{
+    let queued=false;
+    const label=fn.name||`timer-${jobTimers.size}`;
+    const invoke=()=>{
+      if(queued||poisoned||stopping)return Promise.resolve({committed:false,skipped:true});
+      queued=true;return job(fn,label).finally(()=>queued=false);
+    };
+    const timer=setInterval(invoke,ms);jobTimers.add(timer);timer.unref();return timer;
+  };
+  let boot=context=await hydrate(await repo.begin());
   const files=["auth.js","server.js","backup.js","push.js","moderation.js","spark-agent.js","translate.js","persistence-safety.js"];
   // Transform only the isolated copies. The production source remains unchanged.
   for(const file of files) {
@@ -165,7 +187,7 @@ async function start(root) {
   };
   backup.schedule=()=>{
     global.__bqDevInterval(async()=>{
-      const settings=JSON.parse(context.buffers.get("backup-settings.json")),last=backupStatus();
+      const settings=JSON.parse(context.buffers.get("backup.json")),last=backupStatus();
       const hours=Math.max(1,Number(settings.intervalHours)||24);
       if(settings.enabled!==false&&Date.now()-Date.parse(last.lastAt||"1970-01-01")>=hours*3600000)await backup.createBackup();
     },60000).unref();
@@ -282,17 +304,17 @@ async function start(root) {
     server.listen=(...params)=>{
       const callback=typeof params.at(-1)==="function"?params.pop():()=>{};
       return listen(...params,async()=>{
-        try{await callback();await finish(boot,true);readyResolve();}
-        catch(e){console.error("Synthetic activation refused:",e.message);await finish(boot,false).catch(()=>{});process.exitCode=1;server.close();}
+        try{await callback();await finish(boot,true);boot=null;readyResolve();}
+        catch(e){console.error("Synthetic activation refused:",e.message);if(context===boot)await finish(boot,false).catch(()=>{});boot=null;process.exitCode=1;server.close();}
       });
     };
     return server;
   };
   app=require(path.join(proof.app,"server.js"));
   http.createServer=realCreate;
-  const outboxTimer=setInterval(()=>repo.drainFixtureOutbox().catch(()=>{}),1000);outboxTimer.unref();
+  const outboxTimer=setInterval(()=>{if(!poisoned&&!stopping)repo.drainFixtureOutbox().catch(()=>{});},1000);outboxTimer.unref();
   await ready;
-  return {repo,proof,server:app.__server,close:async()=>{clearInterval(outboxTimer);await new Promise(r=>app.__server.close(r));await repo.pool.end();virtual.restore();https.request=realHttps;}};
+  return {repo,proof,server:app.__server,close:async()=>{stopping=true;clearInterval(outboxTimer);for(const timer of jobTimers)clearInterval(timer);await new Promise(r=>app.__server.close(r));await queue;await repo.pool.end();virtual.restore();https.request=realHttps;}};
 }
 if(require.main===module)start(process.argv[2]).catch(e=>{console.error("Synthetic PostgreSQL application refused:",e.code||e.message);process.exit(1);});
 module.exports={start};

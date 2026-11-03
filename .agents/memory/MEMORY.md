@@ -2,3 +2,4 @@
 - [Development provisioning](development-provisioning.md) — empty SQL state never authorizes fresh provisioning; missing metadata must not replace keys.
 - [Compatibility runtime safety](compatibility-runtime-safety.md) — serialization and fail-stop timeouts are intentional until legacy mutable state becomes request-scoped.
 - [Dependency upgrade boundaries](dependency-upgrade-boundaries.md) — a newer transitive major outside the storage SDK's declared range is not a supported audit-only fix.
+- [Memory evidence boundaries](memory-evidence-boundaries.md) — lower post-GC live heap does not establish bounded RSS or successful full-feed capacity.
