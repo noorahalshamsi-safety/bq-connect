@@ -2509,7 +2509,7 @@ function storyFace(bits, seen) {
 
 function renderStories() {
   const strip = document.querySelector("#stories");
-  if (!strip) return;
+  if (!strip || storyOrder) return;
   const people = storyPeople();
   const mine = people.find((row) => row.mine);
   const seen = seenStorySet();
@@ -2575,9 +2575,10 @@ function paintStoryMute() {
 }
 
 let storyDeck = null;
+let storyOrder = null;
 
 function viewerRows() {
-  return storyDeck ? [storyDeck] : storyPeople();
+  return storyDeck ? [storyDeck] : storyOrder || storyPeople();
 }
 
 function openStoryDeck(deck, index) {
@@ -2597,6 +2598,7 @@ function closeStoryViewer() {
   if (viewer) viewer.hidden = true;
   storyPaused = false;
   storyDeck = null;
+  storyOrder = null;
   renderStories();
   if (view === "profile") renderProfile();
 }
@@ -3094,6 +3096,7 @@ function openStoryViewer(key, index) {
   const people = storyPeople();
   const group = people.findIndex((row) => row.key === String(key));
   if (group < 0) return;
+  storyOrder = people;
   storyGroup = group;
   storyIndex = Math.max(0, Math.min(index || 0, people[group].items.length - 1));
   paintStoryFrame();
