@@ -1,0 +1,7 @@
+const fs=require("node:fs"),path=require("node:path"),crypto=require("node:crypto"),root=path.resolve(__dirname,"../../.."),manifest=path.join(root,"generated-artifacts/phase2f/prior-evidence.json");
+async function hash(file){const h=crypto.createHash("sha256");for await(const b of fs.createReadStream(file))h.update(b);return h.digest("hex");}
+async function walk(dir){let result=[];for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const p=path.join(dir,entry.name);if(entry.isDirectory())result.push(...await walk(p));else if(/\.(json|md|html)$/.test(entry.name))result.push(p);}return result;}
+(async()=>{
+ if(process.argv[2]==="verify"){const entries=JSON.parse(fs.readFileSync(manifest)),changed=[];for(const e of entries)if(!fs.existsSync(path.join(root,e.file))||await hash(path.join(root,e.file))!==e.sha256)changed.push(e.file);console.log(JSON.stringify({files:entries.length,changed}));if(changed.length)process.exitCode=1;}
+ else {const files=[];for(const phase of ["phase2","phase2b","phase2c","phase2d","phase2e"]){const dir=path.join(root,"generated-artifacts",phase);if(fs.existsSync(dir))files.push(...await walk(dir));}files.push(...await walk(path.join(root,"reports")));const entries=[];for(const f of files)entries.push({file:path.relative(root,f),sha256:await hash(f)});fs.mkdirSync(path.dirname(manifest),{recursive:true});fs.writeFileSync(manifest,JSON.stringify(entries,null,2));console.log("Preserved evidence hashes:",entries.length);}
+})();

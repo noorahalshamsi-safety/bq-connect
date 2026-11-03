@@ -196,3 +196,17 @@ mtime_ms = 1793730881341
 storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/c8b9adb5-73cf-4f35-b83a-cc8005ef79bc/9e550a43-f916-40b4-bdca-5789d9212c95"
 storage_version_token = "1793730908788392"
 content_type = "text/html"
+
+[[outputs]]
+id = "E8ivXJKKkvYubuDw2En6W"
+uri = "file://generated-artifacts/phase2f/phase2f-review.html"
+type = "html"
+title = "Phase 2F pagination review"
+description = "Thirteen-section contract, parity/security evidence, multi-user enriched HTTP measurements, limitations, and separate development/production verdicts."
+logical_id = "94a2cc8f-1a64-4de6-8f04-2736bfcbe279"
+content_hash = "sha256:678c28556a518ff8528ce9cb325253936ef99c50ecb0f764f40c5fd76d48d349"
+size = 24178
+mtime_ms = 1793733632146
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/94a2cc8f-1a64-4de6-8f04-2736bfcbe279/e304d339-a1dc-4a0b-ae3b-bee99aa56286"
+storage_version_token = "1793733657972825"
+content_type = "text/html"
