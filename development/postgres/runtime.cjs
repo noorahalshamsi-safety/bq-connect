@@ -3,22 +3,29 @@ const fs=require("node:fs"),path=require("node:path"),http=require("node:http"),
 const crypto=require("node:crypto"),{Writable,Readable}=require("node:stream");
 const {verify}=require("./isolation.cjs"),{Repository,hash}=require("./repository.cjs");
 const {install}=require("./virtual-fs.cjs");
+const {staticRequest,originAllowed,bufferRequest}=require("./ingress.cjs");
+const {sensitive,scope}=require("./sealed.cjs");
 const workspace=path.resolve(__dirname,"../..");
 async function start(root) {
   const proof=verify(root),repo=new Repository(proof);
+  await repo.hardenControls();
+  let poisoned=false,ingress=0,pending=0;
+  const timings=[];
   let context=null,queue=Promise.resolve(),auth,app,readyResolve;
   const ready=new Promise(resolve=>readyResolve=resolve);
   const serial=fn=>{const work=queue.then(fn,fn);queue=work.catch(()=>{});return work;};
   async function hydrate(t) {
-    const media=await t.client.query("SELECT * FROM dev.media WHERE state IN('ready','retained')");
-    return {...t,buffers:new Map([...t.files].map(([f,r])=>[f,Buffer.from(JSON.stringify(r.value))])),
-      changed:new Set(),temps:new Map(),events:[],media:new Map(media.rows.map(row=>[row.legacy_path,{...row,legacy:row.legacy_path,object:path.join(proof.objects,row.id)}])),actor:""};
+    try{
+      const media=await t.client.query("SELECT * FROM dev.media WHERE state IN('ready','retained')");
+      return {...t,buffers:new Map([...t.files].map(([f,r])=>[f,Buffer.from(JSON.stringify(r.value))])),
+        changed:new Set(),temps:new Map(),events:[],media:new Map(media.rows.map(row=>[row.legacy_path,{...row,legacy:row.legacy_path,object:path.join(proof.objects,row.id)}])),actor:""};
+    }catch(e){await t.client.query("ROLLBACK").catch(()=>{});t.client.release(e);throw e;}
   }
   async function refresh() {
     auth?.__refresh();
     app?.__refresh();
     const saved=await context.client.query("SELECT * FROM dev.runtime_state");
-    const state=Object.fromEntries(saved.rows.map(r=>[r.name,r.value]));
+    const state=Object.fromEntries(saved.rows.map(r=>[r.name,repo.vault.decode(r.value,`state:${r.name}`)]));
     for(const [group,collection] of [["auth",auth?.__maps],["app",app?.__maps]])for(const [name,map]of Object.entries(collection||{})){
       map.clear();for(const [k,v]of state[`${group}:${name}`]||[])map.set(k,v);
     }
@@ -31,13 +38,43 @@ async function start(root) {
     }
     await repo.commitMedia(c.client,c.media,c.files);
     for(const [group,collection] of [["auth",auth?.__maps],["app",app?.__maps]])for(const [name,map]of Object.entries(collection||{}))
-      await c.client.query("INSERT INTO dev.runtime_state(name,value) VALUES($1,$2::jsonb) ON CONFLICT(name) DO UPDATE SET value=excluded.value",[`${group}:${name}`,JSON.stringify([...map])]);
+      await c.client.query("INSERT INTO dev.runtime_state(name,value) VALUES($1,$2::jsonb) ON CONFLICT(name) DO UPDATE SET value=excluded.value",[`${group}:${name}`,JSON.stringify(repo.vault.json([...map],`state:${group}:${name}`))]);
     for(const event of c.events)await repo.enqueue(c.client,event.topic,event.payload);
   }
   async function finish(c,commit) {
-    try {if(commit){await persist(c);if(c.fault==="before_commit")throw Error("synthetic_injected_commit_failure");await c.client.query("COMMIT");}else await c.client.query("ROLLBACK");}
-    catch(e){await c.client.query("ROLLBACK").catch(()=>{});throw e;}
-    finally{c.client.release();context=null;}
+    let discard;
+    try {if(commit){
+      await persist(c);
+      if(c.replayRecord){
+        const r=c.replayRecord,policy=sensitive.has(c.path)||r.response.length>262144?"no-response":"encrypted";
+        const body=policy==="encrypted"?repo.vault.seal(Buffer.from(JSON.stringify({scope:scope(c.files),headers:r.headers,response:r.response.toString("base64")})),`request:${r.actor}:${r.key}:${r.digest}`):Buffer.alloc(0);
+        await c.client.query("INSERT INTO dev.requests(actor,request_key,digest,status,headers,body,policy) VALUES($1,$2,$3,$4,'{}'::jsonb,$5,$6)",[r.actor,r.key,r.digest,r.status,body,policy]);
+      }
+      if(c.fault==="before_commit")throw Error("synthetic_injected_commit_failure");
+      if(c.fault==="during_commit"){
+        await c.client.query("CREATE TEMP TABLE commit_guard(id int PRIMARY KEY,parent int REFERENCES commit_guard(id) DEFERRABLE INITIALLY DEFERRED) ON COMMIT DROP");
+        await c.client.query("INSERT INTO commit_guard VALUES(1,2)");
+      }
+      if(c.fault==="unknown_commit"){
+        // Real driver loses the response while COMMIT is in flight. A separate
+        // test witness confirms the server commit, but not the requesting client.
+        const stream=c.client.connection.stream;stream.pause();
+        const committing=c.client.query("COMMIT");committing.catch(()=>{});
+        const witness=await repo.pool.connect();
+        try{for(let i=0;i<50;i++){const seen=await witness.query("SELECT 1 FROM dev.requests WHERE actor=$1 AND request_key=$2",[c.replayRecord.actor,c.replayRecord.key]);if(seen.rowCount)break;await new Promise(r=>setTimeout(r,10));}}
+        finally{witness.release();}
+        stream.destroy(Error("synthetic_commit_outcome_unknown"));await committing;
+      } else await c.client.query("COMMIT");
+    }else await c.client.query("ROLLBACK");}
+    catch(e){discard=e;await c.client.query("ROLLBACK").catch(()=>{});throw e;}
+    finally{
+      c.client.release(discard);context=null;
+      if(process.argv[3]==="--measure"&&c.label){
+        timings.push({...c.metrics,label:c.label,totalTxMs:performance.now()-c.started,queueWaitMs:c.queueWaitMs});
+        if(timings.length>1000)timings.shift();
+        fs.writeFileSync(path.join(proof.root,"request-timings.json"),JSON.stringify(timings),{mode:0o600});
+      }
+    }
     if(commit)repo.drainFixtureOutbox().catch(()=>{}); // Provider delivery is fixture-only.
   }
   const enqueue=(topic,payload)=>{
@@ -47,6 +84,7 @@ async function start(root) {
   };
   async function job(fn) {
     return serial(async()=>{
+      if(poisoned)return;
       const c=context=await hydrate(await repo.begin());
       try {await refresh();await fn();await finish(c,true);}
       catch(e){if(context)await finish(c,false);console.error("Synthetic PostgreSQL job refused:",e.code||"transaction_error");}
@@ -58,6 +96,13 @@ async function start(root) {
   // Transform only the isolated copies. The production source remains unchanged.
   for(const file of files) {
     let source=fs.readFileSync(path.join(workspace,file),"utf8");
+    if(file==="translate.js"){
+      const marker='import("@huggingface/transformers")';
+      if(!source.includes(marker))throw Error("development_translation_import_contract_changed");
+      const entry=require.resolve("@huggingface/transformers").replace(/\.cjs$/,".mjs");
+      if(!fs.existsSync(entry))throw Error("development_translation_entry_missing");
+      source=source.replace(marker,`import(${JSON.stringify(entry)})`);
+    }
     if(file==="auth.js"){
       source='const setInterval=global.__bqDevInterval;\n'+source.replaceAll('.replace(/^0+/, "")',"");
       source+='\nmodule.exports.__maps={failures,mailLog,usedTickets};\nmodule.exports.__refresh=()=>{for(const k of Object.keys(accounts))delete accounts[k];Object.assign(accounts,safety.readAccounts(ACCOUNTS));loadedStamp=accountsStamp();securityCache={stamp:"",value:null};};\n';
@@ -67,6 +112,7 @@ async function start(root) {
       if(!source.includes(marker))throw Error("route_wrapper_source_changed");
       source='const setInterval=global.__bqDevInterval;\n'+source.replace(marker,"return "+marker).replaceAll('.replace(/^0+/, "")',"");
       source+='\nmodule.exports.__maps={attempts,pendingOtp,pendingEmail,apiHits,ipFailures,writeUse,forgotUse,translateUse,placeUse,joinUse,uploadUse,noteEcho};\nmodule.exports.__refresh=()=>{const fresh=loadDirectory();directory.splice(0,directory.length,...fresh);byBadge.clear();fresh.forEach(p=>byBadge.set(String(p.badge),p));departmentList=null;audienceSize=0;viewCache=null;sharedJson.clear();conductCache={stamp:"",data:null};avatarCache={stamp:"",byBadge:new Map(),byPid:new Map()};};\nmodule.exports.__server=server;\n';
+      source+='\nmodule.exports.__eligible=token=>Boolean(personFromToken(token));\n';
     }
     fs.writeFileSync(path.join(proof.app,file),source,{mode:0o600});
   }
@@ -126,59 +172,86 @@ async function start(root) {
   async function handle(listener,req,res) {
     if(req.url==="/health/live"){res.writeHead(200,{"Content-Type":"application/json"});res.end('{"live":true}');return;}
     await ready;
+    if(poisoned){res.writeHead(503,{"Content-Type":"application/json"});res.end('{"error":"worker_restarting"}');return;}
+    if(!["GET","HEAD"].includes(req.method)&&!originAllowed(req)){res.writeHead(403,{"Content-Type":"application/json"});res.end('{"error":"origin_forbidden"}');return;}
+    if(staticRequest(req))return listener(req,res);
+    if(ingress>=8){res.writeHead(503,{"Content-Type":"application/json"});res.end('{"error":"ingress_busy"}');return;}
+    ingress++;
+    let captured;
+    try{captured=await bufferRequest(req);}catch(e){res.writeHead(e.message==="body_too_large"?413:408,{"Content-Type":"application/json"});res.end(JSON.stringify({error:e.message}));return;}finally{ingress--;}
+    req=captured.req;
+    if(pending>=32){res.writeHead(503,{"Content-Type":"application/json"});res.end('{"error":"queue_busy"}');return;}
+    pending++;
+    const queuedAt=performance.now();
     return serial(async()=>{
+      if(poisoned){res.writeHead(503);res.end();return;}
       let c,timer;
       const original={writeHead:res.writeHead.bind(res),write:res.write.bind(res),end:res.end.bind(res)};
       const chunks=[];let endedResolve,ended=false,status=200;
       const ending=new Promise(resolve=>endedResolve=resolve);
       function restore(){Object.assign(res,original);}
       try {
+        const queueWaitMs=performance.now()-queuedAt;
         c=context=await hydrate(await repo.begin());await refresh();
+        c.path=req.url.split("?")[0];c.label=`${req.method} ${c.path}`;c.queueWaitMs=queueWaitMs;
         if(!c.files.get("accounts.json")||!c.files.get("employees.json")||!c.files.get("ideas.json"))throw Error("critical_entity_missing");
         c.actor=auth.readSession(req.headers["x-session"])||"";
         const key=req.headers["idempotency-key"];
         if(key&&(!/^[A-Za-z0-9:_-]{8,120}$/.test(key)))throw Error("invalid_idempotency_key");
+        let parsed={};try{parsed=JSON.parse(captured.bytes);}catch{}
+        const credential=String(req.headers["x-session"]||parsed.token||"");
+        const actor=repo.vault.digest(credential||`anonymous:${parsed.badge||""}:${req.headers["user-agent"]||""}`);
+        const digest=repo.vault.digest(Buffer.concat([Buffer.from(`${req.method}:${req.url}:`),captured.bytes]));
+        if(key&&["POST","PATCH","DELETE"].includes(req.method)){
+          const existing=await c.client.query("SELECT * FROM dev.requests WHERE actor=$1 AND request_key=$2",[actor,key]);
+          if(existing.rowCount){
+            const saved=existing.rows[0];let replay,error;
+            if(saved.digest!==digest)error="conflict";
+            else if(saved.policy!=="encrypted")error="already_committed_reauthenticate";
+            else if(saved.expires_at<=new Date())error="retry_expired";
+            else if(!credential||!app.__eligible(credential))error="replay_not_authorized";
+            else {
+              replay=JSON.parse(repo.vault.open(saved.body,`request:${actor}:${key}:${digest}`));
+              if(replay.scope!==scope(c.files)){replay=null;error="replay_state_changed";}
+            }
+            await finish(c,false);
+            if(error){original.writeHead(409,{"Content-Type":"application/json","Cache-Control":"no-store"});original.end(JSON.stringify({error}));}
+            else {original.writeHead(saved.status,replay.headers);original.end(Buffer.from(replay.response,"base64"));}
+            return;
+          }
+        }
         if(key) {
           const injected=await c.client.query("SELECT point FROM dev.test_faults WHERE request_key=$1 FOR UPDATE",[key]);
           c.fault=injected.rows[0]?.point;
           if(c.fault)await c.client.query("DELETE FROM dev.test_faults WHERE request_key=$1",[key]);
         }
-        // Capture raw request bytes without consuming the IncomingMessage stream.
-        const body=[];req.on("data",x=>body.push(Buffer.from(x)));
         res.writeHead=(code,headers)=>{status=code;res.statusCode=code;if(headers&&typeof headers==="object")for(const[k,v]of Object.entries(headers))res.setHeader(k,v);return res;};
         res.write=(chunk,encoding,cb)=>{if(chunk)chunks.push(Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk,typeof encoding==="string"?encoding:undefined));if(typeof cb==="function")cb();return true;};
         res.end=(chunk,encoding,cb)=>{if(ended)chunks.length=0;if(chunk)chunks.push(Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk,typeof encoding==="string"?encoding:undefined));ended=true;endedResolve();if(typeof cb==="function")cb();return res;};
         const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error("request_transaction_timeout")),25000);});
         // The original HTTP callback must return handleApi's Promise; otherwise
         // its early res.end (e.g. forgot password) precedes later awaited writes.
-        await Promise.race([(async()=>{await listener(req,res);await ending;})(),timeout]);
+        await Promise.race([(async()=>{if(c.fault==="handler_timeout")await new Promise(()=>{});await listener(req,res);await ending;})(),timeout]);
         clearTimeout(timer);
-        const digest=hash(Buffer.concat([Buffer.from(`${req.method}:${req.url}:`),...body]));
-        const actor=hash(String(req.headers["x-session"]||"anonymous"));
-        if(key&&["POST","PATCH","DELETE"].includes(req.method)) {
-          const existing=await c.client.query("SELECT * FROM dev.requests WHERE actor=$1 AND request_key=$2",[actor,key]);
-          if(existing.rowCount) {
-            const saved=existing.rows[0];if(saved.digest!==digest)throw Error("idempotency_input_mismatch");
-            await finish(c,false);restore();for(const k of res.getHeaderNames())res.removeHeader(k);
-            original.writeHead(saved.status,saved.headers);original.end(saved.body);return;
-          }
-        }
         const response=Buffer.concat(chunks);
-        if(key&&["POST","PATCH","DELETE"].includes(req.method)&&status<500)await c.client.query("INSERT INTO dev.requests VALUES($1,$2,$3,$4,$5::jsonb,$6)",
-          [actor,key,digest,status,JSON.stringify(res.getHeaders()),response]);
+        if(key&&["POST","PATCH","DELETE"].includes(req.method)&&status>=200&&status<300)c.replayRecord={actor,key,digest,status,headers:res.getHeaders(),response};
         await finish(c,status<500);restore();
         if(c.fault==="after_commit_drop"){res.destroy();return;}
         // A killed/ambiguous connection here is recoverable with the same key.
         original.writeHead(status);original.end(response);
       }catch(e){
         clearTimeout(timer);
+        // Legacy module maps cannot be cancelled safely. Never run a new scope
+        // after a timed-out async handler: fail-stop this development worker.
+        if(e.message==="request_transaction_timeout")poisoned=true;
         if(context&&c)await finish(c,false).catch(()=>{});
         restore();
         if(!res.headersSent){for(const k of res.getHeaderNames())res.removeHeader(k);const conflict=e.message==="idempotency_input_mismatch"||e.message==="stale_entity_revision";
           original.writeHead(conflict?409:503,{"Content-Type":"application/json","Cache-Control":"no-store"});original.end(JSON.stringify({error:conflict?"conflict":"database_unavailable"}));}
         console.error("Synthetic HTTP transaction refused:",e.code||e.message);
+        if(poisoned)setTimeout(()=>process.exit(1),100).unref();
       }
-    });
+    }).finally(()=>pending--);
   }
   const realCreate=http.createServer;
   http.createServer=function(...args){

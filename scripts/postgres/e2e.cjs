@@ -5,7 +5,7 @@ const {prepare}=require("../../development/postgres/isolation.cjs");
 const {Repository}=require("../../development/postgres/repository.cjs");
 const {create,code}=require("../../development/postgres/fixtures.cjs");
 const root=fs.mkdtempSync(path.join(os.tmpdir(),"bq-pg-dev-")),proof=prepare(root),repo=new Repository(proof),fixture=create(proof.sessionKey);
-const output=path.resolve(__dirname,"../../generated-artifacts/phase2");
+const output=path.resolve(__dirname,process.argv[2]==="phase2b"?"../../generated-artifacts/phase2b/regression":"../../generated-artifacts/phase2");
 const results=[],requests=[],logs=[];let child,port=5108,postId,commentId,storyId,pollId,media,video,personPid,highlightId,groupId,additionalToken,ip=1;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function boot(p=port) {
@@ -14,7 +14,7 @@ async function boot(p=port) {
   for(let i=0;i<150;i++){await sleep(100);if(c.exitCode!==null)throw Error("synthetic application exited during startup");try{const r=await fetch(`http://127.0.0.1:${p}/health/ready`);if(r.status===200)return c;}catch{}}
   c.kill("SIGKILL");throw Error("synthetic startup timeout");
 }
-async function stop(c){if(!c||c.exitCode!==null)return;await new Promise(r=>{c.once("exit",r);c.kill("SIGKILL");});}
+async function stop(c){if(!c||c.exitCode!==null||c.signalCode!==null)return;await new Promise(r=>{c.once("exit",r);c.kill("SIGKILL");});}
 async function request(url,body={},badge="101",options={}) {
   const method=options.method||"POST",token=fixture.credentials.tokens[badge];
   // Existing UI contracts carry tokens in JSON bodies; x-session is for media
@@ -40,9 +40,9 @@ async function test(id,feature,fn) {
 async function registerOtp(badge) {
   const body={badge,code:"1234",mobile:"512345678",password:fixture.credentials.password};
   const begin=await request("/api/register",body,null);ok(begin);
-  const messages=await repo.pool.query("SELECT payload FROM dev.outbox WHERE topic='sms' ORDER BY created_at DESC LIMIT 1");
-  assert(messages.rowCount,"SMS was not queued");
-  const encoded=new URLSearchParams(messages.rows[0].payload.body).get("Body")||messages.rows[0].payload.body;
+  const messages=await repo.fixtureEvents("sms");
+  assert(messages.length,"SMS was not queued");
+  const encoded=new URLSearchParams(messages[0].payload.body).get("Body")||messages[0].payload.body;
   const otp=encoded.match(/\b\d{6}\b/)?.[0];assert(otp,"No synthetic SMS OTP");
   return {...body,otp};
 }
@@ -195,8 +195,8 @@ async function main() {
     const enrolled=await request("/api/login-2fa",{op:"enroll",ticket:reg.json.ticket,code:code(fromBase32(setup.json.secret))},null);ok(enrolled);
     assert(enrolled.json.needEmail);
     const mail=await request("/api/login-2fa",{op:"email",ticket:enrolled.json.ticket,email:"synthetic107@example.invalid"},null);ok(mail);
-    const msgs=await repo.pool.query("SELECT payload FROM dev.outbox WHERE topic='mail' AND payload->>'to'='synthetic107@example.invalid' ORDER BY created_at DESC LIMIT 1");
-    const otp=msgs.rows[0]?.payload.text.match(/\b\d{6}\b/)?.[0];assert(otp);
+    const msgs=(await repo.fixtureEvents("mail")).filter(r=>r.payload.to==="synthetic107@example.invalid");
+    const otp=msgs[0]?.payload.text.match(/\b\d{6}\b/)?.[0];assert(otp);
     const done=await request("/api/login-2fa",{op:"email-confirm",ticket:enrolled.json.ticket,code:otp},null);ok(done);assert(done.json.token);
     fixture.credentials.tokens["107"]=done.json.token;
   });
@@ -221,8 +221,7 @@ async function main() {
   await test("H29","Password recovery persists pending credential before HTTP success",async()=>{
     ok(await request("/api/forgot",{badge:"103"},null));
     const files=await repo.exportSynthetic();assert(files["accounts.json"]["103"].pending?.hash);
-    const r=await repo.pool.query("SELECT count(*) AS n FROM dev.outbox WHERE topic='mail' AND payload->>'subject' LIKE '%BQ Connect%'");
-    assert(Number(r.rows[0].n)>0);
+    assert((await repo.fixtureEvents("mail")).some(r=>r.payload.subject.includes("BQ Connect")));
   });
   await test("H30","All 28 entity codecs round-trip unknown/null/missing/order",async()=>{
     const original=await repo.exportSynthetic(),changed=structuredClone(original);

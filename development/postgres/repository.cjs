@@ -1,6 +1,7 @@
 const {Pool}=require("pg");
 const fs=require("node:fs"),path=require("node:path"),crypto=require("node:crypto");
 const codec=require("./codec.cjs");
+const {vault}=require("./sealed.cjs");
 const hash=value=>crypto.createHash("sha256").update(value).digest("hex");
 function receipt(proof,state,exclusive=false) {
   const fd=fs.openSync(path.join(proof.root,"provision-receipt.json"),exclusive?"wx":"w",0o600);
@@ -12,9 +13,13 @@ class Repository {
     const checked=require("./isolation.cjs").verify(proof?.root||"");
     if(!proof?.verifiedSynthetic||proof.dataset!==checked.dataset||proof.seal!==checked.seal||proof.socket!==checked.socket)throw Error("synthetic_identity_required");
     this.proof=checked;
+    this.vault=vault(checked);
     this.pool=new Pool({host:checked.socket,port:55441,user:checked.user,database:"bq_synthetic_development",max:4,
       connectionTimeoutMillis:2500,idleTimeoutMillis:10000,statement_timeout:20000,lock_timeout:12000});
     this.pool.on("error",()=>{}); // Requests still fail closed; no file fallback.
+    // pg emits an error on checked-out clients as well as rejecting queries.
+    // Handle the event without swallowing the query rejection/rollback path.
+    this.pool.on("connect",client=>client.on("error",()=>{}));
   }
   async verify(client) {
     const provision=JSON.parse(fs.readFileSync(path.join(this.proof.root,"provision-receipt.json"),"utf8"));
@@ -23,6 +28,27 @@ class Repository {
     const a=r.rows[0];
     if(!a||a.dataset_id!==this.proof.dataset||a.seal!==this.proof.seal||a.mode!=="synthetic"||String(a.epoch)!=="1")throw Error("synthetic_authority_refused");
     return a;
+  }
+  async hardenControls() {
+    // Additive dev-only control migration, never a node-schema replacement.
+    const c=await this.pool.connect();
+    try {
+      await c.query("BEGIN");await c.query("SELECT pg_advisory_xact_lock(1793705963)");await this.verify(c);
+      const columns=await c.query("SELECT column_name FROM information_schema.columns WHERE table_schema='dev' AND table_name='requests'");
+      if(!columns.rows.some(r=>r.column_name==="expires_at")){
+        await c.query("ALTER TABLE dev.requests ADD COLUMN created_at timestamptz NOT NULL DEFAULT clock_timestamp(), ADD COLUMN expires_at timestamptz NOT NULL DEFAULT (clock_timestamp()+interval '5 minutes'), ADD COLUMN policy text NOT NULL DEFAULT 'encrypted'");
+        // Old rows cannot be classified safely: preserve dedupe tombstones but
+        // retire plaintext response material, including credentials/tokens.
+        await c.query("UPDATE dev.requests SET body=''::bytea,headers='{}'::jsonb,policy='retired'");
+      }
+      await c.query("ALTER TABLE dev.test_faults DROP CONSTRAINT IF EXISTS test_faults_point_check");
+      await c.query("ALTER TABLE dev.test_faults ADD CONSTRAINT test_faults_point_check CHECK(point IN('before_commit','during_commit','unknown_commit','after_commit_drop','handler_timeout'))");
+      for(const r of (await c.query("SELECT * FROM dev.runtime_state")).rows)if(!r.value?.sealed)
+        await c.query("UPDATE dev.runtime_state SET value=$2::jsonb WHERE name=$1",[r.name,JSON.stringify(this.vault.json(r.value,`state:${r.name}`))]);
+      for(const r of (await c.query("SELECT id,payload FROM dev.outbox")).rows)if(!r.payload?.sealed&&!r.payload?.redacted)
+        await c.query("UPDATE dev.outbox SET payload=$2::jsonb WHERE id=$1",[r.id,JSON.stringify(this.vault.json(r.payload,`outbox:${r.id}`))]);
+      await c.query("COMMIT");
+    }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
   }
   async initialize(fixtures) {
     const c=await this.pool.connect();
@@ -63,16 +89,26 @@ class Repository {
       [row.id,file,row.parent,row.entry_key,row.ordinal,JSON.stringify(row.attrs),JSON.stringify(row.shape)]);
   }
   async begin() {
+    const started=performance.now();
     const c=await this.pool.connect();
+    const acquired=performance.now();
     try {
       await c.query("BEGIN");
       await c.query("SELECT pg_advisory_xact_lock(1793705963)");
+      const locked=performance.now();
       await this.verify(c);
       // Compatibility code has process-local object graphs. Serialize requests
       // across app processes, then refresh every graph from these locked rows.
       await c.query("SELECT name FROM dev.files ORDER BY name FOR UPDATE");
-      return {client:c,files:await this.load(c)};
-    } catch(e){await c.query("ROLLBACK").catch(()=>{});c.release();throw e;}
+      const loading=performance.now(),files=await this.load(c);
+      // A placeholder may lack credentials; an authenticated session may not.
+      // Preserve legacy KDF records, but never treat lost credential columns as
+      // an unregistered account while its session children still exist.
+      for(const row of Object.values(files.get("accounts.json")?.value||{})){
+        if(row.sessions?.length&&(!row.hash||!row.salt))throw Error("critical_accounts_session_credentials");
+      }
+      return {client:c,files,started,metrics:{poolWaitMs:acquired-started,advisoryWaitMs:locked-acquired,loadMs:performance.now()-loading,loadQueries:codec.tables.size}};
+    } catch(e){await c.query("ROLLBACK").catch(()=>{});c.release(e);throw e;}
   }
   async importSynthetic(files) {
     if(!files||typeof files!=="object")throw Error("synthetic_fixture_required");
@@ -91,7 +127,12 @@ class Repository {
     finally{await t.client.query("ROLLBACK");t.client.release();}
   }
   async enqueue(c,topic,payload) {
-    await c.query("INSERT INTO dev.outbox(id,topic,payload) VALUES($1,$2,$3::jsonb)",[crypto.randomUUID(),topic,JSON.stringify(payload)]);
+    const id=crypto.randomUUID();
+    await c.query("INSERT INTO dev.outbox(id,topic,payload) VALUES($1,$2,$3::jsonb)",[id,topic,JSON.stringify(this.vault.json(payload,`outbox:${id}`))]);
+  }
+  async fixtureEvents(topic) {
+    const rows=await this.pool.query("SELECT id,payload,delivered_at FROM dev.outbox WHERE topic=$1 ORDER BY created_at DESC",[topic]);
+    return rows.rows.filter(r=>r.payload?.sealed).map(r=>({...r,payload:this.vault.decode(r.payload,`outbox:${r.id}`)}));
   }
   async commitMedia(c,media,files) {
     for(const row of media.values())if(row.new) {
@@ -137,6 +178,9 @@ class Repository {
     const c=await this.pool.connect();
     try {
       await c.query("BEGIN");await this.verify(c);
+      await c.query("UPDATE dev.requests SET body=''::bytea,headers='{}'::jsonb,policy='expired' WHERE expires_at<clock_timestamp() AND policy='encrypted'");
+      await c.query("DELETE FROM dev.requests WHERE created_at<clock_timestamp()-interval '24 hours'");
+      await c.query("UPDATE dev.outbox SET payload='{\"redacted\":true}'::jsonb WHERE delivered_at IS NOT NULL AND created_at<clock_timestamp()-interval '5 minutes' AND NOT(payload ? 'redacted')");
       const r=await c.query("SELECT id,topic FROM dev.outbox WHERE delivered_at IS NULL FOR UPDATE SKIP LOCKED LIMIT 25");
       for(const row of r.rows)await c.query("UPDATE dev.outbox SET attempts=attempts+1,delivered_at=clock_timestamp(),fixture_receipt=$2::jsonb WHERE id=$1",
         [row.id,JSON.stringify({transport:"isolated-synthetic",event:row.id,topic:row.topic})]);

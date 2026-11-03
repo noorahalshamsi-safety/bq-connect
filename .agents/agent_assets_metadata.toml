@@ -140,3 +140,17 @@ mtime_ms = 1793708453330
 storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/d0f2659c-1d1b-49fc-8f44-93065e4cea0a/8edcd265-756e-461a-b094-d3999bb0146f"
 storage_version_token = "1793708457912978"
 content_type = "application/octet-stream"
+
+[[outputs]]
+id = "VOa8LHxY1Ctx82BZCXuo3"
+uri = "file://generated-artifacts/phase2b/phase2b-report.html"
+type = "html"
+title = "BQ Connect — Phase 2B hardening report"
+description = "Development changes, 83 passing checks, API/security/performance/translation evidence, original-scenario reclassification, remaining gaps and production NO-GO."
+logical_id = "5d1b55a8-2e26-42d3-8c68-051587a2e3cd"
+content_hash = "sha256:ea0f890cf59cd5f831b92f0d86ad7fc8134feae0c5f9098289bc1ce5623c0585"
+size = 25049
+mtime_ms = 1793711066461
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/5d1b55a8-2e26-42d3-8c68-051587a2e3cd/8bddcf62-1528-4107-9aae-e2b3bb37b9b6"
+storage_version_token = "1793711119620775"
+content_type = "text/html"
