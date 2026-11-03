@@ -1,0 +1,1 @@
+- [Read-only SQL configuration effects](sql-validation-side-effects.md) — a metadata SELECT can add local PostgreSQL tooling/config; check workspace changes during design-only verification.

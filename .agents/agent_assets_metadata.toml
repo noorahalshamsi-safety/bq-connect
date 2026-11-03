@@ -70,3 +70,31 @@ mtime_ms = 1793702753913
 storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/895dc22e-5435-4083-8fd7-027ba8fe9049/df388120-cc5a-460b-86c5-f8dafb32e894"
 storage_version_token = "1793702928492452"
 content_type = "application/octet-stream"
+
+[[outputs]]
+id = "1cQwX3QUWoGhoVr_XdKrD"
+uri = "file://generated-artifacts/architecture/BQ_CONNECT_TRANSACTIONAL_ARCHITECTURE.md"
+type = "text"
+title = "BQ Connect — Architecture and Migration Plan"
+description = "Complete design-only report with inventory, authentication/media strategy, cutover and rollback gates, 53-scenario matrix, prototype evidence and proposed SQL schema."
+logical_id = "0a568359-c354-4f9e-97b0-9cb88294b9f5"
+content_hash = "sha256:7c281291fd969c73b2c06cf43f4854b6c1c5b6c87e11f6f0a43eb1a2306c1949"
+size = 90400
+mtime_ms = 1793704686865
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/0a568359-c354-4f9e-97b0-9cb88294b9f5/6332603f-7f6b-4677-9cde-545a121fb164"
+storage_version_token = "1793704746472096"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "CcbxDeBXEqv1E_m9doHC5"
+uri = "file://generated-artifacts/architecture/validation-results.json"
+type = "unspecified"
+title = "Synthetic PostgreSQL Validation Results"
+description = "20 passing isolated checks. No production operations; not a certification of hosted recovery or a completed application migration."
+logical_id = "0348a4f0-7cb1-4472-8b4d-3b554be71a51"
+content_hash = "sha256:5b9f1705f4e4cee875309522c7d2acb3d71db23ae915591deca66bb4f16506f6"
+size = 6152
+mtime_ms = 1793704556153
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/0348a4f0-7cb1-4472-8b4d-3b554be71a51/1ff18768-7548-4250-b62d-f7bc77623272"
+storage_version_token = "1793704747715369"
+content_type = "application/octet-stream"
