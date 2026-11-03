@@ -3,6 +3,15 @@ const fs=require("node:fs"),path=require("node:path"),crypto=require("node:crypt
 const codec=require("./codec.cjs");
 const {vault}=require("./sealed.cjs");
 const hash=value=>crypto.createHash("sha256").update(value).digest("hex");
+const fileTables=new Map();
+function codecFileTables(file){
+  if(!fileTables.has(file)){
+    const found=new Set();
+    const walk=s=>{found.add(s.table);if(s.item)walk(s.item);Object.values(s.children||{}).forEach(walk);};
+    walk(codec.specs[file]);fileTables.set(file,found);
+  }
+  return fileTables.get(file);
+}
 function receipt(proof,state,exclusive=false) {
   const fd=fs.openSync(path.join(proof.root,"provision-receipt.json"),exclusive?"wx":"w",0o600);
   try{fs.writeFileSync(fd,JSON.stringify({dataset:proof.dataset,seal:proof.seal,state}));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
@@ -19,7 +28,11 @@ class Repository {
     this.pool.on("error",()=>{}); // Requests still fail closed; no file fallback.
     // pg emits an error on checked-out clients as well as rejecting queries.
     // Handle the event without swallowing the query rejection/rollback path.
-    this.pool.on("connect",client=>client.on("error",()=>{}));
+    this.pool.on("connect",client=>{
+      client.on("error",()=>{});
+      const query=client.query;client.__bqQueries=0;
+      client.query=function(...args){this.__bqQueries++;return query.apply(this,args);};
+    });
   }
   async verify(client) {
     const provision=JSON.parse(fs.readFileSync(path.join(this.proof.root,"provision-receipt.json"),"utf8"));
@@ -67,14 +80,16 @@ class Repository {
       receipt(this.proof,"committed");
     } catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
   }
-  async load(c) {
+  async load(c,selected) {
     const files=await c.query("SELECT * FROM dev.files ORDER BY name"),records=[];
     for(const table of codec.tables.keys()) {
+      if(selected&&!selected.some(file=>codecFileTables(file).has(table)))continue;
       const r=await c.query(`SELECT id,file_name,parent,entry_key,ordinal,attrs,shape FROM dev.${table}`);
       records.push(...r.rows.map(row=>({...row,table})));
     }
     const result=new Map();
-    for(const file of files.rows)result.set(file.name,{value:codec.decode(file.name,records.filter(r=>r.file_name===file.name)),revision:Number(file.revision)});
+    for(const file of files.rows)if(!selected||selected.includes(file.name))result.set(file.name,{value:codec.decode(file.name,records.filter(r=>r.file_name===file.name)),revision:Number(file.revision)});
+    result.allRevisions=new Map(files.rows.map(f=>[f.name,{revision:Number(f.revision)}]));
     return result;
   }
   async save(c,file,value,revision) {
@@ -88,9 +103,10 @@ class Repository {
     for(const row of codec.encode(file,value))await c.query(`INSERT INTO dev.${row.table}(id,file_name,parent,entry_key,ordinal,attrs,shape) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb)`,
       [row.id,file,row.parent,row.entry_key,row.ordinal,JSON.stringify(row.attrs),JSON.stringify(row.shape)]);
   }
-  async begin() {
+  async begin(selected) {
     const started=performance.now();
     const c=await this.pool.connect();
+    const queryStart=c.__bqQueries;
     const acquired=performance.now();
     try {
       await c.query("BEGIN");
@@ -100,14 +116,14 @@ class Repository {
       // Compatibility code has process-local object graphs. Serialize requests
       // across app processes, then refresh every graph from these locked rows.
       await c.query("SELECT name FROM dev.files ORDER BY name FOR UPDATE");
-      const loading=performance.now(),files=await this.load(c);
+      const loading=performance.now(),files=await this.load(c,selected);
       // A placeholder may lack credentials; an authenticated session may not.
       // Preserve legacy KDF records, but never treat lost credential columns as
       // an unregistered account while its session children still exist.
       for(const row of Object.values(files.get("accounts.json")?.value||{})){
         if(row.sessions?.length&&(!row.hash||!row.salt))throw Error("critical_accounts_session_credentials");
       }
-      return {client:c,files,started,metrics:{poolWaitMs:acquired-started,advisoryWaitMs:locked-acquired,loadMs:performance.now()-loading,loadQueries:codec.tables.size}};
+      return {client:c,files,started,queryStart,metrics:{poolWaitMs:acquired-started,advisoryWaitMs:locked-acquired,loadMs:performance.now()-loading,loadQueries:selected?new Set(selected.flatMap(f=>[...codecFileTables(f)])).size:codec.tables.size}};
     } catch(e){await c.query("ROLLBACK").catch(()=>{});c.release(e);throw e;}
   }
   async importSynthetic(files) {

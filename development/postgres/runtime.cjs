@@ -5,19 +5,23 @@ const {verify}=require("./isolation.cjs"),{Repository,hash}=require("./repositor
 const {install}=require("./virtual-fs.cjs");
 const {staticRequest,originAllowed,bufferRequest}=require("./ingress.cjs");
 const {sensitive,scope}=require("./sealed.cjs");
+const nativeProfile=require("./native-profile.cjs");
 const workspace=path.resolve(__dirname,"../..");
 async function start(root) {
   const proof=verify(root),repo=new Repository(proof);
   await repo.hardenControls();
+  const nativeEnabled=!process.argv.includes("--reference");
+  if(nativeEnabled)await nativeProfile.prepare(repo);
   let poisoned=false,ingress=0,pending=0;
   const timings=[];
   let context=null,queue=Promise.resolve(),auth,app,readyResolve;
   const ready=new Promise(resolve=>readyResolve=resolve);
   const serial=fn=>{const work=queue.then(fn,fn);queue=work.catch(()=>{});return work;};
-  async function hydrate(t) {
+  const responseScope=c=>scope(new Map([...(c.files.allRevisions||c.files),...c.files]));
+  async function hydrate(t,nativeRead=false) {
     try{
-      const media=await t.client.query("SELECT * FROM dev.media WHERE state IN('ready','retained')");
-      return {...t,buffers:new Map([...t.files].map(([f,r])=>[f,Buffer.from(JSON.stringify(r.value))])),
+      const media=nativeRead?{rows:[]}:await t.client.query("SELECT * FROM dev.media WHERE state IN('ready','retained')");
+      return {...t,nativeProfile:nativeRead,buffers:new Map([...t.files].map(([f,r])=>[f,Buffer.from(JSON.stringify(r.value))])),
         changed:new Set(),temps:new Map(),events:[],media:new Map(media.rows.map(row=>[row.legacy_path,{...row,legacy:row.legacy_path,object:path.join(proof.objects,row.id)}])),actor:""};
     }catch(e){await t.client.query("ROLLBACK").catch(()=>{});t.client.release(e);throw e;}
   }
@@ -31,12 +35,13 @@ async function start(root) {
     }
   }
   async function persist(c) {
+    if(c.nativeProfile&&(c.events.length||[...c.changed].some(f=>f!=="accounts.json")||c.media.size))throw Error("native_read_write_scope");
     for(const file of c.changed) {
       const value=JSON.parse(c.buffers.get(file).toString()),r=c.files.get(file);
       await repo.save(c.client,file,value,r.revision);
       c.files.set(file,{value,revision:r.revision+1});
     }
-    await repo.commitMedia(c.client,c.media,c.files);
+    if(!c.nativeProfile)await repo.commitMedia(c.client,c.media,c.files);
     for(const [group,collection] of [["auth",auth?.__maps],["app",app?.__maps]])for(const [name,map]of Object.entries(collection||{}))
       await c.client.query("INSERT INTO dev.runtime_state(name,value) VALUES($1,$2::jsonb) ON CONFLICT(name) DO UPDATE SET value=excluded.value",[`${group}:${name}`,JSON.stringify(repo.vault.json([...map],`state:${group}:${name}`))]);
     for(const event of c.events)await repo.enqueue(c.client,event.topic,event.payload);
@@ -47,7 +52,7 @@ async function start(root) {
       await persist(c);
       if(c.replayRecord){
         const r=c.replayRecord,policy=sensitive.has(c.path)||r.response.length>262144?"no-response":"encrypted";
-        const body=policy==="encrypted"?repo.vault.seal(Buffer.from(JSON.stringify({scope:scope(c.files),headers:r.headers,response:r.response.toString("base64")})),`request:${r.actor}:${r.key}:${r.digest}`):Buffer.alloc(0);
+        const body=policy==="encrypted"?repo.vault.seal(Buffer.from(JSON.stringify({scope:responseScope(c),headers:r.headers,response:r.response.toString("base64")})),`request:${r.actor}:${r.key}:${r.digest}`):Buffer.alloc(0);
         await c.client.query("INSERT INTO dev.requests(actor,request_key,digest,status,headers,body,policy) VALUES($1,$2,$3,$4,'{}'::jsonb,$5,$6)",[r.actor,r.key,r.digest,r.status,body,policy]);
       }
       if(c.fault==="before_commit")throw Error("synthetic_injected_commit_failure");
@@ -70,7 +75,7 @@ async function start(root) {
     finally{
       c.client.release(discard);context=null;
       if(process.argv[3]==="--measure"&&c.label){
-        timings.push({...c.metrics,label:c.label,totalTxMs:performance.now()-c.started,queueWaitMs:c.queueWaitMs});
+        timings.push({...c.metrics,queryCount:c.client.__bqQueries-c.queryStart,nativeProfile:c.nativeProfile,label:c.label,totalTxMs:performance.now()-c.started,queueWaitMs:c.queueWaitMs});
         if(timings.length>1000)timings.shift();
         fs.writeFileSync(path.join(proof.root,"request-timings.json"),JSON.stringify(timings),{mode:0o600});
       }
@@ -113,6 +118,10 @@ async function start(root) {
       source='const setInterval=global.__bqDevInterval;\n'+source.replace(marker,"return "+marker).replaceAll('.replace(/^0+/, "")',"");
       source+='\nmodule.exports.__maps={attempts,pendingOtp,pendingEmail,apiHits,ipFailures,writeUse,forgotUse,translateUse,placeUse,joinUse,uploadUse,noteEcho};\nmodule.exports.__refresh=()=>{const fresh=loadDirectory();directory.splice(0,directory.length,...fresh);byBadge.clear();fresh.forEach(p=>byBadge.set(String(p.badge),p));departmentList=null;audienceSize=0;viewCache=null;sharedJson.clear();conductCache={stamp:"",data:null};avatarCache={stamp:"",byBadge:new Map(),byPid:new Map()};};\nmodule.exports.__server=server;\n';
       source+='\nmodule.exports.__eligible=token=>Boolean(personFromToken(token));\n';
+      const profileMarker='if (action === "person") {';
+      if(!source.includes(profileMarker))throw Error("native_profile_source_contract_changed");
+      source=source.replace(profileMarker,profileMarker+'\nif(global.__bqNativePerson.active())return global.__bqNativePerson.read(body,person,res);');
+      source+='\nmodule.exports.__profileReads={personByPid,lightCard,isOfficialBadge,send};\n';
     }
     fs.writeFileSync(path.join(proof.app,file),source,{mode:0o600});
   }
@@ -130,6 +139,10 @@ async function start(root) {
   }
   fs.writeFileSync(path.join(publicDir,"synthetic-request.js"),`(()=>{const native=window.fetch.bind(window);window.fetch=async(input,options)=>{const r=new Request(input,options);if(new URL(r.url).origin!==location.origin||!["POST","PATCH","DELETE"].includes(r.method))return native(r);const h=new Headers(r.headers);if(!h.has("Idempotency-Key"))h.set("Idempotency-Key",crypto.randomUUID());const request=new Request(r,{headers:h}),retry=request.clone();try{return await native(request);}catch(error){return native(retry);}};})();`);
   const virtual=install(proof,()=>context);
+  global.__bqNativePerson={
+    active:()=>Boolean(context?.nativeProfile),
+    read:(body,viewer,res)=>{context.response=res;return nativeProfile.person(context,body,viewer,app.__profileReads);}
+  };
   auth=require(path.join(proof.app,"auth.js"));
   auth.sendMail=(to,subject,text)=>enqueue("mail",{to,subject,text});
   const push=require(path.join(proof.app,"push.js"));
@@ -192,9 +205,18 @@ async function start(root) {
       function restore(){Object.assign(res,original);}
       try {
         const queueWaitMs=performance.now()-queuedAt;
-        c=context=await hydrate(await repo.begin());await refresh();
+        let nativeRead=nativeEnabled&&nativeProfile.eligible(req,captured.bytes);
+        const transaction=await repo.begin(nativeRead?nativeProfile.dependencies:undefined);
+        try{
+          if(nativeRead&&!await nativeProfile.safe(transaction)){
+            const fallbackAt=performance.now();
+            transaction.files=await repo.load(transaction.client);transaction.metrics.loadQueries+=107;transaction.metrics.loadMs+=performance.now()-fallbackAt;nativeRead=false;
+          }
+        }catch(e){await transaction.client.query("ROLLBACK").catch(()=>{});transaction.client.release(e);throw e;}
+        c=context=await hydrate(transaction,nativeRead);await refresh();
         c.path=req.url.split("?")[0];c.label=`${req.method} ${c.path}`;c.queueWaitMs=queueWaitMs;
-        if(!c.files.get("accounts.json")||!c.files.get("employees.json")||!c.files.get("ideas.json"))throw Error("critical_entity_missing");
+        try{c.metrics.action=JSON.parse(captured.bytes).action||null;}catch{}
+        if(!["accounts.json","employees.json","ideas.json"].every(f=>c.files.allRevisions.has(f)))throw Error("critical_entity_missing");
         c.actor=auth.readSession(req.headers["x-session"])||"";
         const key=req.headers["idempotency-key"];
         if(key&&(!/^[A-Za-z0-9:_-]{8,120}$/.test(key)))throw Error("invalid_idempotency_key");
@@ -212,7 +234,7 @@ async function start(root) {
             else if(!credential||!app.__eligible(credential))error="replay_not_authorized";
             else {
               replay=JSON.parse(repo.vault.open(saved.body,`request:${actor}:${key}:${digest}`));
-              if(replay.scope!==scope(c.files)){replay=null;error="replay_state_changed";}
+              if(replay.scope!==responseScope(c)){replay=null;error="replay_state_changed";}
             }
             await finish(c,false);
             if(error){original.writeHead(409,{"Content-Type":"application/json","Cache-Control":"no-store"});original.end(JSON.stringify({error}));}
