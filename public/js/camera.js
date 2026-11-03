@@ -52,6 +52,8 @@ let camSending = false;
 let camBusy = false;
 let camTool = "";
 let camFilter = 0;
+let camFilterOpen = false;
+let camVideoEdits = false;
 let camHands = false;
 let camTimer = 0;
 let camFlash = false;
@@ -90,6 +92,40 @@ function camToast(text) {
   if (text) camToastTimer = setTimeout(() => { toast.hidden = true; }, 2200);
 }
 
+const flashTimers = new WeakMap();
+
+function flashLabel(node, text) {
+  node.textContent = text;
+  node.classList.add("show");
+  clearTimeout(flashTimers.get(node));
+  flashTimers.set(node, setTimeout(() => node.classList.remove("show"), 900));
+}
+
+function filterSwipeStep(dx, dy) {
+  if (Math.abs(dx) <= 40 || Math.abs(dx) <= Math.abs(dy) * 1.3) return 0;
+  return (dx < 0) !== (document.documentElement.dir === "rtl") ? 1 : -1;
+}
+
+function filterChips(selected, onPick) {
+  const row = document.createElement("div");
+  row.className = "me-chips";
+  CAM_FILTERS.forEach((filter, index) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "me-chip";
+    chip.classList.toggle("on", index === selected);
+    const swatch = document.createElement("i");
+    swatch.style.filter = filter.css === "none" ? "" : filter.css;
+    chip.append(swatch, t(filter.key));
+    chip.addEventListener("click", () => {
+      row.querySelectorAll(".me-chip").forEach((item, at) => item.classList.toggle("on", at === index));
+      onPick(index);
+    });
+    row.append(chip);
+  });
+  return row;
+}
+
 function camSaveMirror() {
   return camFront && camSettings.mirror;
 }
@@ -126,10 +162,10 @@ function camDigitalZoom() {
   return camZoomRange.hw ? 1 : camZoom;
 }
 
-function camLiveFilter() {
+function camLiveFilter(bake = true) {
   const parts = [];
   const css = CAM_FILTERS[camFilter].css;
-  if (css !== "none") parts.push(css);
+  if (bake && css !== "none") parts.push(css);
   if (!camExposureRange && camExposure) parts.push(`brightness(${(1 + camExposure * 0.6).toFixed(2)})`);
   return parts.join(" ") || "none";
 }
@@ -346,7 +382,7 @@ function camLiveSize(width) {
   return { w: width, h: Math.min(Math.round(width * 2.4), Math.round((width * vh) / vw)) };
 }
 
-function camDrawLive(context, x, y, w, h, mirror) {
+function camDrawLive(context, x, y, w, h, mirror, bake) {
   const vw = camLive.videoWidth;
   const vh = camLive.videoHeight;
   if (!vw || !vh) return;
@@ -355,15 +391,20 @@ function camDrawLive(context, x, y, w, h, mirror) {
   const sh = h / scale;
   const sx = (vw - sw) / 2;
   const sy = (vh - sh) / 2;
+  const filter = camLiveFilter(bake);
   context.save();
-  context.filter = camLiveFilter();
+  context.filter = filter;
   if (mirror) {
     context.translate(x + w, y);
     context.scale(-1, 1);
     context.drawImage(camLive, sx, sy, sw, sh, 0, 0, w, h);
   } else context.drawImage(camLive, sx, sy, sw, sh, x, y, w, h);
   context.restore();
-  canvasFilterFallback(context, camLiveFilter(), x, y, w, h);
+  canvasFilterFallback(context, filter, x, y, w, h);
+}
+
+function camFilterSeed(baked) {
+  return camFilter && !baked ? { filter: camFilter } : null;
 }
 
 // Safari ignores CanvasRenderingContext2D.filter, so filters are baked in pixel by pixel there.
@@ -484,9 +525,12 @@ function camFlashOff() {
 function paintCamTools() {
   document.querySelectorAll("#cam-tools [data-tool]").forEach((button) => {
     const tool = button.dataset.tool;
-    const on = tool === camTool || (tool === "filter" && camFilter > 0) || (tool === "handsfree" && camHands) || (tool === "timer" && camTimer);
+    const on = tool === camTool || (tool === "filter" && camFilterOpen) || (tool === "handsfree" && camHands) || (tool === "timer" && camTimer);
     button.classList.toggle("on", on);
   });
+  const filters = document.querySelector("#cam-filters");
+  filters.hidden = !camFilterOpen;
+  filters.querySelectorAll(".me-chip").forEach((chip, at) => chip.classList.toggle("on", at === camFilter));
   camPaintLive();
   const text = camTool === "text";
   document.querySelector("#cam-text").hidden = !text;
@@ -550,8 +594,8 @@ function setCamTool(tool) {
       setTimeout(() => camTextInput.focus(), 50);
     } else camToast(camTool === "loop" ? t("bqLoopHint") : t("bqToolOff"));
   } else if (tool === "filter") {
-    camFilter = (camFilter + 1) % CAM_FILTERS.length;
-    camToast(t(CAM_FILTERS[camFilter].key));
+    camFilterOpen = !camFilterOpen;
+    if (camFilterOpen) document.querySelector("#cam-filters").replaceChildren(filterChips(camFilter, camSetFilter));
   } else if (tool === "handsfree") {
     camHands = !camHands;
     camToast(camHands ? t("bqHandsOn") : t("bqToolOff"));
@@ -564,6 +608,13 @@ function setCamTool(tool) {
     document.querySelector("[data-tool=more]").setAttribute("aria-expanded", String(open));
     return;
   }
+  paintCamTools();
+}
+
+function camSetFilter(index) {
+  const count = CAM_FILTERS.length;
+  camFilter = ((index % count) + count) % count;
+  flashLabel(document.querySelector("#cam-filter-name"), t(CAM_FILTERS[camFilter].key));
   paintCamTools();
 }
 
@@ -681,13 +732,17 @@ function openStoryCamera(mode) {
   camMode = ["post", "story", "idea"].includes(mode) ? mode : "story";
   camTool = "";
   camFilter = 0;
+  camFilterOpen = false;
   camHands = false;
   camTimer = 0;
   camLayoutShots = [];
   camTextInput.value = "";
   storyCam.classList.remove("tools-open");
+  storyCam.classList.toggle("cam-rtl", document.documentElement.dir === "rtl");
+  videoCompressor().then((kit) => { camVideoEdits = Boolean(kit); });
   document.querySelector("#cam-sheet").hidden = true;
   document.querySelector("#cam-sheet").dir = document.documentElement.dir;
+  document.querySelector("#cam-filters").dir = document.documentElement.dir;
   document.querySelector("#cam-toast").dir = document.documentElement.dir;
   document.querySelector("#cam-caption").value = "";
   document.querySelector("#set-mirror").checked = camSettings.mirror;
@@ -709,8 +764,9 @@ function closeStoryCamera() {
   storyCam.hidden = true;
 }
 
-function camShowReview(blob, skipEditor) {
+function camShowReview(blob, skipEditor, seed) {
   camClearReview();
+  if (seed) camEdits = seed;
   camBlob = blob;
   camUrl = URL.createObjectURL(blob);
   const video = /^video\//.test(blob.type);
@@ -747,11 +803,12 @@ async function camTakePhoto() {
   const canvas = document.createElement("canvas");
   canvas.width = w;
   canvas.height = h;
-  camDrawLive(canvas.getContext("2d"), 0, 0, w, h, camSaveMirror());
+  camDrawLive(canvas.getContext("2d"), 0, 0, w, h, camSaveMirror(), false);
+  const seed = camFilterSeed(false);
   camFlashOff();
   camFlashBlink();
   const blob = await canvasBlob(canvas);
-  if (blob) camShowReview(blob);
+  if (blob) camShowReview(blob, false, seed);
 }
 
 async function camLayoutShot() {
@@ -763,7 +820,7 @@ async function camLayoutShot() {
   const cell = document.createElement("canvas");
   cell.width = Math.round(w * cw);
   cell.height = Math.round(h * ch);
-  camDrawLive(cell.getContext("2d"), 0, 0, cell.width, cell.height, camSaveMirror());
+  camDrawLive(cell.getContext("2d"), 0, 0, cell.width, cell.height, camSaveMirror(), false);
   camFlashOff();
   camFlashBlink();
   camLayoutShots.push(cell);
@@ -784,8 +841,9 @@ async function camLayoutShot() {
   });
   camLayoutShots = [];
   paintCamLayout();
+  const seed = camFilterSeed(false);
   const blob = await canvasBlob(canvas);
-  if (blob) camShowReview(blob);
+  if (blob) camShowReview(blob, false, seed);
 }
 
 function camWrapLines(context, text, maxWidth) {
@@ -821,26 +879,11 @@ async function camRenderText() {
   gradient.addColorStop(1, CAM_GRADIENTS[camGradient][1]);
   context.fillStyle = gradient;
   context.fillRect(0, 0, w, h);
-  let size = text.length > 90 ? 64 : text.length > 40 ? 80 : 96;
-  context.font = `800 ${size}px Cairo, Outfit, sans-serif`;
-  let lines = camWrapLines(context, text, w * 0.82);
-  while (lines.length * size * 1.35 > h * 0.7 && size > 40) {
-    size -= 6;
-    context.font = `800 ${size}px Cairo, Outfit, sans-serif`;
-    lines = camWrapLines(context, text, w * 0.82);
-  }
-  context.direction = /[\u0600-\u06FF]/.test(text) ? "rtl" : "ltr";
-  context.textAlign = "center";
-  context.textBaseline = "middle";
-  context.fillStyle = "#fff";
-  context.shadowColor = "rgba(0, 0, 0, 0.25)";
-  context.shadowBlur = 18;
-  const lineHeight = size * 1.35;
-  const top = h / 2 - ((lines.length - 1) * lineHeight) / 2;
-  lines.forEach((line, index) => context.fillText(line, w / 2, top + index * lineHeight));
   camTextInput.blur();
+  const size = text.length > 90 ? 0.06 : text.length > 40 ? 0.072 : ME_STYLE_SIZE.plain;
+  const item = { ...meBlankText(), value: text.slice(0, 140), style: "plain", size, y: 0.5 };
   const blob = await canvasBlob(canvas);
-  if (blob) camShowReview(blob);
+  if (blob) camShowReview(blob, false, { texts: [item] });
 }
 
 function camRecorderType() {
@@ -849,7 +892,7 @@ function camRecorderType() {
     .find((type) => MediaRecorder.isTypeSupported(type)) || "";
 }
 
-function camStartPipe() {
+function camStartPipe(bake) {
   const { w, h } = camLiveSize(720);
   const canvas = document.createElement("canvas");
   canvas.width = w;
@@ -857,7 +900,7 @@ function camStartPipe() {
   const context = canvas.getContext("2d");
   let frame = 0;
   const draw = () => {
-    camDrawLive(context, 0, 0, w, h, camSaveMirror());
+    camDrawLive(context, 0, 0, w, h, camSaveMirror(), bake);
     frame = requestAnimationFrame(draw);
   };
   draw();
@@ -881,8 +924,9 @@ function paintCamClock(limit) {
 function camStartRecording() {
   const type = camRecorderType();
   if (!camStream || !type || !camLive.videoWidth) return false;
+  const bake = !camVideoEdits;
   try {
-    camPipe = camStartPipe();
+    camPipe = camStartPipe(bake);
     camRecorder = new MediaRecorder(camPipe.stream, { mimeType: type, videoBitsPerSecond: 2500000 });
   } catch {
     if (camPipe) camPipe.stop();
@@ -907,7 +951,7 @@ function camStartRecording() {
     }
     const blob = new Blob(camChunks, { type: (recorder.mimeType || type).split(";")[0] });
     camChunks = [];
-    if (blob.size) camShowReview(blob);
+    if (blob.size) camShowReview(blob, false, camFilterSeed(bake));
   };
   camRecorder.start(250);
   camStarted = Date.now();
@@ -946,6 +990,8 @@ async function camRecordLoop() {
     return;
   }
   camBusy = true;
+  const bake = !camVideoEdits;
+  const seed = camFilterSeed(bake);
   const { w, h } = camLiveSize(720);
   const frames = [];
   storyCam.classList.add("recording");
@@ -954,7 +1000,7 @@ async function camRecordLoop() {
     const frame = document.createElement("canvas");
     frame.width = w;
     frame.height = h;
-    camDrawLive(frame.getContext("2d"), 0, 0, w, h, camSaveMirror());
+    camDrawLive(frame.getContext("2d"), 0, 0, w, h, camSaveMirror(), bake);
     frames.push(frame);
     paintCamClock(1.2);
     await camWait(70);
@@ -993,7 +1039,7 @@ async function camRecordLoop() {
   stream.getTracks().forEach((track) => track.stop());
   camBusy = false;
   camToast("");
-  if (!storyCam.hidden && chunks.length) camShowReview(new Blob(chunks, { type: type.split(";")[0] }));
+  if (!storyCam.hidden && chunks.length) camShowReview(new Blob(chunks, { type: type.split(";")[0] }), false, seed);
 }
 
 async function camCountdown() {
@@ -1279,11 +1325,9 @@ camStage.addEventListener("pointermove", (event) => {
       camTapTimer = setTimeout(() => camFocusAt(x, y), 260);
       return;
     }
-    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-    if (camTool === "text" || !document.querySelector("#cam-review").hidden) return;
-    camFilter = (camFilter + (dx < 0 ? 1 : CAM_FILTERS.length - 1)) % CAM_FILTERS.length;
-    camToast(t(CAM_FILTERS[camFilter].key));
-    paintCamTools();
+    const step = filterSwipeStep(dx, dy);
+    if (!step || camTool === "text" || camRecorder || camBusy || !document.querySelector("#cam-review").hidden) return;
+    camSetFilter(camFilter + step);
   });
 });
 camStage.addEventListener("wheel", (event) => {

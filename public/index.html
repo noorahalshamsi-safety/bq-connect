@@ -1116,10 +1116,12 @@
       <div class="cam-zoom" id="cam-zoom" role="group" data-i18n-aria="bqCamZoom" aria-label="التقريب"></div>
       <div class="cam-layout" id="cam-layout" hidden></div>
       <div class="cam-text" id="cam-text" hidden>
-        <textarea id="cam-text-input" dir="auto" maxlength="160" rows="3" data-i18n-placeholder="bqCamTextPh" placeholder="اكتب شيئاً..."></textarea>
+        <textarea id="cam-text-input" dir="auto" maxlength="140" rows="3" data-i18n-placeholder="bqCamTextPh" placeholder="اكتب كلامك هنا"></textarea>
         <button type="button" class="cam-swatch" id="cam-swatch" data-i18n-aria="bqCamColor" aria-label="تغيير اللون"></button>
       </div>
       <div class="cam-count" id="cam-count" hidden></div>
+      <p class="me-flash" id="cam-filter-name" aria-live="polite"></p>
+      <div class="cam-filters" id="cam-filters" hidden></div>
       <div class="cam-toast" id="cam-toast" hidden></div>
       <div class="cam-blocked" id="cam-blocked" hidden>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l1.8-2.5h6.4L17 8h3a1 1 0 0 1 1 1v9.5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1zM12 16.6a3.4 3.4 0 1 0 0-6.8 3.4 3.4 0 0 0 0 6.8z"/></svg>
@@ -1128,7 +1130,7 @@
       </div>
 
       <header class="cam-top">
-        <button type="button" class="cam-icon" id="cam-close" data-i18n-aria="bqClose" aria-label="إغلاق"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg></button>
+        <button type="button" class="cam-icon" id="cam-close" data-i18n-aria="bqClose" aria-label="إغلاق"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
         <button type="button" class="cam-icon" id="cam-flash" data-i18n-aria="bqCamFlash" aria-label="الفلاش" aria-pressed="false">
           <svg class="flash-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2.5 5.5 13.5H11l-1 8 7.5-11H12z"/><path d="M4 4l16 16"/></svg>
           <svg class="flash-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2.5 5.5 13.5H11l-1 8 7.5-11H12z"/></svg>
@@ -1138,12 +1140,12 @@
       </header>
 
       <div class="cam-tools" id="cam-tools">
-        <button type="button" data-tool="text"><b class="tool-aa">Aa</b><span data-i18n="bqToolText">نص</span></button>
-        <button type="button" data-tool="loop"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12c-2-2.6-3.6-4-5.6-4a4 4 0 0 0 0 8c2 0 3.6-1.4 5.6-4zm0 0c2 2.6 3.6 4 5.6 4a4 4 0 0 0 0-8c-2 0-3.6 1.4-5.6 4z"/></svg><span data-i18n="bqToolLoop">تكرار</span></button>
-        <button type="button" data-tool="layout"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="M12 3.5v17M12 12h8.5"/></svg><span data-i18n="bqToolLayout">تخطيط</span></button>
-        <button type="button" data-tool="filter"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="2"/><circle cx="17" cy="7.2" r="2"/><circle cx="19" cy="12" r="2"/><circle cx="17" cy="16.8" r="2"/><circle cx="12" cy="19" r="2"/><circle cx="7" cy="16.8" r="2"/><circle cx="5" cy="12" r="2"/><circle cx="7" cy="7.2" r="2"/></svg><span data-i18n="bqToolFilter">فلاتر</span></button>
-        <button type="button" data-tool="handsfree" class="tool-extra"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.5"/></svg><span data-i18n="bqToolHands">بدون يد</span></button>
-        <button type="button" data-tool="timer" class="tool-extra"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="7.5"/><path d="M12 9v4l2.5 2M9.5 2.5h5"/></svg><span data-i18n="bqToolTimer">مؤقت</span></button>
+        <button type="button" data-tool="text" data-i18n-aria="bqToolText" aria-label="نص"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6V4.5h14V6M12 4.5v15M9 19.5h6"/></svg><span data-i18n="bqToolText">نص</span></button>
+        <button type="button" data-tool="filter" data-i18n-aria="bqToolFilter" aria-label="فلاتر"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="9" r="5.5"/><circle cx="15" cy="9" r="5.5"/><circle cx="12" cy="15" r="5.5"/></svg><span data-i18n="bqToolFilter">فلاتر</span></button>
+        <button type="button" data-tool="loop" data-i18n-aria="bqToolLoop" aria-label="تكرار"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12c-2-2.6-3.6-4-5.6-4a4 4 0 0 0 0 8c2 0 3.6-1.4 5.6-4zm0 0c2 2.6 3.6 4 5.6 4a4 4 0 0 0 0-8c-2 0-3.6 1.4-5.6 4z"/></svg><span data-i18n="bqToolLoop">تكرار</span></button>
+        <button type="button" data-tool="layout" data-i18n-aria="bqToolLayout" aria-label="تخطيط"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="M12 3.5v17M12 12h8.5"/></svg><span data-i18n="bqToolLayout">تخطيط</span></button>
+        <button type="button" data-tool="handsfree" class="tool-extra" data-i18n-aria="bqToolHands" aria-label="بدون يد"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.5"/></svg><span data-i18n="bqToolHands">بدون يد</span></button>
+        <button type="button" data-tool="timer" class="tool-extra" data-i18n-aria="bqToolTimer" aria-label="مؤقت"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="7.5"/><path d="M12 9v4l2.5 2M9.5 2.5h5"/></svg><span data-i18n="bqToolTimer">مؤقت</span></button>
         <button type="button" data-tool="more" class="tool-more" data-i18n-aria="bqToolMore" aria-label="المزيد" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9.5l6 6 6-6"/></svg></button>
       </div>
 
@@ -1196,8 +1198,8 @@
     <button type="button" class="me-icon me-close" id="me-cancel" data-i18n-aria="igCancel" aria-label="إلغاء"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
     <nav class="me-tools" id="me-tools">
       <button type="button" data-me-tool="text" data-i18n-aria="meText" aria-label="نص"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6V4.5h14V6M12 4.5v15M9 19.5h6"/></svg><span data-i18n="meText">نص</span></button>
-      <button type="button" data-me-tool="draw" data-i18n-aria="meDraw" aria-label="رسم"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20c2.5 0 4-1.2 4-3.2 0-1.3-1-2.3-2.3-2.3C4.4 14.5 4 15.6 4 17v3z"/><path d="M8.6 14.4 19 4l1 1L9.6 15.4"/></svg><span data-i18n="meDraw">رسم</span></button>
       <button type="button" data-me-tool="filter" data-i18n-aria="meFilter" aria-label="فلاتر"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="9" r="5.5"/><circle cx="15" cy="9" r="5.5"/><circle cx="12" cy="15" r="5.5"/></svg><span data-i18n="meFilter">فلاتر</span></button>
+      <button type="button" data-me-tool="draw" data-i18n-aria="meDraw" aria-label="رسم"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20c2.5 0 4-1.2 4-3.2 0-1.3-1-2.3-2.3-2.3C4.4 14.5 4 15.6 4 17v3z"/><path d="M8.6 14.4 19 4l1 1L9.6 15.4"/></svg><span data-i18n="meDraw">رسم</span></button>
       <button type="button" data-me-tool="adjust" data-i18n-aria="meAdjust" aria-label="ضبط"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg><span data-i18n="meAdjust">ضبط</span></button>
       <button type="button" data-me-tool="trim" data-me-video data-i18n-aria="meTrim" aria-label="قص"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="7" r="2.5"/><circle cx="6" cy="17" r="2.5"/><path d="M8 8.5 20 18M8 15.5 20 6"/></svg><span data-i18n="meTrim">قص</span></button>
       <button type="button" data-me-tool="sound" data-me-video data-i18n-aria="meSound" aria-label="الصوت"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg><span data-i18n="meSound">الصوت</span></button>

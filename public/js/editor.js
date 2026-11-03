@@ -463,21 +463,11 @@ function meRound(label, className, icon, onClick) {
 }
 
 function mePanelFilter() {
-  const row = document.createElement("div");
-  row.className = "me-chips";
-  CAM_FILTERS.forEach((filter, index) => {
-    const chip = meButton(t(filter.key), "me-chip", () => {
-      meState.edits.filter = index;
-      mePaint();
-      row.querySelectorAll(".me-chip").forEach((item, at) => item.classList.toggle("on", at === index));
-    });
-    chip.classList.toggle("on", (meState.edits.filter || 0) === index);
-    const swatch = document.createElement("i");
-    swatch.style.filter = filter.css === "none" ? "" : filter.css;
-    chip.prepend(swatch);
-    row.append(chip);
-  });
-  mePanel.append(row);
+  mePanel.append(filterChips(meState.edits.filter || 0, (index) => {
+    meState.edits.filter = index;
+    mePaint();
+    meFlash(t(CAM_FILTERS[index].key));
+  }));
 }
 
 function mePanelAdjust() {
@@ -673,14 +663,8 @@ function mePanelSound() {
   mePanel.append(label, meNote("meMuteNote"));
 }
 
-let meFlashTimer = 0;
-
 function meFlash(text) {
-  const node = document.querySelector("#me-flash");
-  node.textContent = text;
-  node.classList.add("show");
-  clearTimeout(meFlashTimer);
-  meFlashTimer = setTimeout(() => node.classList.remove("show"), 900);
+  flashLabel(document.querySelector("#me-flash"), text);
 }
 
 function meHint(show) {
@@ -808,6 +792,7 @@ async function openMediaEditor(file, initial, options = {}) {
     mePanel.replaceChildren();
     meDialog.showModal();
     meHint(true);
+    if (state.edits.filter) meFlash(t(CAM_FILTERS[state.edits.filter].key));
     setTimeout(() => {
       if (meState === state) meHint(false);
     }, 4500);
@@ -992,9 +977,9 @@ meStage.addEventListener("pointermove", (event) => {
     if (drag.swipe) {
       const dx = point.cx - drag.start.cx;
       const dy = point.cy - drag.start.cy;
-      if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) * 1.3) {
-        const rtl = meDialog.dir === "rtl";
-        meCycleFilter((dx < 0) !== rtl ? 1 : -1);
+      const step = filterSwipeStep(dx, dy);
+      if (step) {
+        meCycleFilter(step);
       } else if (Math.abs(dx) < 12 && Math.abs(dy) < 12) {
         if (meState.tool === "text") meShowTool("none");
         else if (meState.tool !== "trim" && meState.tool !== "sound") meAddText(point.y);
