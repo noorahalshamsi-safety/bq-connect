@@ -9,7 +9,10 @@ Object.assign(dict.ar, {
   meSound: "الصوت",
   meRotate: "تدوير",
   meTextPh: "اكتب كلامك هنا",
-  meTextHint: "اسحب أي نص على الصورة لتغيير مكانه، واضغط عليه لتعديله",
+  meTextHint: "اسحب النص لتحريكه، وبإصبعين كبّره أو دوّره، واسحبه لسلة المهملات لحذفه",
+  meTapText: "اضغط على الشاشة لإضافة نص، واسحب يمين أو يسار لتغيير الفلتر",
+  meStyle: "شكل النص",
+  meColor: "اللون",
   meTextAdd: "نص جديد",
   meTextDelete: "حذف النص",
   meBox: "خلفية",
@@ -44,7 +47,10 @@ Object.assign(dict.en, {
   meSound: "Sound",
   meRotate: "Rotate",
   meTextPh: "Type your text",
-  meTextHint: "Drag any text to move it, tap it to edit",
+  meTextHint: "Drag text to move it, pinch to resize or rotate, drop it on the bin to delete",
+  meTapText: "Tap the screen to add text, swipe left or right to change the filter",
+  meStyle: "Text style",
+  meColor: "Color",
   meTextAdd: "New text",
   meTextDelete: "Delete text",
   meBox: "Background",
@@ -68,7 +74,6 @@ Object.assign(dict.en, {
   meLongTrim: "This video is longer than 60 seconds, pick the part you want",
 });
 
-const ME_COLORS = ["#ffffff", "#111111", "#e10600", "#ffd400", "#2563eb", "#16a34a", "#ec4899"];
 const ME_TEXT_MAX = 6;
 const ME_STROKE_MAX = 80;
 const meDialog = document.querySelector("#media-edit");
@@ -80,8 +85,34 @@ const meLayer = document.querySelector("#me-layer");
 const mePanel = document.querySelector("#me-panel");
 let meState = null;
 
+const ME_STYLES = ["bar", "plain", "box"];
+const ME_STYLE_SIZE = { bar: 0.05, plain: 0.085, box: 0.07 };
+
 function meBlankText(color) {
-  return { value: "", color: color || "#ffffff", box: false, size: 0.075, x: 0.5, y: 0.45 };
+  return { value: "", color: color || "#ffffff", style: "bar", size: ME_STYLE_SIZE.bar, x: 0.5, y: 0.45, angle: 0 };
+}
+
+function meTextStyle(item) {
+  return ME_STYLES.includes(item.style) ? item.style : item.box ? "box" : "plain";
+}
+
+function meLight(color) {
+  const hex = /^#([0-9a-f]{6})$/i.exec(String(color || ""));
+  if (!hex) return true;
+  const value = parseInt(hex[1], 16);
+  return 0.299 * ((value >> 16) & 255) + 0.587 * ((value >> 8) & 255) + 0.114 * (value & 255) > 150;
+}
+
+function meHueColor(fraction) {
+  if (fraction < 0.06) return "#ffffff";
+  if (fraction > 0.94) return "#111111";
+  const hue = ((fraction - 0.06) / 0.88) * 360;
+  const channel = (n) => {
+    const k = (n + hue / 30) % 12;
+    const value = 0.5 - 0.5 * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(value * 255).toString(16).padStart(2, "0");
+  };
+  return `#${channel(0)}${channel(8)}${channel(4)}`;
 }
 
 function meTexts(edits) {
@@ -120,26 +151,39 @@ function meFilterCss(edits) {
 function paintText(context, width, height, item) {
   const text = String(item.value || "").trim();
   if (!text) return null;
+  const style = meTextStyle(item);
   const size = Math.max(10, Math.round(width * item.size));
   context.save();
-  context.font = `800 ${size}px Cairo, Outfit, system-ui, sans-serif`;
+  context.font = `${style === "bar" ? 700 : 800} ${size}px Cairo, Outfit, system-ui, sans-serif`;
   context.direction = /[\u0600-\u06FF]/.test(text) ? "rtl" : "ltr";
   context.textAlign = "center";
   context.textBaseline = "middle";
-  const lines = camWrapLines(context, text, width * 0.84).slice(0, 8);
+  const lines = camWrapLines(context, text, width * (style === "bar" ? 0.9 : 0.84)).slice(0, 8);
   const lineHeight = size * 1.3;
+  const centerY = item.y * height;
+  const block = lines.length * lineHeight;
+  const first = -block / 2 + lineHeight / 2;
+  if (style === "bar") {
+    const box = { left: 0, top: centerY - block / 2 - size * 0.35, width, height: block + size * 0.7 };
+    context.fillStyle = "rgba(0, 0, 0, 0.55)";
+    context.fillRect(box.left, box.top, box.width, box.height);
+    context.fillStyle = item.color;
+    lines.forEach((line, index) => context.fillText(line, width / 2, centerY + first + index * lineHeight));
+    context.restore();
+    return box;
+  }
   const x = item.x * width;
-  const top = item.y * height - ((lines.length - 1) * lineHeight) / 2;
   const textWidth = Math.max(...lines.map((line) => context.measureText(line).width));
   const boxWidth = textWidth + size * 0.9;
-  const boxHeight = lines.length * lineHeight + size * 0.45;
-  const box = { left: x - boxWidth / 2, top: top - lineHeight / 2 - size * 0.22, width: boxWidth, height: boxHeight };
-  const light = ["#ffffff", "#ffd400"].includes(item.color);
-  if (item.box) {
+  const boxHeight = block + size * 0.45;
+  const light = meLight(item.color);
+  context.translate(x, centerY);
+  if (item.angle) context.rotate(item.angle);
+  if (style === "box") {
     context.fillStyle = item.color;
     context.beginPath();
-    if (context.roundRect) context.roundRect(box.left, box.top, box.width, box.height, size * 0.35);
-    else context.rect(box.left, box.top, box.width, box.height);
+    if (context.roundRect) context.roundRect(-boxWidth / 2, -boxHeight / 2, boxWidth, boxHeight, size * 0.35);
+    else context.rect(-boxWidth / 2, -boxHeight / 2, boxWidth, boxHeight);
     context.fill();
     context.fillStyle = light ? "#111111" : "#ffffff";
   } else {
@@ -148,9 +192,11 @@ function paintText(context, width, height, item) {
     context.shadowOffsetY = size * 0.04;
     context.fillStyle = item.color;
   }
-  lines.forEach((line, index) => context.fillText(line, x, top + index * lineHeight));
+  lines.forEach((line, index) => context.fillText(line, 0, first + index * lineHeight));
   context.restore();
-  return box;
+  if (!item.angle) return { left: x - boxWidth / 2, top: centerY - boxHeight / 2, width: boxWidth, height: boxHeight };
+  const reach = Math.max(boxWidth, boxHeight);
+  return { left: x - reach / 2, top: centerY - reach / 2, width: reach, height: reach };
 }
 
 function paintStroke(context, width, height, stroke) {
@@ -366,23 +412,54 @@ function meNote(key) {
   return note;
 }
 
-function meColorRow(current, onPick) {
-  const colors = document.createElement("div");
-  colors.className = "me-colors";
-  ME_COLORS.forEach((color) => {
-    const dot = document.createElement("button");
-    dot.type = "button";
-    dot.className = "me-color";
-    dot.style.background = color;
-    dot.setAttribute("aria-label", color);
-    dot.classList.toggle("on", current === color);
-    dot.addEventListener("click", () => {
-      colors.querySelectorAll(".me-color").forEach((item) => item.classList.toggle("on", item === dot));
-      onPick(color);
-    });
-    colors.append(dot);
+function meHueBar(current, onPick) {
+  const bar = document.createElement("div");
+  bar.className = "me-hue";
+  bar.setAttribute("role", "slider");
+  bar.setAttribute("aria-label", t("meColor"));
+  const knob = document.createElement("i");
+  knob.style.background = current;
+  knob.style.top = `${(meState.hueAt[current] ?? (current === "#111111" ? 0.97 : 0.03)) * 100}%`;
+  bar.append(knob);
+  let active = null;
+  const pick = (event) => {
+    const box = bar.getBoundingClientRect();
+    const fraction = Math.min(1, Math.max(0, (event.clientY - box.top) / box.height));
+    const color = meHueColor(fraction);
+    meState.hueAt[color] = fraction;
+    knob.style.top = `${fraction * 100}%`;
+    knob.style.background = color;
+    onPick(color);
+  };
+  bar.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    active = event.pointerId;
+    bar.classList.add("on");
+    try {
+      bar.setPointerCapture(event.pointerId);
+    } catch {}
+    pick(event);
   });
-  return colors;
+  bar.addEventListener("pointermove", (event) => {
+    if (active === event.pointerId) pick(event);
+  });
+  ["pointerup", "pointercancel"].forEach((name) => {
+    bar.addEventListener(name, () => {
+      active = null;
+      bar.classList.remove("on");
+    });
+  });
+  return bar;
+}
+
+function meRound(label, className, icon, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `me-icon ${className}`;
+  button.setAttribute("aria-label", label);
+  button.appendChild(svgIcon(icon));
+  button.addEventListener("click", onClick);
+  return button;
 }
 
 function mePanelFilter() {
@@ -430,62 +507,77 @@ function meCurrentText() {
   return texts[meState.textIndex];
 }
 
+function meAddText(y) {
+  const filled = meState.edits.texts.filter((row) => row.value.trim());
+  meState.edits.texts = filled;
+  if (filled.length >= ME_TEXT_MAX) {
+    meState.textIndex = filled.length - 1;
+    meShowTool("text");
+    return;
+  }
+  const item = meBlankText();
+  item.y = Math.min(0.9, Math.max(0.1, y));
+  filled.push(item);
+  meState.textIndex = filled.length - 1;
+  meShowTool("text");
+}
+
 function mePanelText() {
   const item = meCurrentText();
+  const row = document.createElement("div");
+  row.className = "me-text-row";
+  const style = document.createElement("button");
+  style.type = "button";
+  style.className = "me-icon me-style";
+  style.setAttribute("aria-label", t("meStyle"));
+  style.textContent = "Aa";
+  style.dataset.style = meTextStyle(item);
+  style.addEventListener("click", () => {
+    const next = ME_STYLES[(ME_STYLES.indexOf(meTextStyle(item)) + 1) % ME_STYLES.length];
+    item.style = next;
+    delete item.box;
+    item.size = ME_STYLE_SIZE[next];
+    if (next === "bar") {
+      item.x = 0.5;
+      item.angle = 0;
+    }
+    style.dataset.style = next;
+    mePaint();
+  });
   const input = document.createElement("textarea");
   input.className = "me-text";
-  input.rows = 2;
+  input.rows = 1;
   input.maxLength = 140;
   input.dir = "auto";
   input.placeholder = t("meTextPh");
   input.value = item.value;
+  const grow = () => {
+    input.style.height = "44px";
+    input.style.height = `${Math.max(44, input.scrollHeight)}px`;
+  };
   input.addEventListener("input", () => {
     item.value = input.value;
+    grow();
     mePaint();
   });
-  const colors = meColorRow(item.color, (color) => {
+  requestAnimationFrame(grow);
+  const remove = meRound(t("meTextDelete"), "me-text-del", "M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13", () => {
+    meState.edits.texts.splice(meState.textIndex, 1);
+    meState.textIndex = Math.max(0, meState.edits.texts.length - 1);
+    meShowTool("none");
+  });
+  row.append(style, input, remove);
+  const hue = meHueBar(item.color, (color) => {
     item.color = color;
     mePaint();
   });
-  const box = meButton(t("meBox"), "me-chip me-box", () => {
-    item.box = !item.box;
-    box.classList.toggle("on", item.box);
-    mePaint();
-  });
-  box.classList.toggle("on", item.box);
-  colors.append(box);
-  const size = meRange(t("meSize"), 0.04, 0.16, 0.005, item.size, (value, out) => {
-    item.size = value;
-    out.textContent = `${Math.round(value * 1000) / 10}`;
-    mePaint();
-  });
-  const actions = document.createElement("div");
-  actions.className = "me-actions";
-  const add = meButton(t("meTextAdd"), "me-chip", () => {
-    const texts = meState.edits.texts;
-    const filled = texts.filter((row) => row.value.trim());
-    if (filled.length >= ME_TEXT_MAX) return;
-    meState.edits.texts = filled;
-    const next = meBlankText(item.color);
-    const free = [0.25, 0.65, 0.15, 0.8, 0.35, 0.55].find((y) => filled.every((row) => Math.abs(row.y - y) > 0.12));
-    next.y = free === undefined ? 0.5 : free;
-    meState.edits.texts.push(next);
-    meState.textIndex = meState.edits.texts.length - 1;
-    meShowTool("text");
-  });
-  const remove = meButton(t("meTextDelete"), "me-chip", () => {
-    meState.edits.texts.splice(meState.textIndex, 1);
-    meState.textIndex = Math.max(0, meState.edits.texts.length - 1);
-    meShowTool("text");
-  });
-  actions.append(add, remove);
-  mePanel.append(input, colors, size, actions, meNote("meTextHint"));
-  if (!item.value) setTimeout(() => input.focus(), 60);
+  mePanel.append(row, hue, meNote("meTextHint"));
+  setTimeout(() => input.focus(), 60);
 }
 
 function mePanelDraw() {
   const pen = meState.pen;
-  const colors = meColorRow(pen.color, (color) => {
+  const hue = meHueBar(pen.color, (color) => {
     pen.color = color;
   });
   const size = meRange(t("meBrush"), 0.006, 0.04, 0.002, pen.size, (value, out) => {
@@ -504,7 +596,7 @@ function mePanelDraw() {
       mePaint();
     }),
   );
-  mePanel.append(colors, size, actions, meNote("meDrawHint"));
+  mePanel.append(hue, size, actions, meNote("meDrawHint"));
 }
 
 function meTrimLimits() {
@@ -581,15 +673,40 @@ function mePanelSound() {
   mePanel.append(label, meNote("meMuteNote"));
 }
 
+let meFlashTimer = 0;
+
+function meFlash(text) {
+  const node = document.querySelector("#me-flash");
+  node.textContent = text;
+  node.classList.add("show");
+  clearTimeout(meFlashTimer);
+  meFlashTimer = setTimeout(() => node.classList.remove("show"), 900);
+}
+
+function meHint(show) {
+  document.querySelector("#me-hint").classList.toggle("show", show);
+}
+
+function meCycleFilter(step) {
+  const count = CAM_FILTERS.length;
+  meState.edits.filter = ((((meState.edits.filter || 0) + step) % count) + count) % count;
+  mePaint();
+  meFlash(t(CAM_FILTERS[meState.edits.filter].key));
+  if (meState.tool === "filter") meShowTool("filter");
+}
+
 function meShowTool(tool) {
   if (!meState) return;
   if (meState.tool === "text" && tool !== "text") meState.edits.texts = meState.edits.texts.filter((row) => row.value.trim());
   meState.tool = tool;
   mePanel.replaceChildren();
+  mePanel.classList.toggle("top", tool === "text");
+  meDialog.classList.toggle("me-focus", tool === "text" || tool === "draw");
   document.querySelectorAll("#me-tools [data-me-tool]").forEach((button) => {
     button.classList.toggle("on", button.dataset.meTool === tool);
   });
   meLayer.classList.toggle("drawing", tool === "draw");
+  if (tool !== "none") meHint(false);
   if (tool === "filter") mePanelFilter();
   else if (tool === "adjust") mePanelAdjust();
   else if (tool === "text") mePanelText();
@@ -604,6 +721,10 @@ function meFinish(result) {
   const state = meState;
   meState = null;
   meDrag = null;
+  mePointers.clear();
+  meDialog.classList.remove("me-focus", "me-dragging");
+  mePanel.classList.remove("top");
+  meHint(false);
   meVideo.pause();
   meVideo.removeAttribute("src");
   meVideo.load();
@@ -659,9 +780,10 @@ async function openMediaEditor(file, initial, options = {}) {
       url: "",
       picture: null,
       duration: 0,
-      tool: "filter",
+      tool: "none",
       textIndex: 0,
       boxes: [],
+      hueAt: {},
       pen: { color: "#ffffff", size: 0.012 },
       edits: {
         filter: start.filter || 0,
@@ -674,7 +796,7 @@ async function openMediaEditor(file, initial, options = {}) {
       },
     };
     const state = meState;
-    const done = document.querySelector("#me-done");
+    const done = document.querySelector("#me-done span");
     done.dataset.i18n = options.doneKey || "meDone";
     done.textContent = t(done.dataset.i18n);
     meDialog.dir = document.documentElement.dir;
@@ -685,6 +807,10 @@ async function openMediaEditor(file, initial, options = {}) {
     document.querySelectorAll("#me-tools [data-me-photo]").forEach((button) => (button.hidden = video));
     mePanel.replaceChildren();
     meDialog.showModal();
+    meHint(true);
+    setTimeout(() => {
+      if (meState === state) meHint(false);
+    }, 4500);
     if (video) {
       state.url = URL.createObjectURL(file);
       meVideo.muted = state.edits.mute;
@@ -700,7 +826,7 @@ async function openMediaEditor(file, initial, options = {}) {
           meVideo.muted = true;
           meVideo.play().catch(() => {});
         });
-        meShowTool(long ? "trim" : "filter");
+        meShowTool(long ? "trim" : "none");
         if (long) mePanel.prepend(meNote("meLongTrim"));
       });
     } else {
@@ -712,7 +838,7 @@ async function openMediaEditor(file, initial, options = {}) {
           }
           state.picture = picture;
           meLayout();
-          meShowTool("filter");
+          meShowTool("none");
         })
         .catch(() => meFinish(null));
     }
@@ -727,10 +853,14 @@ meVideo.addEventListener("timeupdate", () => {
 meVideo.addEventListener("loadedmetadata", meLayout);
 
 let meDrag = null;
+const mePointers = new Map();
+const meTrash = document.querySelector("#me-trash");
 
 function mePoint(event) {
   const box = meLayer.getBoundingClientRect();
   return {
+    cx: event.clientX,
+    cy: event.clientY,
     x: Math.min(1, Math.max(0, (event.clientX - box.left) / box.width)),
     y: Math.min(1, Math.max(0, (event.clientY - box.top) / box.height)),
     px: ((event.clientX - box.left) / box.width) * meLayer.width,
@@ -747,55 +877,141 @@ function meHitText(point) {
   return -1;
 }
 
-meLayer.addEventListener("pointerdown", (event) => {
+function meOverTrash(point) {
+  const box = meTrash.getBoundingClientRect();
+  return point.cx >= box.left - 18 && point.cx <= box.right + 18 && point.cy >= box.top - 18 && point.cy <= box.bottom + 18;
+}
+
+function mePinchShape() {
+  const [a, b] = [...mePointers.values()];
+  return { dist: Math.hypot(a.cx - b.cx, a.cy - b.cy) || 1, angle: Math.atan2(b.cy - a.cy, b.cx - a.cx) };
+}
+
+function meEndDrag() {
+  meDrag = null;
+  meDialog.classList.remove("me-dragging");
+  meTrash.classList.remove("show", "hot");
+}
+
+meStage.addEventListener("pointerdown", (event) => {
   if (!meState) return;
   const point = mePoint(event);
+  mePointers.set(event.pointerId, point);
+  meHint(false);
+  event.preventDefault();
+  try {
+    meStage.setPointerCapture(event.pointerId);
+  } catch {}
+  if (mePointers.size === 2 && meDrag && meDrag.item) {
+    const shape = mePinchShape();
+    meDrag.pinch = { ...shape, size: meDrag.item.size, turn: meDrag.item.angle || 0 };
+    meDrag.moved = true;
+    return;
+  }
+  if (mePointers.size > 1) return;
   if (meState.tool === "draw") {
     if (meState.edits.strokes.length >= ME_STROKE_MAX) return;
     const stroke = { color: meState.pen.color, size: meState.pen.size, points: [[point.x, point.y]] };
     meState.edits.strokes.push(stroke);
     meDrag = { id: event.pointerId, stroke };
   } else {
-    let index = meHitText(point);
-    if (index < 0 && meState.tool === "text" && meState.edits.texts[meState.textIndex]) index = meState.textIndex;
-    if (index < 0) return;
-    const item = meState.edits.texts[index];
-    const switched = index !== meState.textIndex || meState.tool !== "text";
-    meState.textIndex = index;
-    meDrag = { id: event.pointerId, item, dx: item.x - point.x, dy: item.y - point.y, moved: false, switched };
+    const index = meHitText(point);
+    if (index >= 0) {
+      const item = meState.edits.texts[index];
+      meState.textIndex = index;
+      meDrag = { id: event.pointerId, item, dx: item.x - point.x, dy: item.y - point.y, start: point, moved: false };
+    } else {
+      meDrag = { id: event.pointerId, swipe: true, start: point };
+    }
   }
-  event.preventDefault();
-  try {
-    meLayer.setPointerCapture(event.pointerId);
-  } catch {}
   mePaint();
 });
-meLayer.addEventListener("pointermove", (event) => {
-  if (!meState || !meDrag || meDrag.id !== event.pointerId) return;
+meStage.addEventListener("pointermove", (event) => {
+  if (!meState || !mePointers.has(event.pointerId)) return;
   const point = mePoint(event);
+  mePointers.set(event.pointerId, point);
+  if (!meDrag) return;
+  if (meDrag.pinch && mePointers.size >= 2) {
+    const shape = mePinchShape();
+    const item = meDrag.item;
+    item.size = Math.min(0.3, Math.max(0.03, (meDrag.pinch.size * shape.dist) / meDrag.pinch.dist));
+    if (meTextStyle(item) !== "bar") item.angle = meDrag.pinch.turn + shape.angle - meDrag.pinch.angle;
+    mePaint();
+    return;
+  }
+  if (meDrag.id !== event.pointerId) return;
   if (meDrag.stroke) {
     const points = meDrag.stroke.points;
     const last = points[points.length - 1];
     if (Math.hypot(point.x - last[0], point.y - last[1]) < 0.004 || points.length >= 600) return;
     points.push([Math.round(point.x * 10000) / 10000, Math.round(point.y * 10000) / 10000]);
-  } else {
+    mePaint();
+  } else if (meDrag.item) {
+    if (!meDrag.moved && Math.hypot(point.cx - meDrag.start.cx, point.cy - meDrag.start.cy) < 6) return;
     meDrag.moved = true;
-    meDrag.item.x = Math.min(0.95, Math.max(0.05, point.x + meDrag.dx));
-    meDrag.item.y = Math.min(0.95, Math.max(0.05, point.y + meDrag.dy));
+    const item = meDrag.item;
+    if (meTextStyle(item) !== "bar") item.x = Math.min(0.95, Math.max(0.05, point.x + meDrag.dx));
+    item.y = Math.min(0.95, Math.max(0.05, point.y + meDrag.dy));
+    meDialog.classList.add("me-dragging");
+    meTrash.classList.add("show");
+    meTrash.classList.toggle("hot", meOverTrash(point));
+    mePaint();
   }
-  mePaint();
 });
 ["pointerup", "pointercancel"].forEach((name) => {
-  meLayer.addEventListener(name, () => {
+  meStage.addEventListener(name, (event) => {
+    const point = mePointers.get(event.pointerId);
+    mePointers.delete(event.pointerId);
     const drag = meDrag;
-    meDrag = null;
-    if (meState && drag && drag.item && drag.switched) meShowTool("text");
+    if (!meState || !drag) return;
+    if (drag.pinch) {
+      if (!mePointers.size) meEndDrag();
+      else if (drag.id === event.pointerId) drag.pinch = null;
+      mePaint();
+      return;
+    }
+    if (drag.id !== event.pointerId) return;
+    const trashed = meTrash.classList.contains("hot");
+    meEndDrag();
+    if (name === "pointercancel" || !point) {
+      mePaint();
+      return;
+    }
+    if (drag.item) {
+      if (trashed) {
+        const at = meState.edits.texts.indexOf(drag.item);
+        if (at >= 0) meState.edits.texts.splice(at, 1);
+        meState.textIndex = Math.max(0, meState.edits.texts.length - 1);
+        if (meState.tool === "text") meShowTool("none");
+      } else if (!drag.moved) {
+        meShowTool("text");
+      }
+      mePaint();
+      return;
+    }
+    if (drag.swipe) {
+      const dx = point.cx - drag.start.cx;
+      const dy = point.cy - drag.start.cy;
+      if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) * 1.3) {
+        const rtl = meDialog.dir === "rtl";
+        meCycleFilter((dx < 0) !== rtl ? 1 : -1);
+      } else if (Math.abs(dx) < 12 && Math.abs(dy) < 12) {
+        if (meState.tool === "text") meShowTool("none");
+        else if (meState.tool !== "trim" && meState.tool !== "sound") meAddText(point.y);
+      }
+    }
   });
 });
 
 document.querySelectorAll("#me-tools [data-me-tool]").forEach((button) => {
-  button.addEventListener("click", () => meShowTool(button.dataset.meTool));
+  button.addEventListener("click", () => {
+    if (!meState) return;
+    const tool = button.dataset.meTool;
+    if (tool === "text") meAddText(0.45);
+    else meShowTool(meState.tool === tool ? "none" : tool);
+  });
 });
+document.querySelector("#me-tool-done").addEventListener("click", () => meShowTool("none"));
 document.querySelector("#me-rotate").addEventListener("click", () => {
   if (!meState || meState.video) return;
   meState.edits.rotate = ((meState.edits.rotate || 0) + 90) % 360;

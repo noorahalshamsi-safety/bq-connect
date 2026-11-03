@@ -102,7 +102,8 @@ const dict = {
     workIdeas: "الأفكار",
     workProjects: "المشاريع",
     geoLocating: "جاري تحديد موقعك…",
-    geoPinned: "موقع محدد",
+    geoNaming: "تم تحديد موقعك، جاري جلب اسم المكان…",
+    geoPinned: "تم تحديد موقعك على الخريطة",
     geoOnMap: "الموقع على الخريطة",
     geoDenied: "لم يُسمح بالوصول للموقع. فعّل إذن الموقع من المتصفح أو اكتب المكان.",
     geoFailed: "تعذّر تحديد الموقع. اكتب المكان يدويًا.",
@@ -827,7 +828,8 @@ const dict = {
     workIdeas: "Ideas",
     workProjects: "Projects",
     geoLocating: "Locating you…",
-    geoPinned: "Pinned location",
+    geoNaming: "Location found, getting the place name…",
+    geoPinned: "Location pinned on the map",
     geoOnMap: "Location on map",
     geoDenied: "Location access was blocked. Allow it in the browser or type the place.",
     geoFailed: "Couldn't get your location. Type the place instead.",
@@ -1544,6 +1546,8 @@ let openId = null;
 let openComment = null;
 let threadWrite = false;
 let threadJump = false;
+let reelsFocus = null;
+let reelsOpening = false;
 let view = "home";
 let backView = "home";
 let profileTab = "grid";
@@ -1939,14 +1943,31 @@ function syncPointAdd(kind) {
 
 function displayPlace(value) {
   const text = String(value || "").trim();
-  if (geoPoint(text)) return t("geoPinned");
+  const point = geoPoint(text);
+  if (point) return point.name || t("geoPinned");
   if (PLACES.includes(text) && text !== "other") return t("place_" + text);
   return text;
 }
 
 function geoPoint(value) {
-  const match = /^geo:(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)$/.exec(String(value || "").trim());
-  return match ? { lat: match[1], lng: match[2] } : null;
+  const match = /^geo:(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)(?:;(.{1,60}))?$/.exec(String(value || "").trim());
+  return match ? { lat: match[1], lng: match[2], name: (match[3] || "").trim() } : null;
+}
+
+async function placeName(lat, lng) {
+  if (!selectedPerson) return "";
+  try {
+    const response = await fetch("/api/place-name", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: selectedPerson.token, lat, lng, lang }),
+    });
+    if (!response.ok) return "";
+    const data = await response.json();
+    return String(data.name || "").replace(/[;|]/g, " ").trim().slice(0, 55);
+  } catch {
+    return "";
+  }
 }
 
 function mapUrl(point) {
@@ -1969,11 +1990,15 @@ function locateMe() {
   }
   label.textContent = t("geoLocating");
   navigator.geolocation.getCurrentPosition(
-    (position) => {
-      input.value = `geo:${position.coords.latitude.toFixed(5)},${position.coords.longitude.toFixed(5)}`;
+    async (position) => {
+      const point = `geo:${position.coords.latitude.toFixed(5)},${position.coords.longitude.toFixed(5)}`;
+      input.value = point;
       input.hidden = true;
       if (postType === "idea") setPlaceValue("");
       formError.textContent = "";
+      label.textContent = t("geoNaming");
+      const name = await placeName(position.coords.latitude, position.coords.longitude);
+      if (name && input.value === point) input.value = `${point};${name}`;
       paintComposeRows();
     },
     (error) => {
@@ -2311,6 +2336,25 @@ function matchesChip(idea) {
   return inHubPeriod(idea);
 }
 
+const cardMemo = new Map();
+
+function memoCard(idea, hub) {
+  const key = `${hub ? "h" : "f"}:${idea.id}`;
+  const sig = `${lang}|${hotId === idea.id}|${Math.floor(Date.now() / 60000)}|${JSON.stringify(idea)}`;
+  const hit = cardMemo.get(key);
+  if (hit && hit.sig === sig) return hit.node;
+  const node = hub ? hubCard(idea) : feedPost(idea);
+  cardMemo.set(key, { sig, node });
+  return node;
+}
+
+function pruneCards() {
+  const live = new Set(ideas.map((idea) => idea.id));
+  cardMemo.forEach((value, key) => {
+    if (!live.has(key.slice(2))) cardMemo.delete(key);
+  });
+}
+
 function renderInbox() {
   const list = document.querySelector("#inbox-list");
   const words = searchWords(view === "hub" ? hubQuery.value : searchInput.value);
@@ -2345,17 +2389,20 @@ function renderInbox() {
   renderSpark();
   renderAnnounce();
 
-  list.replaceChildren();
   if (!filtered.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
     empty.textContent = words.length ? t("inboxNoMatch") : hub ? t("hubEmpty") : view === "home" && feedMode === "following" ? t("feedFollowEmpty") : ideas.length ? t("inboxNoMatch") : t("inboxEmpty");
-    list.appendChild(empty);
+    list.replaceChildren(empty);
   } else {
-    filtered.forEach((idea) => list.appendChild(hub ? hubCard(idea) : feedPost(idea)));
+    const nodes = filtered.map((idea) => memoCard(idea, hub));
+    const same = nodes.length === list.children.length && nodes.every((node, index) => list.children[index] === node);
+    if (!same) list.replaceChildren(...nodes);
   }
+  pruneCards();
   list.classList.toggle("hub-list", hub);
   if (openId && detailView && !detailView.hidden) renderThread();
+  if (typeof refreshMediaViewer === "function") refreshMediaViewer();
 }
 
 function svgIcon(path) {
@@ -2430,7 +2477,8 @@ function markStorySeen(id) {
 
 function storyPeople() {
   const map = new Map();
-  ideas.filter((idea) => idea.type === "story" && idea.media).forEach((idea) => {
+  const now = Date.now();
+  ideas.filter((idea) => idea.type === "story" && idea.media && !(Date.parse(idea.expiresAt) < now)).forEach((idea) => {
     const key = String((idea.author && idea.author.pid) || idea.pid || idea.id);
     if (!map.has(key)) map.set(key, { key, mine: Boolean(idea.mine), bits: authorBits(idea), items: [] });
     const row = map.get(key);
@@ -2612,11 +2660,104 @@ function paintStoryFrame() {
   caption.textContent = item.text || item.title || "";
   if (caption.textContent) stage.appendChild(caption);
   paintStoryMute();
+  paintStorySocial(item);
   view.hidden = false;
   storyPaused = false;
   storyElapsed = 0;
   storyStamp = Date.now();
   runStoryClock();
+}
+
+function storySocialIdea(item) {
+  return ideas.find((idea) => idea.id === item.id) || (typeof admPeek !== "undefined" ? admPeek.get(item.id) : null) || null;
+}
+
+function currentStoryItem() {
+  const row = viewerRows()[storyGroup];
+  return row ? row.items[storyIndex] : null;
+}
+
+async function peekStory(item) {
+  if (!selectedPerson || typeof admPeek === "undefined") return;
+  const response = await fetch(`/api/ideas/${encodeURIComponent(item.id)}/peek`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: selectedPerson.token }),
+  }).catch(() => null);
+  if (!response || !response.ok) return;
+  const data = await response.json();
+  if (!data.idea) return;
+  admPeek.set(item.id, data.idea);
+  const now = currentStoryItem();
+  if (now && now.id === item.id && !document.querySelector("#story-view").hidden) paintStorySocial(item);
+}
+
+async function likeStory(idea) {
+  if (!selectedPerson) return;
+  const response = await fetch(`/api/ideas/${encodeURIComponent(idea.id)}/rating`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: selectedPerson.token, vote: "like" }),
+  }).catch(() => null);
+  if (!response || !response.ok) return;
+  takeIdeas(await response.json());
+  const now = currentStoryItem();
+  if (now) paintStorySocial(now);
+}
+
+function openStoryComments(idea) {
+  closeStoryViewer();
+  openThread(idea.id);
+}
+
+function paintStorySocial(item) {
+  const view = document.querySelector("#story-view");
+  let foot = document.querySelector("#story-foot");
+  if (!foot) {
+    foot = document.createElement("div");
+    foot.id = "story-foot";
+    foot.className = "story-foot";
+    view.appendChild(foot);
+  }
+  foot.replaceChildren();
+  const idea = storySocialIdea(item);
+  foot.hidden = !idea;
+  if (!idea) {
+    peekStory(item);
+    return;
+  }
+  const total = Array.isArray(idea.comments) ? idea.comments.length : 0;
+  const talk = document.createElement("button");
+  talk.type = "button";
+  talk.className = "story-talk";
+  talk.appendChild(svgIcon(ICONS.reply));
+  const label = document.createElement("span");
+  label.textContent = total ? tf("storyComments", { n: total }) : t("storyCommentPh");
+  talk.appendChild(label);
+  talk.addEventListener("click", () => openStoryComments(idea));
+  const liked = idea.rating?.mine === "like";
+  const like = document.createElement("button");
+  like.type = "button";
+  like.className = liked ? "story-act on" : "story-act";
+  like.setAttribute("aria-label", t("likeLabel"));
+  like.appendChild(svgIcon(ICONS.like));
+  const likes = document.createElement("span");
+  likes.textContent = idea.rating?.likes ? compactCount(idea.rating.likes) : "";
+  like.appendChild(likes);
+  like.addEventListener("click", () => {
+    like.classList.toggle("on", !liked);
+    likeStory(idea);
+  });
+  const share = document.createElement("button");
+  share.type = "button";
+  share.className = "story-act";
+  share.setAttribute("aria-label", t("bqShare"));
+  share.appendChild(svgIcon(FEED_ICONS.share));
+  share.addEventListener("click", () => {
+    pauseStory();
+    feedShare(idea);
+  });
+  foot.append(talk, like, share);
 }
 
 function runStoryClock() {
@@ -2733,22 +2874,31 @@ function repostButton(idea) {
   const count = document.createElement("span");
   if (idea.reposts) count.textContent = String(idea.reposts);
   button.appendChild(count);
-  button.addEventListener("click", async (event) => {
+  button.addEventListener("click", (event) => {
     event.stopPropagation();
-    if (!selectedPerson) return;
-    const response = await fetch(`/api/ideas/${encodeURIComponent(idea.id)}/repost`, {
+    toggleRepost(idea.id);
+  });
+  return button;
+}
+
+let repostBusy = false;
+
+async function toggleRepost(id) {
+  if (!selectedPerson || repostBusy) return;
+  repostBusy = true;
+  try {
+    const response = await fetch(`/api/ideas/${encodeURIComponent(id)}/repost`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token: selectedPerson.token }),
     });
     if (!response.ok) return;
-    const data = await response.json();
-    ideas = data.ideas;
-    stats = data.stats;
-    renderInbox();
+    takeIdeas(await response.json());
+    paintIdeas();
     loadAlerts();
-  });
-  return button;
+  } finally {
+    repostBusy = false;
+  }
 }
 
 function pollBox(idea) {
@@ -2893,7 +3043,7 @@ function ideaBoard(idea, full) {
       link.href = mapUrl(point);
       link.target = "_blank";
       link.rel = "noopener";
-      link.textContent = t("geoOnMap");
+      link.textContent = point.name || t("geoOnMap");
       place.appendChild(link);
     } else {
       place.textContent = displayPlace(idea.place);
@@ -2973,8 +3123,33 @@ function openThread(id) {
 function closeThread() {
   openId = null;
   openComment = null;
-  if (location.hash.startsWith("#idea=")) history.replaceState(null, "", location.pathname + location.search);
   showView(view);
+}
+
+let startRoute = location.hash;
+const ROUTE_VIEWS = new Set(["alerts", "profile", "groups", "explore", "search", "storyboard", "announcements", "recognition", "growth", "settings"]);
+
+function routeHash() {
+  if (openId) return `#idea=${encodeURIComponent(openId)}`;
+  if (view === "person" && typeof personPage !== "undefined" && personPage && personPage.pid) return `#p=${encodeURIComponent(personPage.pid)}`;
+  if (ROUTE_VIEWS.has(view) || view === "dashboard" || view === "moderation") return `#v=${view}`;
+  return "";
+}
+
+function writeRoute() {
+  const hash = routeHash();
+  if (location.hash !== hash) history.replaceState(null, "", location.pathname + location.search + hash);
+}
+
+function restoreRoute() {
+  if (!startRoute || !selectedPerson || startRoute.startsWith("#idea=")) return;
+  const route = startRoute;
+  startRoute = "";
+  const page = route.match(/^#v=([a-z]+)$/);
+  const person = route.match(/^#p=(.+)$/);
+  const allowed = page && (ROUTE_VIEWS.has(page[1]) || (page[1] === "dashboard" && selectedPerson.dashboard) || (page[1] === "moderation" && selectedPerson.moderator));
+  if (allowed && view === "home" && !openId) showView(page[1]);
+  else if (person && view === "home" && !openId) openPerson(decodeURIComponent(person[1]));
 }
 
 function syncFormMode() {
@@ -2988,6 +3163,8 @@ function syncFormMode() {
 
 function showView(next) {
   if (next !== "storyboard") pauseReels();
+  if (!reelsOpening) reelsFocus = null;
+  reelsOpening = false;
   if (next !== view) {
     backView = view;
     setHubSearch(false);
@@ -3000,7 +3177,7 @@ function showView(next) {
   openId = null;
   openComment = null;
   document.body.dataset.screen = next === "hub" ? "hub" : next;
-  if (location.hash.startsWith("#idea=")) history.replaceState(null, "", location.pathname + location.search);
+  writeRoute();
   SCREEN_IDS.forEach((id) => {
     const node = document.querySelector(id);
     if (node) node.hidden = true;
@@ -3198,7 +3375,7 @@ function renderThread() {
     threadJump = true;
     renderThread();
   };
-  const actions = { open: (comment) => goTo(comment), reply: canAnswer ? (comment) => goTo(comment, true) : null };
+  const actions = { open: (comment) => goTo(comment), reply: canAnswer ? (comment) => goTo(comment, true) : null, like: (comment) => likeComment(idea.id, comment.id) };
   const replies = document.createElement("div");
   replies.className = "replies twd-replies";
   const children = list.filter((comment) => parentOf(comment) === (focus ? focus.id : ""));
@@ -3218,7 +3395,7 @@ function renderThread() {
     chain = document.createElement("div");
     chain.className = "twr-chain";
     path.forEach((comment) => {
-      const card = commentCard(comment, comment === focus ? { reply: actions.reply, focus: true } : { ...actions, linked: true });
+      const card = commentCard(comment, comment === focus ? { reply: actions.reply, like: actions.like, focus: true } : { ...actions, linked: true });
       if (comment === focus) focusCard = card;
       chain.appendChild(card);
     });
@@ -3349,16 +3526,26 @@ function renderThread() {
   replyMain.className = "twd-reply-main";
   replyMain.append(replyingTo, commentInput, preview, emojiPanel, row, commentError);
   commentForm.append(myFace, replyMain);
+  let commentSending = false;
   commentForm.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (commentSending) return;
     commentError.textContent = "";
     const text = commentInput.value.trim();
     if (!text && !commentMedia) {
       commentError.textContent = t("errRequired");
       return;
     }
-    if (!(await termsCheck(text))) return;
-    const result = await addComment(idea.id, text, commentMedia, focus && focus.id);
+    commentSending = true;
+    commentButton.disabled = true;
+    let result = "failed";
+    try {
+      if (!(await termsCheck(text))) return;
+      result = await addComment(idea.id, text, commentMedia, focus && focus.id);
+    } finally {
+      commentSending = false;
+      if (result !== "ok") syncReply();
+    }
     if (result === "verify") commentError.textContent = t("needVerify");
     else if (result === "terms") openTerms(true);
     else if (result === "closed") commentError.textContent = t("repliesClosed");
@@ -3486,6 +3673,26 @@ function commentCard(comment, options) {
   const count = Number(comment.replies) || 0;
   const foot = document.createElement("div");
   foot.className = "twr-foot";
+  if (opts.like && comment.id) {
+    const like = document.createElement("button");
+    like.type = "button";
+    like.className = comment.liked ? "twr-like on" : "twr-like";
+    like.setAttribute("aria-label", t("likeLabel"));
+    like.setAttribute("aria-pressed", String(Boolean(comment.liked)));
+    like.appendChild(svgIcon(ICONS.like));
+    const likes = document.createElement("span");
+    likes.textContent = comment.likes ? compactCount(comment.likes) : "";
+    like.appendChild(likes);
+    like.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const on = !like.classList.contains("on");
+      like.classList.toggle("on", on);
+      const next = Math.max(0, (Number(comment.likes) || 0) + (on === Boolean(comment.liked) ? 0 : on ? 1 : -1));
+      likes.textContent = next ? compactCount(next) : "";
+      opts.like(comment);
+    });
+    foot.appendChild(like);
+  }
   if (opts.reply && comment.id) {
     const answer = document.createElement("button");
     answer.type = "button";
@@ -3587,10 +3794,14 @@ function paintIdeas() {
   if (view === "announcements") renderAnnouncements();
   if (view === "department") renderDepartmentPosts();
   paintGlobalAnnounce();
-  const hash = location.hash.match(/^#idea=(.+)$/);
+  restoreRoute();
+  const hash = (location.hash.startsWith("#idea=") ? location.hash : startRoute).match(/^#idea=(.+)$/);
   if (hash && !openId) {
     const id = decodeURIComponent(hash[1]);
-    if (ideas.some((idea) => idea.id === id)) openThread(id);
+    if (ideas.some((idea) => idea.id === id)) {
+      startRoute = "";
+      openThread(id);
+    }
   }
 }
 
@@ -3764,9 +3975,7 @@ async function toggleSave(id) {
     return;
   }
   if (!response.ok) return;
-  const data = await response.json();
-  ideas = data.ideas;
-  stats = data.stats;
+  takeIdeas(await response.json());
   renderPulse();
   renderInbox();
   if (openId) renderThread();
@@ -3823,9 +4032,7 @@ async function rateIdea(id, vote) {
     return;
   }
   if (!response.ok) return;
-  const data = await response.json();
-  ideas = data.ideas;
-  stats = data.stats;
+  takeIdeas(await response.json());
   renderPulse();
   renderInbox();
   if (openId) renderThread();
@@ -3858,13 +4065,41 @@ async function addComment(id, text, media, replyTo) {
   }
   if (await conductReply(response)) return "offensive";
   if (!response.ok) return "failed";
-  const data = await response.json();
-  ideas = data.ideas;
-  stats = data.stats;
+  takeIdeas(await response.json());
   renderPulse();
   renderInbox();
   loadAlerts();
   return "ok";
+}
+
+const commentLikeBusy = new Set();
+
+async function likeComment(ideaId, commentId) {
+  if (!selectedPerson || commentLikeBusy.has(commentId)) return;
+  commentLikeBusy.add(commentId);
+  try {
+    const response = await fetch(`/api/ideas/${encodeURIComponent(ideaId)}/comment-like`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: selectedPerson.token, commentId }),
+    });
+    if (response.status === 401) {
+      clearSession();
+      return;
+    }
+    if (!response.ok) return;
+    takeIdeas(await response.json());
+    renderInbox();
+    loadAlerts();
+  } finally {
+    commentLikeBusy.delete(commentId);
+  }
+}
+
+function takeIdeas(data) {
+  ideas = data.ideas || [];
+  stats = data.stats || stats;
+  if (data.idea && typeof admPeek !== "undefined" && !ideas.some((item) => item.id === data.idea.id)) admPeek.set(data.idea.id, data.idea);
 }
 
 function announceItems() {
@@ -3978,6 +4213,7 @@ const NOTICE_ICONS = {
   message: ICONS.reply,
   comment: ICONS.reply,
   reply: ICONS.reply,
+  "comment-like": ICONS.like,
   status: "M9 18h6M10 21h4M12 3a6 6 0 0 1 3.5 10.9c-.7.5-1.1 1.2-1.2 2.1h-4.6c-.1-.9-.5-1.6-1.2-2.1A6 6 0 0 1 12 3z",
   mention: "M16 12a4 4 0 1 1-1.2-2.8M16 8v5.5a2.5 2.5 0 0 0 5 0V12a9 9 0 1 0-3.5 7.1",
   complaint: "M12 4 3.5 19h17zM12 10v4M12 16.5v.5",
@@ -4026,6 +4262,7 @@ function renderAlerts() {
       complaint: "alertComplaint",
       message: "alertMessage",
       reply: "alertReply",
+      "comment-like": "alertCommentLike",
       announce: "alertAnnounce",
       report: note.text === "auto" ? "alertReportAuto" : "alertReport",
       hidden: "alertHidden",
@@ -4283,6 +4520,13 @@ function paintReelCounts(item, idea) {
   const reply = item.querySelector(".reel-reply");
   const count = Array.isArray(idea.comments) ? idea.comments.length : 0;
   if (reply) reply.querySelector("span").textContent = count ? String(count) : t("bqComment");
+  const repost = item.querySelector(".reel-repost");
+  if (repost) {
+    repost.classList.toggle("on", Boolean(idea.reposted));
+    repost.querySelector("span").textContent = idea.reposts ? String(idea.reposts) : t("repost");
+  }
+  const follow = item.querySelector(".reel-follow");
+  if (follow) follow.hidden = Boolean(idea.followed);
 }
 
 function reelItem(idea) {
@@ -4323,7 +4567,28 @@ function reelItem(idea) {
   const meta = document.createElement("span");
   meta.textContent = [bits.position || deptLabel(idea.author?.department), timeAgo(idea.createdAt)].filter(Boolean).join(" · ");
   copy.append(name, meta);
-  who.append(avatarNode(bits), copy);
+  const pid = authorPid(idea);
+  const face = avatarNode(bits);
+  [face, name].forEach((node) => {
+    node.addEventListener("click", pauseReels);
+    personLink(node, pid);
+  });
+  who.append(face, copy);
+  if (pid && !idea.mine) {
+    const follow = document.createElement("button");
+    follow.type = "button";
+    follow.className = "reel-follow";
+    follow.textContent = t("follow");
+    follow.hidden = Boolean(idea.followed);
+    follow.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      follow.disabled = true;
+      const data = await social("follow", { pid });
+      follow.disabled = false;
+      if (data) loadIdeas();
+    });
+    who.appendChild(follow);
+  }
   info.appendChild(who);
   if (idea.text) {
     const caption = document.createElement("p");
@@ -4339,6 +4604,8 @@ function reelItem(idea) {
     openThread(idea.id);
   });
   reply.classList.add("reel-reply");
+  const repost = reelAction(ICONS.repost, 0, t("repost"), () => toggleRepost(idea.id), false);
+  repost.classList.add("reel-repost");
   const mute = document.createElement("button");
   mute.type = "button";
   mute.className = "reel-act reel-mute";
@@ -4347,19 +4614,43 @@ function reelItem(idea) {
     reelsMuted = !reelsMuted;
     paintReelMute();
   });
-  side.append(like, reply, mute);
+  side.append(like, reply, repost, mute);
   item.append(info, side);
   paintReelCounts(item, idea);
   return item;
 }
 
+function openReel(idea) {
+  reelsFocus = { pid: authorPid(idea), id: idea.id, from: view };
+  reelsOpening = true;
+  showView("storyboard");
+}
+
+function closeReelFocus() {
+  const from = reelsFocus ? reelsFocus.from : "home";
+  reelsFocus = null;
+  showView(from);
+  if (from === "person" && typeof paintPerson === "function") paintPerson();
+}
+
 function renderReels() {
   const feed = document.querySelector("#growth-stories");
   if (!feed) return;
+  const back = document.querySelector("#reels-back");
+  if (back) back.hidden = !reelsFocus;
   const rows = ideas
     .filter((idea) => idea.media && isVideoSrc(idea.media) && !idea.hidden)
+    .filter((idea) => !reelsFocus || authorPid(idea) === reelsFocus.pid)
     .sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt));
-  const signature = rows.map((idea) => `${idea.id}:${idea.media}`).join("|");
+  const signature = `${reelsFocus ? reelsFocus.pid : ""}#${rows.map((idea) => `${idea.id}:${idea.media}`).join("|")}`;
+  const jump = reelsFocus && reelsFocus.jump !== false ? reelsFocus.id : "";
+  if (jump) {
+    reelsFocus.jump = false;
+    requestAnimationFrame(() => {
+      const target = feed.querySelector(`.reel-item[data-id="${CSS.escape(jump)}"]`);
+      if (target) feed.scrollTop = target.offsetTop;
+    });
+  }
   if (feed.dataset.sig === signature && feed.childElementCount) {
     rows.forEach((idea) => {
       const item = feed.querySelector(`.reel-item[data-id="${CSS.escape(idea.id)}"]`);
@@ -4766,7 +5057,7 @@ document.querySelector("#story-mute").addEventListener("click", (event) => {
   paintStoryMute();
 });
 storyView.addEventListener("pointerdown", (event) => {
-  if (event.target.closest("#story-close, #story-mute, #story-hl")) return;
+  if (event.target.closest("#story-close, #story-mute, #story-hl, #story-foot")) return;
   storyHolding = false;
   clearTimeout(storyHold);
   storyHold = setTimeout(() => {
@@ -4776,7 +5067,7 @@ storyView.addEventListener("pointerdown", (event) => {
 });
 storyView.addEventListener("pointerup", (event) => {
   clearTimeout(storyHold);
-  if (event.target.closest("#story-close, #story-mute, #story-hl")) return;
+  if (event.target.closest("#story-close, #story-mute, #story-hl, #story-foot")) return;
   if (storyHolding) {
     storyHolding = false;
     resumeStory();

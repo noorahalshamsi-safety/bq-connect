@@ -75,8 +75,8 @@ function createSync({ client, dirs, preferLocal = [], log = console.log, root = 
     return restored;
   }
 
-  async function pushOnce() {
-    const now = Date.now();
+  async function pushOnce(force = false) {
+    const now = force ? Infinity : Date.now();
     const seen = new Set();
     for (const root of roots) {
       for (const file of walk(root)) {
@@ -120,16 +120,16 @@ function createSync({ client, dirs, preferLocal = [], log = console.log, root = 
 
   return {
     restore,
-    flush: () => queue(pushOnce),
+    flush: () => queue(() => pushOnce(true)),
     start() {
-      queue(pushOnce);
-      timer = setInterval(() => queue(pushOnce), INTERVAL_MS);
+      queue(() => pushOnce());
+      timer = setInterval(() => queue(() => pushOnce()), INTERVAL_MS);
       timer.unref();
     },
     async stop() {
       if (timer) clearInterval(timer);
       timer = null;
-      await queue(pushOnce);
+      await queue(() => pushOnce(true));
     },
   };
 }

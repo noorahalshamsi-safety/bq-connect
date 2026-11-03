@@ -149,13 +149,39 @@ function readJson(file, fallback) {
   }
 }
 
+const sharedJson = new Map();
+
+// Callers must treat the returned object as read-only; it is shared until the file changes.
+function readJsonShared(file, fallback) {
+  let stamp = "none";
+  try {
+    const info = fs.statSync(file);
+    stamp = `${info.mtimeMs}:${info.size}`;
+  } catch {}
+  const hit = sharedJson.get(file);
+  if (hit && hit.stamp === stamp) return hit.value;
+  const value = readJson(file, fallback);
+  sharedJson.set(file, { stamp, value });
+  return value;
+}
+
 function writeJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(value, null, 2));
+  sharedJson.delete(file);
 }
 
+const pidMemo = new Map();
+
 function publicId(badge) {
-  return crypto.createHmac("sha256", PEPPER).update(`pid:${badge}`).digest("hex").slice(0, 16);
+  const key = String(badge);
+  let pid = pidMemo.get(key);
+  if (!pid) {
+    pid = crypto.createHmac("sha256", PEPPER).update(`pid:${key}`).digest("hex").slice(0, 16);
+    if (pidMemo.size > 20000) pidMemo.clear();
+    pidMemo.set(key, pid);
+  }
+  return pid;
 }
 
 function announcerPerson() {
@@ -198,7 +224,7 @@ function isAdminAccount(person) {
 }
 
 function adminBadges() {
-  const listed = readJson(MODERATORS, {});
+  const listed = readJsonShared(MODERATORS, {});
   const all = new Set(auth.securityConfig().admins);
   (Array.isArray(listed.badges) ? listed.badges : []).forEach((badge) => all.add(String(badge)));
   return all;
@@ -221,12 +247,12 @@ function personByPid(pid) {
 }
 
 function profileOf(badge) {
-  const all = readJson(PROFILES, {});
-  return all[String(badge)] || {};
+  const all = readJsonShared(PROFILES, {});
+  return { ...(all[String(badge)] || {}) };
 }
 
 function followsFor(badge) {
-  const all = readJson(FOLLOWS, {});
+  const all = readJsonShared(FOLLOWS, {});
   const row = all[String(badge)] || {};
   return {
     people: Array.isArray(row.people) ? row.people.map(String) : [],
@@ -964,6 +990,53 @@ function translateLimited(badge) {
   return row.n > 30;
 }
 
+const placeNames = new Map();
+const placeUse = new Map();
+
+function placeLimited(badge) {
+  const now = Date.now();
+  const row = placeUse.get(String(badge)) || { n: 0, reset: now + 60 * 1000 };
+  if (now > row.reset) {
+    row.n = 0;
+    row.reset = now + 60 * 1000;
+  }
+  row.n += 1;
+  placeUse.set(String(badge), row);
+  if (placeUse.size > 5000) placeUse.forEach((value, key) => { if (now > value.reset) placeUse.delete(key); });
+  return row.n > 6;
+}
+
+function placeLabel(address, fallback) {
+  const a = address || {};
+  const parts = [
+    a.amenity || a.building || a.industrial || a.commercial || a.road || a.neighbourhood || a.suburb || a.quarter,
+    a.city || a.town || a.village || a.county || a.state,
+  ].filter(Boolean);
+  const unique = parts.filter((part, index) => parts.indexOf(part) === index);
+  return cleanText(unique.join("، ") || String(fallback || "").split(",").slice(0, 2).join("،"), 55).replace(/[;|]/g, " ");
+}
+
+async function reversePlace(lat, lng, lang) {
+  const key = `${lat.toFixed(3)},${lng.toFixed(3)},${lang}`;
+  if (placeNames.has(key)) return placeNames.get(key);
+  const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=17&lat=${lat.toFixed(5)}&lon=${lng.toFixed(5)}&accept-language=${lang}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6000);
+  try {
+    const response = await fetch(url, { headers: { "User-Agent": "BQConnect/1.0 (internal employee app)" }, signal: controller.signal });
+    if (!response.ok) return "";
+    const data = await response.json();
+    const name = placeLabel(data.address, data.display_name);
+    if (placeNames.size > 2000) placeNames.clear();
+    placeNames.set(key, name);
+    return name;
+  } catch {
+    return "";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function codesMatch(person, badge, code) {
   const actual = Buffer.from(String(person.check || ""));
   const expected = Buffer.from(codeHash(badge, code));
@@ -1118,8 +1191,8 @@ function writeNotes(notes) {
 }
 
 function savedBy(badge, ideaId) {
-  const marks = readMarks();
-  const list = marks[String(badge)] || [];
+  const marks = readJsonShared(MARKS, {});
+  const list = Array.isArray(marks[String(badge)]) ? marks[String(badge)] : [];
   return list.includes(ideaId);
 }
 
@@ -1135,6 +1208,7 @@ function readMarks() {
 function writeMarks(marks) {
   fs.mkdirSync(path.dirname(MARKS), { recursive: true });
   fs.writeFileSync(MARKS, JSON.stringify(marks, null, 2));
+  sharedJson.delete(MARKS);
 }
 
 let viewCache = null;
@@ -1320,7 +1394,7 @@ function audienceCount() {
 
 function canPin(person, idea) {
   if (!person || !idea || !PINNABLE.has(idea.type)) return false;
-  return String(idea.badge || "") === String(person.badge) || isAdmin(person);
+  return isAnnouncer(person);
 }
 
 function remindEvents() {
@@ -1354,8 +1428,9 @@ const STATUS_AR = { received: "مستلمة", review: "قيد المراجعة",
 const TYPE_AR = { idea: "فكرة", suggestion: "اقتراح", complaint: "شكوى" };
 
 function exportPlace(value) {
-  const match = /^geo:(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)$/.exec(String(value || ""));
-  return match ? `https://www.google.com/maps/search/?api=1&query=${match[1]},${match[2]}` : String(value || "");
+  const match = /^geo:(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)(?:;(.{1,60}))?$/.exec(String(value || ""));
+  const link = match ? `https://www.google.com/maps/search/?api=1&query=${match[1]},${match[2]}` : "";
+  return match ? [match[3], link].filter(Boolean).join(" ") : String(value || "");
 }
 
 function exportCsv(kind, days) {
@@ -1413,7 +1488,7 @@ function commentThread(comment, list) {
   return list.filter((item) => ids.has(item.id));
 }
 
-function publicComments(all) {
+function publicComments(all, voter) {
   const list = Array.isArray(all) ? all : [];
   const byId = new Map(list.map((item) => [item.id, item]));
   const parents = list.map((item) => commentParentId(item, byId));
@@ -1421,10 +1496,11 @@ function publicComments(all) {
   parents.forEach((id) => {
     if (id) counts.set(id, (counts.get(id) || 0) + 1);
   });
-  return list.map((comment, index) => publicComment(comment, byId.get(parents[index]), counts.get(comment.id) || 0));
+  return list.map((comment, index) => publicComment(comment, byId.get(parents[index]), counts.get(comment.id) || 0, voter));
 }
 
-function publicComment(comment, parent, replies) {
+function publicComment(comment, parent, replies, voter) {
+  const likes = Array.isArray(comment.likes) ? comment.likes.map(String) : [];
   return {
     id: comment.id,
     text: comment.text,
@@ -1433,6 +1509,8 @@ function publicComment(comment, parent, replies) {
     parentId: parent ? parent.id : "",
     replyToName: parent ? parent.name || "" : "",
     replies: replies || 0,
+    likes: likes.length,
+    liked: Boolean(voter) && likes.includes(String(voter)),
     author: { name: comment.name || "", department: comment.department || "", position: comment.position || "", pid: comment.badge ? publicId(comment.badge) : "", photo: avatarOf(comment.badge), official: isOfficialBadge(comment.badge) },
   };
 }
@@ -2195,10 +2273,11 @@ function publicIdea(idea, voter) {
     poll,
     reposts: reposts.length,
     reposted: reposts.some((item) => String(item.badge) === String(voter)),
+    repostedBy: reposts.slice(-200).map((item) => ({ pid: publicId(item.badge), at: item.createdAt || "" })),
     views: viewsOf(idea.id),
     author: { name: idea.name || "", department: idea.department || "", position: idea.position || "", pid: idea.badge ? publicId(idea.badge) : "", photo: avatarOf(idea.badge), official: isOfficialBadge(idea.badge) },
     rating: ratingSummary(idea, voter),
-    comments: publicComments(idea.comments),
+    comments: publicComments(idea.comments, voter),
     pinned: PINNABLE.has(type) && Boolean(idea.pinned),
     canPin: pinner,
     ack: type === "announcement" ? { mine: acks.includes(String(voter)), count: acks.length, total: pinner ? audienceCount() : 0 } : null,
@@ -2206,8 +2285,17 @@ function publicIdea(idea, voter) {
   };
 }
 
-function publicList(ideas, voter) {
-  return ideas.filter((idea) => visibleTo(idea, voter)).map((idea) => publicIdea(idea, voter));
+function groupMember(groupId, badge) {
+  const group = readJson(GROUPS, []).find((item) => item.id === groupId);
+  return Boolean(group) && (group.members || []).map(String).includes(String(badge));
+}
+
+function publicList(ideas, voter, scope) {
+  const groupId = scope && scope.groupId ? String(scope.groupId) : "";
+  if (groupId && !groupMember(groupId, voter)) return [];
+  return liveIdeas(ideas)
+    .filter((idea) => String(idea.groupId || "") === groupId && visibleTo(idea, voter))
+    .map((idea) => publicIdea(idea, voter));
 }
 
 function acceptsGzip(req) {
@@ -2270,7 +2358,7 @@ function ideaRoute(urlPath) {
     return null;
   }
   if (!id || id.includes("/") || id.includes("\\") || id.includes("..")) return null;
-  if (action && !["rating", "comments", "bookmark", "engagement", "repost", "poll", "report", "ack", "pin", "rsvp"].includes(action)) return null;
+  if (action && !["rating", "comments", "bookmark", "engagement", "repost", "poll", "report", "ack", "pin", "rsvp", "peek", "comment-like"].includes(action)) return null;
   return { id, action };
 }
 
@@ -2837,6 +2925,33 @@ async function handleApi(req, res, urlPath, params) {
     return;
   }
 
+  if (req.method === "POST" && urlPath === "/api/place-name") {
+    let body;
+    try {
+      body = await readBody(req);
+    } catch {
+      send(res, 400, { error: "bad_json" });
+      return;
+    }
+    const person = personFromToken(body.token);
+    if (!person) {
+      send(res, 401, { error: "employee_required" });
+      return;
+    }
+    const lat = Number(body.lat);
+    const lng = Number(body.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      send(res, 400, { error: "bad_place" });
+      return;
+    }
+    if (placeLimited(person.badge)) {
+      send(res, 429, { error: "limited" });
+      return;
+    }
+    send(res, 200, { name: await reversePlace(lat, lng, body.lang === "en" ? "en" : "ar") });
+    return;
+  }
+
   if (req.method === "POST" && (urlPath === "/api/notifications" || urlPath === "/api/notifications/read")) {
     let body;
     try {
@@ -2887,7 +3002,7 @@ async function handleApi(req, res, urlPath, params) {
       send(res, filtered.error, { error: "forbidden" });
       return;
     }
-    send(res, 200, { ideas: publicList(filtered.list, voter), stats: statsFor(ideas) });
+    send(res, 200, { ideas: publicList(filtered.list, voter, { groupId: params.get("group") || "" }), stats: statsFor(ideas) });
     return;
   }
 
@@ -3441,7 +3556,7 @@ async function handleApi(req, res, urlPath, params) {
     }
     const official = isAnnouncer(person);
     const officialOnly = type === "announcement" || type === "event";
-    if (isAdminAccount(person) || (officialOnly ? !official : official && type !== "post")) {
+    if (isAdminAccount(person) || (officialOnly ? !official : official && type !== "post" && type !== "story")) {
       send(res, 403, { error: "forbidden" });
       return;
     }
@@ -3522,7 +3637,7 @@ async function handleApi(req, res, urlPath, params) {
       if (mentioned) pushNote(mentioned.badge, { type: "mention", ideaId: idea.id, ideaTitle: title || text.slice(0, 80), actorName: person.name, actorBadge: person.badge });
     });
     const voter = String(person.badge);
-    send(res, 201, { idea: publicIdea(idea, voter), ideas: publicList(ideas, voter), stats: statsFor(ideas) });
+    send(res, 201, { idea: publicIdea(idea, voter), ideas: publicList(ideas, voter, idea), stats: statsFor(ideas) });
     return;
   }
 
@@ -3545,6 +3660,10 @@ async function handleApi(req, res, urlPath, params) {
     }
     const actor = personFromToken(body.token || req.headers["x-session"]);
     if (actor && !visibleTo(ideas[index], actor.badge) && !isModerator(actor)) {
+      send(res, 404, { error: "not_found" });
+      return;
+    }
+    if (ideas[index].groupId && !(actor && (groupMember(ideas[index].groupId, actor.badge) || isModerator(actor)))) {
       send(res, 404, { error: "not_found" });
       return;
     }
@@ -3573,7 +3692,7 @@ async function handleApi(req, res, urlPath, params) {
         writeIdeas(ideas);
         if (open === 1 || autoHide) notifyModerators(ideas[index], "report", autoHide ? "auto" : "");
       }
-      send(res, 200, { ideas: publicList(ideas, key), stats: statsFor(ideas) });
+      send(res, 200, { ideas: publicList(ideas, key, ideas[index]), stats: statsFor(ideas) });
       return;
     }
 
@@ -3609,7 +3728,7 @@ async function handleApi(req, res, urlPath, params) {
           actorBadge: key,
         });
       }
-      send(res, 200, { idea: publicIdea(ideas[index], key), ideas: publicList(ideas, key), stats: statsFor(ideas) });
+      send(res, 200, { idea: publicIdea(ideas[index], key), ideas: publicList(ideas, key, ideas[index]), stats: statsFor(ideas) });
       return;
     }
 
@@ -3621,7 +3740,39 @@ async function handleApi(req, res, urlPath, params) {
       }
       toggleMark(person.badge, ideas[index].id);
       const voter = String(person.badge);
-      send(res, 200, { idea: publicIdea(ideas[index], voter), ideas: publicList(ideas, voter), stats: statsFor(ideas) });
+      send(res, 200, { idea: publicIdea(ideas[index], voter), ideas: publicList(ideas, voter, ideas[index]), stats: statsFor(ideas) });
+      return;
+    }
+
+    if (req.method === "POST" && route.action === "peek") {
+      if (!actor) {
+        send(res, 401, { error: "employee_required" });
+        return;
+      }
+      send(res, 200, { idea: publicIdea(ideas[index], String(actor.badge)) });
+      return;
+    }
+
+    if (req.method === "POST" && route.action === "comment-like") {
+      if (!actor) {
+        send(res, 401, { error: "employee_required" });
+        return;
+      }
+      const list = Array.isArray(ideas[index].comments) ? ideas[index].comments : [];
+      const comment = list.find((item) => item.id === String(body.commentId || ""));
+      if (!comment) {
+        send(res, 404, { error: "comment_not_found" });
+        return;
+      }
+      const key = String(actor.badge);
+      const likes = (Array.isArray(comment.likes) ? comment.likes : []).map(String);
+      const liked = !likes.includes(key);
+      comment.likes = liked ? likes.concat([key]) : likes.filter((badge) => badge !== key);
+      writeIdeas(ideas);
+      if (liked && String(comment.badge) !== key) {
+        pushNote(comment.badge, { type: "comment-like", ideaId: ideas[index].id, ideaTitle: ideas[index].title || "", actorName: actor.name, actorBadge: key });
+      }
+      send(res, 200, { idea: publicIdea(ideas[index], key), ideas: publicList(ideas, key, ideas[index]), stats: statsFor(ideas) });
       return;
     }
 
@@ -3650,7 +3801,7 @@ async function handleApi(req, res, urlPath, params) {
       if (!exists) {
         pushNote(ideas[index].badge, { type: "repost", ideaId: ideas[index].id, ideaTitle: ideas[index].title || "", actorName: person.name, actorBadge: key });
       }
-      send(res, 200, { idea: publicIdea(ideas[index], key), ideas: publicList(ideas, key), stats: statsFor(ideas) });
+      send(res, 200, { idea: publicIdea(ideas[index], key), ideas: publicList(ideas, key, ideas[index]), stats: statsFor(ideas) });
       return;
     }
 
@@ -3685,7 +3836,7 @@ async function handleApi(req, res, urlPath, params) {
         idea.attendees = going.includes(key) ? going.filter((badge) => badge !== key) : going.concat([key]);
       }
       writeIdeas(ideas);
-      send(res, 200, { idea: publicIdea(idea, key), ideas: publicList(ideas, key), stats: statsFor(ideas) });
+      send(res, 200, { idea: publicIdea(idea, key), ideas: publicList(ideas, key, ideas[index]), stats: statsFor(ideas) });
       return;
     }
 
@@ -3706,7 +3857,7 @@ async function handleApi(req, res, urlPath, params) {
       });
       ideas[index].poll[option].votes.push(key);
       writeIdeas(ideas);
-      send(res, 200, { idea: publicIdea(ideas[index], key), ideas: publicList(ideas, key), stats: statsFor(ideas) });
+      send(res, 200, { idea: publicIdea(ideas[index], key), ideas: publicList(ideas, key, ideas[index]), stats: statsFor(ideas) });
       return;
     }
 
@@ -3736,6 +3887,12 @@ async function handleApi(req, res, urlPath, params) {
         send(res, 404, { error: "comment_not_found" });
         return;
       }
+      const voter = String(person.badge);
+      const repeated = comments.some((item) => String(item.badge) === voter && item.text === text && (item.media || "") === (media || "") && (item.parentId || "") === (target ? target.id : "") && Date.now() - (Date.parse(item.createdAt) || 0) < 30000);
+      if (repeated) {
+        send(res, 201, { idea: publicIdea(ideas[index], voter), ideas: publicList(ideas, voter, ideas[index]), stats: statsFor(ideas) });
+        return;
+      }
       if (screenText(res, person, "comment", [text])) return;
       const comment = {
         id: crypto.randomUUID(),
@@ -3760,8 +3917,7 @@ async function handleApi(req, res, urlPath, params) {
       };
       if (target) pushNote(target.badge, { ...note, type: "reply" });
       if (!target || String(target.badge) !== String(ideas[index].badge)) pushNote(ideas[index].badge, { ...note, type: "comment" });
-      const voter = String(person.badge);
-      send(res, 201, { idea: publicIdea(ideas[index], voter), ideas: publicList(ideas, voter), stats: statsFor(ideas) });
+      send(res, 201, { idea: publicIdea(ideas[index], voter), ideas: publicList(ideas, voter, ideas[index]), stats: statsFor(ideas) });
       return;
     }
 
@@ -3845,7 +4001,7 @@ async function handleApi(req, res, urlPath, params) {
       }
       writeIdeas(ideas);
       const voter = String(person.badge);
-      send(res, 200, { idea: publicIdea(ideas[index], voter), ideas: publicList(ideas, voter), stats: statsFor(ideas) });
+      send(res, 200, { idea: publicIdea(ideas[index], voter), ideas: publicList(ideas, voter, ideas[index]), stats: statsFor(ideas) });
       return;
     }
 
@@ -3864,7 +4020,7 @@ async function handleApi(req, res, urlPath, params) {
       ideas.splice(index, 1);
       writeIdeas(ideas);
       writeNotes(readNotes().filter((note) => note.ideaId !== removed.id));
-      send(res, 200, { ideas: publicList(ideas, String(person.badge)), stats: statsFor(ideas) });
+      send(res, 200, { ideas: publicList(ideas, String(person.badge), removed), stats: statsFor(ideas) });
       return;
     }
   }
@@ -3951,7 +4107,7 @@ function markAnnouncementsRead(badge) {
   writeJson(SEEN, seen);
 }
 
-const API_PATHS = new Set(["/api/ideas", "/api/login", "/api/login-2fa", "/api/2fa", "/api/email", "/api/register", "/api/forgot", "/api/password", "/api/logout-all", "/api/terms", "/api/sessions", "/api/views", "/api/translate", "/api/spark", "/api/session", "/api/notifications", "/api/notifications/read", "/api/social"]);
+const API_PATHS = new Set(["/api/ideas", "/api/login", "/api/login-2fa", "/api/2fa", "/api/email", "/api/register", "/api/forgot", "/api/password", "/api/logout-all", "/api/terms", "/api/sessions", "/api/views", "/api/translate", "/api/spark", "/api/session", "/api/notifications", "/api/notifications/read", "/api/social", "/api/place-name"]);
 
 function securityHeaders(res) {
   res.setHeader("Content-Security-Policy", CSP);

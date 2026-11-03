@@ -90,7 +90,20 @@ function ensureAccount(badge) {
   return accounts[key];
 }
 
+let securityCache = { stamp: "", value: null };
+
 function securityConfig() {
+  let stamp = "none";
+  try {
+    const info = fs.statSync(SECURITY_FILE);
+    stamp = `${info.mtimeMs}:${info.size}`;
+  } catch {}
+  if (securityCache.value && securityCache.stamp === stamp) return securityCache.value;
+  securityCache = { stamp, value: buildSecurityConfig() };
+  return securityCache.value;
+}
+
+function buildSecurityConfig() {
   const cfg = readJsonFile(SECURITY_FILE, {});
   const announcer = cfg.announcer && typeof cfg.announcer === "object" ? cfg.announcer : {};
   const adminAccount = cfg.adminAccount && typeof cfg.adminAccount === "object" ? cfg.adminAccount : {};

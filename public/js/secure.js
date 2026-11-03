@@ -47,6 +47,7 @@ Object.assign(dict.ar, {
   pwWrong: "كلمة المرور الحالية غير صحيحة.",
   pwSame: "الجديدة لازم تختلف عن الحالية.",
   pwMismatch: "الكلمتين الجديدتين مو متطابقتين.",
+  pwStrong: "كلمة مرور قوية.",
   logoutAll: "تسجيل الخروج من كل الأجهزة",
   logoutAllLead: "إذا تشك إن أحد دخل حسابك، اقفل كل الجلسات وغيّر كلمة المرور.",
   logoutAllBtn: "اقفل كل الجلسات",
@@ -171,10 +172,22 @@ Object.assign(dict.ar, {
   linkChange: "تغيير الإيميل",
   linkSent: "أرسلنا كود من 6 أرقام إلى {email}. اكتبه هنا.",
   linkExpired: "انتهى وقت الكود. اطلب كود جديد.",
-  tfaStep1: "ثبّت تطبيق مصادقة في جوالك",
-  tfaStep1Hint: "مثل Microsoft Authenticator أو Google Authenticator، وكلها مجانية.",
-  tfaStep2: "أضف الحساب في التطبيق",
-  tfaStep2Hint: "امسح الرمز بكاميرا التطبيق. وإذا أنت على نفس الجوال، اضغط الزر أو انسخ المفتاح والصقه في التطبيق.",
+  tfaStep1: "حمّل تطبيق المصادقة في جوالك",
+  tfaStep1Hint: "ننصح بتطبيق Microsoft Authenticator المجاني. إذا عندك Google Authenticator ينفع بعد، وتقدر تتخطى هذي الخطوة.",
+  tfaStoreIos: "تحميل للآيفون",
+  tfaStoreAndroid: "تحميل للأندرويد",
+  tfaStep2: "أضف حساب BQ Connect في التطبيق",
+  tfaSamePhone: "اضغط الزر تحت. يفتح تطبيق المصادقة ويضيف الحساب لحاله، وبعدها ارجع لهذي الصفحة.",
+  tfaManualTitle: "الزر ما فتح التطبيق؟ أضفه يدوياً",
+  tfaManual1: "اضغط نسخ عشان تنسخ المفتاح تحت.",
+  tfaManual2: "افتح تطبيق المصادقة واضغط علامة +.",
+  tfaManual3: "اختر حساب آخر، ثم إدخال الرمز يدوياً (Enter code manually).",
+  tfaManual4: "اكتب اسم الحساب BQ Connect، والصق المفتاح، واحفظ.",
+  tfaOtherDevice: "فاتح الصفحة من كمبيوتر أو جهاز ثاني؟ امسح الرمز",
+  tfaScanTitle: "امسح الرمز بجوالك",
+  tfaScan1: "افتح تطبيق المصادقة في جوالك واضغط علامة +.",
+  tfaScan2: "اختر حساب آخر، ثم مسح رمز QR، ووجّه الكاميرا على الرمز.",
+  tfaStep3Hint: "بيطلع في التطبيق تحت اسم BQ Connect كود من 6 أرقام يتغير كل 30 ثانية. اكتبه هنا قبل ما يتغير.",
   tfaQrAlt: "رمز QR لإضافة الحساب في تطبيق المصادقة",
   tfaOpenApp: "افتح في تطبيق المصادقة",
   tfaCopy: "نسخ",
@@ -240,6 +253,7 @@ Object.assign(dict.en, {
   pwWrong: "The current password is wrong.",
   pwSame: "The new password must differ from the current one.",
   pwMismatch: "The new passwords do not match.",
+  pwStrong: "Strong password.",
   logoutAll: "Sign out everywhere",
   logoutAllLead: "If you think someone used your account, sign out everywhere and change your password.",
   logoutAllBtn: "Sign out all sessions",
@@ -364,10 +378,22 @@ Object.assign(dict.en, {
   linkChange: "Change email",
   linkSent: "We sent a 6-digit code to {email}. Enter it here.",
   linkExpired: "The code expired. Ask for a new one.",
-  tfaStep1: "Install an authenticator app",
-  tfaStep1Hint: "For example Microsoft Authenticator or Google Authenticator. They are free.",
-  tfaStep2: "Add the account in the app",
-  tfaStep2Hint: "Scan the code with the app. On the same phone, tap the button or copy the key into the app.",
+  tfaStep1: "Get an authenticator app on your phone",
+  tfaStep1Hint: "We recommend the free Microsoft Authenticator. Google Authenticator works too, so skip this step if you already have it.",
+  tfaStoreIos: "Download for iPhone",
+  tfaStoreAndroid: "Download for Android",
+  tfaStep2: "Add BQ Connect to the app",
+  tfaSamePhone: "Tap the button below. Your authenticator app opens and adds the account, then come back to this page.",
+  tfaManualTitle: "Button did not open the app? Add it by hand",
+  tfaManual1: "Tap Copy to copy the key below.",
+  tfaManual2: "Open the authenticator app and tap +.",
+  tfaManual3: "Choose Other account, then Enter code manually.",
+  tfaManual4: "Name the account BQ Connect, paste the key and save.",
+  tfaOtherDevice: "On a computer or another device? Scan the code",
+  tfaScanTitle: "Scan the code with your phone",
+  tfaScan1: "Open the authenticator app on your phone and tap +.",
+  tfaScan2: "Choose Other account, then Scan a QR code, and point the camera at the code.",
+  tfaStep3Hint: "The app shows a 6-digit code under BQ Connect that changes every 30 seconds. Type it here before it changes.",
   tfaQrAlt: "QR code to add the account to an authenticator app",
   tfaOpenApp: "Open in authenticator app",
   tfaCopy: "Copy",
@@ -798,6 +824,21 @@ document.querySelectorAll("[data-gate]").forEach((button) => {
   button.addEventListener("click", () => gateCard(button.dataset.gate));
 });
 
+document.querySelectorAll('input[type="password"]').forEach((input) => {
+  if (!input.id || input.closest(".pw-wrap")) return;
+  const wrap = document.createElement("span");
+  wrap.className = "pw-wrap";
+  input.replaceWith(wrap);
+  const eye = document.createElement("button");
+  eye.type = "button";
+  eye.className = "pw-eye";
+  eye.dataset.eye = input.id;
+  eye.dataset.i18nAria = "showPassword";
+  eye.setAttribute("aria-label", t("showPassword"));
+  eye.appendChild(svgIcon("M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"));
+  wrap.append(input, eye);
+});
+
 document.querySelectorAll("[data-eye]").forEach((button) => {
   button.addEventListener("click", () => {
     const input = document.querySelector(`#${button.dataset.eye}`);
@@ -806,6 +847,32 @@ document.querySelectorAll("[data-eye]").forEach((button) => {
     input.type = show ? "text" : "password";
     button.setAttribute("aria-pressed", String(show));
   });
+});
+
+function passwordStrong(value) {
+  return value.length >= 10 && /[A-Za-z]/.test(value) && /\d/.test(value) && new Set(value).size >= 5;
+}
+
+[["#reg-password", "#reg-password2"], ["#pw-next", "#pw-again"]].forEach(([first, second]) => {
+  const input = document.querySelector(first);
+  const again = document.querySelector(second);
+  const hint = input && input.closest("label, form").querySelector("small");
+  if (!input || !hint) return;
+  const paint = () => {
+    const value = input.value;
+    const repeat = again ? again.value : "";
+    hint.classList.toggle("pw-bad", Boolean(value) && !passwordStrong(value));
+    hint.classList.toggle("pw-good", Boolean(value) && passwordStrong(value));
+    if (!value) hint.textContent = t("pwRule");
+    else if (!passwordStrong(value)) hint.textContent = t("pwWeak");
+    else if (repeat && repeat !== value) {
+      hint.textContent = t("pwMismatch");
+      hint.classList.add("pw-bad");
+      hint.classList.remove("pw-good");
+    } else hint.textContent = t("pwStrong");
+  };
+  input.addEventListener("input", paint);
+  if (again) again.addEventListener("input", paint);
 });
 
 function paintSecurity() {
@@ -973,10 +1040,35 @@ async function paintTwoFactor() {
   tfaOnView(body, data.status);
 }
 
+const TFA_STORES = {
+  ios: "https://apps.apple.com/app/microsoft-authenticator/id983156458",
+  android: "https://play.google.com/store/apps/details?id=com.azure.authenticator",
+};
+
+function tfaGuide(keys) {
+  const list = tfaNode("ol", "tfa-guide");
+  keys.forEach((key) => list.appendChild(tfaNode("li", "", t(key))));
+  return list;
+}
+
 function tfaSetupView(body, setup, submit) {
+  const agent = navigator.userAgent;
+  const ios = /iPhone|iPad|iPod/i.test(agent) || (/Macintosh/.test(agent) && navigator.maxTouchPoints > 1);
+  const android = /Android/i.test(agent);
+  const phone = ios || android;
   const steps = tfaNode("ol", "tfa-steps");
   const one = tfaNode("li");
   one.append(tfaNode("strong", "", t("tfaStep1")), tfaNode("small", "", t("tfaStep1Hint")));
+  const stores = tfaNode("div", "tfa-stores");
+  [["ios", "tfaStoreIos"], ["android", "tfaStoreAndroid"]].forEach(([kind, label]) => {
+    if (phone && (kind === "ios") !== ios) return;
+    const link = tfaNode("a", "btn btn-ghost tfa-store", t(label));
+    link.href = TFA_STORES[kind];
+    link.target = "_blank";
+    link.rel = "noopener";
+    stores.appendChild(link);
+  });
+  one.appendChild(stores);
   const two = tfaNode("li");
   two.appendChild(tfaNode("strong", "", t("tfaStep2")));
   const qrBox = tfaNode("div", "tfa-qr");
@@ -985,7 +1077,7 @@ function tfaSetupView(body, setup, submit) {
     svg.setAttribute("aria-label", t("tfaQrAlt"));
     qrBox.appendChild(svg);
   }
-  const open = tfaNode("a", "btn btn-ghost tfa-open", t("tfaOpenApp"));
+  const open = tfaNode("a", "btn tfa-open", t("tfaOpenApp"));
   open.href = setup.uri;
   const keyLine = tfaNode("div", "tfa-key");
   const key = tfaNode("code", "", setup.secret.replace(/(.{4})/g, "$1 ").trim());
@@ -998,7 +1090,12 @@ function tfaSetupView(body, setup, submit) {
     } catch {}
   });
   keyLine.append(key, copy);
-  two.append(qrBox, tfaNode("small", "", t("tfaStep2Hint")), open, keyLine);
+  const manual = tfaNode("details", "tfa-more");
+  manual.append(tfaNode("summary", "", t("tfaManualTitle")), tfaGuide(["tfaManual1", "tfaManual2", "tfaManual3", "tfaManual4"]), keyLine);
+  const scan = tfaNode(phone ? "details" : "div", "tfa-more");
+  scan.append(tfaNode(phone ? "summary" : "small", "", t(phone ? "tfaOtherDevice" : "tfaScanTitle")), tfaGuide(["tfaScan1", "tfaScan2"]), qrBox);
+  if (phone) two.append(tfaNode("small", "", t("tfaSamePhone")), open, manual, scan);
+  else two.append(scan, manual);
   const three = tfaNode("li");
   const code = tfaInput("code");
   const error = tfaNode("p", "form-error");
@@ -1015,7 +1112,7 @@ function tfaSetupView(body, setup, submit) {
   code.addEventListener("input", () => {
     if (digitsOnly(code.value).length === 6) run();
   });
-  three.append(tfaNode("strong", "", t("tfaStep3")), code, error, confirm);
+  three.append(tfaNode("strong", "", t("tfaStep3")), tfaNode("small", "", t("tfaStep3Hint")), code, error, confirm);
   steps.append(one, two, three);
   body.replaceChildren(steps);
 }

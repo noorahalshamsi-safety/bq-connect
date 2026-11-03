@@ -222,7 +222,7 @@ function camStagePoint(clientX, clientY) {
   const rect = camStage.getBoundingClientRect();
   const vw = camLive.videoWidth || rect.width;
   const vh = camLive.videoHeight || rect.height;
-  const scale = Math.max(rect.width / vw, rect.height / vh) * camDigitalZoom();
+  const scale = (camFitsFrame() ? Math.min(rect.width / vw, rect.height / vh) : Math.max(rect.width / vw, rect.height / vh)) * camDigitalZoom();
   let x = (clientX - rect.left - rect.width / 2) / (vw * scale) + 0.5;
   const y = (clientY - rect.top - rect.height / 2) / (vh * scale) + 0.5;
   if (camFront) x = 1 - x;
@@ -299,7 +299,7 @@ async function startCamStream() {
     paintCamBlocked();
     return;
   }
-  const video = { facingMode: camFacing, width: { ideal: 1080 }, height: { ideal: 1920 }, zoom: true };
+  const video = { facingMode: camFacing, width: { ideal: 1920 }, height: { ideal: 1440 }, zoom: true };
   let stream = null;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ video, audio: true });
@@ -333,6 +333,17 @@ function camOutputSize(width) {
   const rect = camStage.getBoundingClientRect();
   const ratio = rect.width ? rect.height / rect.width : 16 / 9;
   return { w: width, h: Math.min(Math.round(width * 2.4), Math.round(width * ratio)) };
+}
+
+function camFitsFrame() {
+  return camTool !== "layout";
+}
+
+function camLiveSize(width) {
+  const vw = camLive.videoWidth;
+  const vh = camLive.videoHeight;
+  if (!camFitsFrame() || !vw || !vh) return camOutputSize(width);
+  return { w: width, h: Math.min(Math.round(width * 2.4), Math.round((width * vh) / vw)) };
 }
 
 function camDrawLive(context, x, y, w, h, mirror) {
@@ -491,6 +502,7 @@ function paintCamLayout() {
   const box = document.querySelector("#cam-layout");
   box.replaceChildren();
   box.hidden = camTool !== "layout";
+  storyCam.classList.toggle("cam-fill", !camFitsFrame());
   camLive.style.left = "";
   camLive.style.top = "";
   camLive.style.width = "";
@@ -731,7 +743,7 @@ function camShowReview(blob, skipEditor) {
 async function camTakePhoto() {
   if (!camLive.videoWidth) return;
   await camFlashOn();
-  const { w, h } = camOutputSize(1080);
+  const { w, h } = camLiveSize(1080);
   const canvas = document.createElement("canvas");
   canvas.width = w;
   canvas.height = h;
@@ -838,7 +850,7 @@ function camRecorderType() {
 }
 
 function camStartPipe() {
-  const { w, h } = camOutputSize(720);
+  const { w, h } = camLiveSize(720);
   const canvas = document.createElement("canvas");
   canvas.width = w;
   canvas.height = h;
@@ -934,7 +946,7 @@ async function camRecordLoop() {
     return;
   }
   camBusy = true;
-  const { w, h } = camOutputSize(720);
+  const { w, h } = camLiveSize(720);
   const frames = [];
   storyCam.classList.add("recording");
   camStarted = Date.now();

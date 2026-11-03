@@ -299,3 +299,4 @@ function paintGlobalAnnounce() {
 }
 
 document.querySelector("#reels-add")?.addEventListener("click", () => openStoryCamera());
+document.querySelector("#reels-back")?.addEventListener("click", closeReelFocus);

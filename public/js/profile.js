@@ -112,7 +112,8 @@ function paintProfile() {
   ring.appendChild(face);
   ring.addEventListener("click", () => {
     if (!mine) {
-      openStoryCamera();
+      if (person.photo) openLightbox(person.photo);
+      else openStoryCamera();
       return;
     }
     const next = mine.items.findIndex((item) => !seen.has(item.id));
@@ -231,15 +232,37 @@ function paintProfileTabs() {
   });
 }
 
-function profileItems() {
-  if (profileTab === "saved") return ideas.filter((idea) => idea.saved && idea.type !== "story");
-  if (profileTab === "reels") return ideas.filter((idea) => idea.mine && isVideoSrc(idea.media));
-  const mine = ideas.filter((idea) => idea.mine && idea.type !== "story");
-  if (profileTab === "ideas") return mine.filter((idea) => !idea.type || ["idea", "suggestion", "complaint"].includes(idea.type));
-  return mine;
+function newestFirst(rows) {
+  return rows.sort((left, right) => new Date(right.at) - new Date(left.at));
 }
 
-function profileTile(idea) {
+function repostAt(idea, pid) {
+  const row = Array.isArray(idea.repostedBy) ? idea.repostedBy.find((item) => item.pid === pid) : null;
+  return row ? row.at || idea.createdAt : "";
+}
+
+function ownedBy(idea, pid, mine) {
+  if (idea.type === "story") return false;
+  return mine ? Boolean(idea.mine) : !idea.groupId && authorPid(idea) === pid;
+}
+
+function profileRows(pid, tab, mine) {
+  const own = ideas.filter((idea) => ownedBy(idea, pid, mine));
+  if (tab === "reels") return newestFirst(own.filter((idea) => isVideoSrc(idea.media)).map((idea) => ({ idea, at: idea.createdAt })));
+  if (tab === "ideas") return newestFirst(own.filter((idea) => !idea.type || ["idea", "suggestion", "complaint"].includes(idea.type)).map((idea) => ({ idea, at: idea.createdAt })));
+  const shared = ideas
+    .filter((idea) => idea.type !== "story" && !ownedBy(idea, pid, mine) && repostAt(idea, pid))
+    .map((idea) => ({ idea, at: repostAt(idea, pid), repost: true }));
+  return newestFirst(own.map((idea) => ({ idea, at: idea.createdAt })).concat(shared));
+}
+
+function profileItems() {
+  if (profileTab === "saved") return newestFirst(ideas.filter((idea) => idea.saved && idea.type !== "story").map((idea) => ({ idea, at: idea.createdAt })));
+  return profileRows(selectedPerson ? selectedPerson.pid : "", profileTab, true);
+}
+
+function profileTile(idea, row) {
+  const options = row || {};
   const tile = document.createElement("button");
   tile.type = "button";
   tile.className = "ig-tile";
@@ -266,15 +289,30 @@ function profileTile(idea) {
     badge.appendChild(svgIcon(mark));
     tile.appendChild(badge);
   }
-  tile.setAttribute("aria-label", idea.title || excerpt(idea.text, 60) || t("typePost"));
-  tile.addEventListener("click", () => openThread(idea.id));
+  if (options.repost) {
+    const shared = document.createElement("span");
+    shared.className = "ig-tile-repost";
+    shared.appendChild(svgIcon(ICONS.repost));
+    tile.appendChild(shared);
+  }
+  tile.setAttribute("aria-label", [options.repost ? t("repost") : "", idea.title || excerpt(idea.text, 60) || t("typePost")].filter(Boolean).join(" · "));
+  tile.addEventListener("click", () => {
+    if (options.reel) openReel(idea);
+    else openThread(idea.id);
+  });
   return tile;
+}
+
+function paintTiles(grid, rows, tab) {
+  grid.classList.toggle("reels", tab === "reels");
+  rows.forEach((row) => grid.appendChild(profileTile(row.idea, { repost: row.repost, reel: tab === "reels" })));
 }
 
 function paintProfileGrid() {
   const grid = document.querySelector("#profile-list");
   grid.replaceChildren();
   grid.classList.toggle("wins", profileTab === "wins");
+  grid.classList.remove("reels");
   if (profileTab === "wins") {
     const points = pointsFor(true);
     const into = points % 300;
@@ -329,7 +367,7 @@ function paintProfileGrid() {
     grid.appendChild(empty);
     return;
   }
-  items.forEach((idea) => grid.appendChild(profileTile(idea)));
+  paintTiles(grid, items, profileTab);
 }
 
 function photoData(file) {
@@ -640,6 +678,7 @@ function paintPerson() {
   top.className = "pp-top";
   const face = feedFace({ pid: shown.pid, author: shown }, { ...shown, initial: "•" });
   face.classList.add("pp-face");
+  if (shown.photo && face.tagName !== "BUTTON") face.addEventListener("click", () => openLightbox(shown.photo));
   top.appendChild(face);
   if (person && !person.mine) top.appendChild(personFollow(person));
   const name = document.createElement("h2");
@@ -675,15 +714,41 @@ function paintPerson() {
     counts.appendChild(cell);
   });
   head.appendChild(counts);
-  if (!posts.length) {
+  const tab = personPage.tab || "grid";
+  const tabs = document.createElement("nav");
+  tabs.className = "ig-tabs pp-tabs";
+  PERSON_TABS.forEach(([key, label, icon]) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = key === tab ? "active" : "";
+    button.setAttribute("aria-label", t(label));
+    button.appendChild(svgIcon(icon));
+    button.addEventListener("click", () => {
+      personPage.tab = key;
+      paintPerson();
+    });
+    tabs.appendChild(button);
+  });
+  list.appendChild(tabs);
+  const grid = document.createElement("div");
+  grid.className = "ig-grid";
+  list.appendChild(grid);
+  const tiles = profileRows(personPage.pid, tab, false);
+  if (!tiles.length) {
     const empty = document.createElement("p");
-    empty.className = "empty";
-    empty.textContent = t("ppEmpty");
-    list.appendChild(empty);
+    empty.className = "empty ig-empty";
+    empty.textContent = t(tab === "reels" ? "igEmptyReels" : "ppEmpty");
+    grid.appendChild(empty);
     return;
   }
-  posts.forEach((idea) => list.appendChild(feedPost(idea)));
+  paintTiles(grid, tiles, tab);
 }
+
+const PERSON_TABS = [
+  ["grid", "igTabGrid", "M5 3.5h14A1.5 1.5 0 0 1 20.5 5v14a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19V5A1.5 1.5 0 0 1 5 3.5zM9.2 3.5v17M14.8 3.5v17M3.5 9.2h17M3.5 14.8h17"],
+  ["reels", "igTabReels", "M7.5 3.5h9a4 4 0 0 1 4 4v9a4 4 0 0 1-4 4h-9a4 4 0 0 1-4-4v-9a4 4 0 0 1 4-4zM3.5 8.5h17M8.5 3.5l3 5M14 3.5l3 5M10.5 12v5l4.2-2.5z"],
+  ["ideas", "igTabIdeas", "M9 18h6M10 21h4M12 3a6 6 0 0 1 3.5 10.9c-.7.5-1.1 1.2-1.2 2.1h-4.6c-.1-.9-.5-1.6-1.2-2.1A6 6 0 0 1 12 3z"],
+];
 
 document.querySelector("#person-back").addEventListener("click", closePerson);
 document.querySelector("#set-photo-pick").addEventListener("click", () => document.querySelector("#set-photo-file").click());

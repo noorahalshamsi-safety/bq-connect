@@ -18,6 +18,9 @@ Object.assign(dict.ar, {
   twrShowReplies: "عرض الردود ({n})",
   twrReplyCount: "الردود: {n}",
   alertReply: "رد {name} على تعليقك",
+  alertCommentLike: "أعجب {name} بتعليقك",
+  storyComments: "التعليقات ({n})",
+  storyCommentPh: "أضف تعليقاً",
   twdViews: "مشاهدة",
   twdViewsLabel: "المشاهدات",
   exForYou: "لك",
@@ -309,6 +312,9 @@ Object.assign(dict.en, {
   twrShowReplies: "View replies ({n})",
   twrReplyCount: "{n} replies",
   alertReply: "{name} replied to your comment",
+  alertCommentLike: "{name} liked your comment",
+  storyComments: "Comments ({n})",
+  storyCommentPh: "Add a comment",
   twdViews: "Views",
   twdViewsLabel: "Views",
   exForYou: "For you",
@@ -782,9 +788,143 @@ function feedGallery(idea) {
   return idea.media ? [idea.media] : [];
 }
 
-function openLightbox(src) {
-  document.querySelector("#dm-view-img").src = src;
-  document.querySelector("#dm-view").showModal();
+let mediaViewer = null;
+
+function mediaViewerIndex() {
+  const track = mediaViewer.track;
+  return Math.round(Math.abs(track.scrollLeft) / Math.max(1, track.clientWidth));
+}
+
+function paintMediaViewer() {
+  const total = mediaViewer.track.childElementCount;
+  const index = mediaViewerIndex();
+  mediaViewer.count.textContent = total > 1 ? `${index + 1}/${total}` : "";
+  [...mediaViewer.track.children].forEach((slide, i) => {
+    const video = slide.querySelector("video");
+    if (video && i !== index) video.pause();
+  });
+}
+
+function zoomMediaSlide(slide, img, event) {
+  const zoomed = slide.classList.toggle("zoomed");
+  mediaViewer.track.classList.toggle("locked", zoomed);
+  if (!zoomed) {
+    img.style.width = "";
+    img.style.height = "";
+    return;
+  }
+  const box = slide.getBoundingClientRect();
+  const scale = Math.min(box.width / (img.naturalWidth || box.width), box.height / (img.naturalHeight || box.height));
+  const width = (img.naturalWidth || box.width) * scale * 2.5;
+  const height = (img.naturalHeight || box.height) * scale * 2.5;
+  const rx = (event.clientX - box.left) / box.width;
+  const ry = (event.clientY - box.top) / box.height;
+  img.style.width = `${width}px`;
+  img.style.height = `${height}px`;
+  slide.scrollLeft = (getComputedStyle(slide).direction === "rtl" ? -1 : 1) * Math.max(0, width * rx - box.width / 2);
+  slide.scrollTop = Math.max(0, height * ry - box.height / 2);
+}
+
+function mediaViewerSlide(src, autoplay, time) {
+  const slide = document.createElement("div");
+  slide.className = "mv-slide";
+  if (isVideoSrc(src)) {
+    const video = document.createElement("video");
+    video.src = src;
+    video.controls = true;
+    video.playsInline = true;
+    video.loop = true;
+    video.preload = "metadata";
+    video.muted = false;
+    video.addEventListener("loadedmetadata", () => {
+      if (time && time < video.duration) video.currentTime = time;
+      if (autoplay) video.play().catch(() => {});
+    }, { once: true });
+    slide.appendChild(video);
+    return slide;
+  }
+  const img = document.createElement("img");
+  img.alt = "";
+  img.src = src;
+  img.draggable = false;
+  slide.appendChild(img);
+  let last = 0;
+  slide.addEventListener("click", (event) => {
+    const now = Date.now();
+    if (now - last < 300) {
+      last = 0;
+      zoomMediaSlide(slide, img, event);
+      return;
+    }
+    last = now;
+    if (event.target === slide && !slide.classList.contains("zoomed")) {
+      setTimeout(() => {
+        if (last === now) mediaViewer.dialog.close();
+      }, 300);
+    }
+  });
+  return slide;
+}
+
+function mediaViewerNode() {
+  if (mediaViewer) return mediaViewer;
+  const dialog = document.createElement("dialog");
+  dialog.className = "mv";
+  const top = document.createElement("div");
+  top.className = "mv-top";
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "mv-close";
+  close.setAttribute("aria-label", t("bqClose"));
+  close.appendChild(svgIcon("M6 6l12 12M18 6 6 18"));
+  close.addEventListener("click", () => dialog.close());
+  const count = document.createElement("span");
+  count.className = "mv-count";
+  top.append(close, count);
+  const track = document.createElement("div");
+  track.className = "mv-track";
+  track.addEventListener("scroll", () => paintMediaViewer(), { passive: true });
+  const bar = document.createElement("div");
+  bar.className = "mv-bar";
+  bar.addEventListener("click", (event) => {
+    if (event.target.closest(".reply")) dialog.close();
+  }, true);
+  dialog.append(track, top, bar);
+  dialog.addEventListener("close", () => {
+    track.querySelectorAll("video").forEach((video) => video.pause());
+    track.replaceChildren();
+    track.classList.remove("locked");
+    bar.replaceChildren();
+    mediaViewer.ideaId = "";
+  });
+  document.body.appendChild(dialog);
+  mediaViewer = { dialog, track, count, bar, ideaId: "" };
+  return mediaViewer;
+}
+
+function openLightbox(src, options) {
+  const opts = options || {};
+  const items = Array.isArray(opts.items) && opts.items.length ? opts.items : [src];
+  const start = Math.max(0, items.indexOf(src));
+  const viewer = mediaViewerNode();
+  document.querySelectorAll("video.fp-video").forEach((video) => video.pause());
+  viewer.track.replaceChildren(...items.map((item, index) => mediaViewerSlide(item, index === start, index === start ? opts.time : 0)));
+  viewer.ideaId = opts.idea ? opts.idea.id : "";
+  viewer.bar.replaceChildren();
+  if (opts.idea) viewer.bar.appendChild(feedActions(opts.idea));
+  viewer.bar.hidden = !opts.idea;
+  if (!viewer.dialog.open) viewer.dialog.showModal();
+  requestAnimationFrame(() => {
+    const rtl = getComputedStyle(viewer.track).direction === "rtl";
+    viewer.track.scrollLeft = (rtl ? -1 : 1) * start * viewer.track.clientWidth;
+    paintMediaViewer();
+  });
+}
+
+function refreshMediaViewer() {
+  if (!mediaViewer || !mediaViewer.dialog.open || !mediaViewer.ideaId) return;
+  const idea = ideas.find((item) => item.id === mediaViewer.ideaId);
+  if (idea) mediaViewer.bar.replaceChildren(feedActions(idea));
 }
 
 function feedImage(idea, src) {
@@ -837,19 +977,13 @@ function mediaStage(idea, src, card) {
   if (isVideoSrc(src)) {
     stage.classList.add("is-video");
     const video = feedVideo(idea, src, stage);
-    onTaps(stage, () => {
-      if (video.paused) video.play().catch(() => {});
-      else {
-        feedMuted = !feedMuted;
-        paintFeedMute();
-      }
-    }, () => likeFromMedia(idea, stage, card));
+    onTaps(stage, () => openLightbox(src, { idea, time: video.currentTime }), () => likeFromMedia(idea, stage, card));
     return stage;
   }
   const img = feedImage(idea, src);
   img.addEventListener("load", () => fitAspect(stage, img.naturalWidth, img.naturalHeight, 0.8));
   stage.appendChild(img);
-  onTaps(stage, () => openLightbox(src), () => likeFromMedia(idea, stage, card));
+  onTaps(stage, () => openLightbox(src, { idea }), () => likeFromMedia(idea, stage, card));
   return stage;
 }
 
@@ -1159,7 +1293,7 @@ function feedWhere(idea) {
   link.href = mapUrl(point);
   link.target = "_blank";
   link.rel = "noopener";
-  link.textContent = t("geoOnMap");
+  link.textContent = point.name || t("geoOnMap");
   line.appendChild(link);
   return line;
 }
@@ -1189,7 +1323,22 @@ function tweetHead(idea, bits) {
     event.stopPropagation();
     openPostMenu(idea);
   });
-  head.append(name, role, time, more);
+  head.append(name, role, time);
+  if (idea.pid && !idea.mine && !idea.followed) {
+    const follow = document.createElement("button");
+    follow.type = "button";
+    follow.className = "tw-follow";
+    follow.textContent = t("follow");
+    follow.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      follow.disabled = true;
+      const data = await social("follow", { pid: idea.pid });
+      follow.disabled = false;
+      if (data) loadIdeas();
+    });
+    head.appendChild(follow);
+  }
+  head.appendChild(more);
   return head;
 }
 
@@ -1316,7 +1465,7 @@ function postFrame(idea, card) {
     const first = new Image();
     first.addEventListener("load", () => fitAspect(stage, first.naturalWidth, first.naturalHeight, 0.8));
     first.src = photos[0];
-    onTaps(stage, () => openLightbox(photos[feedSlideAt.get(idea.id) || 0] || photos[0]), () => likeFromMedia(idea, stage, card));
+    onTaps(stage, () => openLightbox(photos[feedSlideAt.get(idea.id) || 0] || photos[0], { items: photos, idea }), () => likeFromMedia(idea, stage, card));
   } else if (idea.media) {
     stage = mediaStage(idea, idea.media, card);
   } else {

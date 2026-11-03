@@ -294,7 +294,7 @@ function eventBox(idea) {
     link.href = mapUrl(point);
     link.target = "_blank";
     link.rel = "noopener";
-    link.textContent = t("geoOnMap");
+    link.textContent = point.name || t("geoOnMap");
     info.appendChild(link);
   } else if (idea.place) {
     const place = document.createElement("span");

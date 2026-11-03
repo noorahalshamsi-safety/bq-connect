@@ -724,6 +724,7 @@
     </section>
     <section id="storyboard" hidden>
       <div class="reels-bar">
+        <button class="reels-add reels-back" type="button" id="reels-back" hidden data-i18n-aria="back" aria-label="رجوع"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6 9 12l6 6"/></svg></button>
         <h1 data-i18n="navReels">ريلز</h1>
         <button class="reels-add" type="button" id="reels-add" data-i18n-aria="bqAddStory" aria-label="أضف قصة"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l1.8-2.5h6.4L17 8h3a1 1 0 0 1 1 1v9.5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1zM12 16.6a3.4 3.4 0 1 0 0-6.8 3.4 3.4 0 0 0 0 6.8z"/></svg></button>
       </div>
@@ -1184,11 +1185,7 @@
   </div>
 
   <dialog class="media-edit" id="media-edit" aria-labelledby="me-title">
-    <header class="me-top">
-      <button type="button" class="me-icon" id="me-cancel" data-i18n-aria="igCancel" aria-label="إلغاء"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
-      <h2 id="me-title" data-i18n="meEdit">تعديل</h2>
-      <button type="button" class="me-done" id="me-done" data-i18n="meDone">تم</button>
-    </header>
+    <h2 id="me-title" class="me-title" data-i18n="meEdit">تعديل</h2>
     <div class="me-stage" id="me-stage">
       <div class="me-frame" id="me-frame">
         <canvas id="me-base"></canvas>
@@ -1196,16 +1193,22 @@
         <canvas id="me-layer"></canvas>
       </div>
     </div>
-    <div class="me-panel" id="me-panel"></div>
+    <button type="button" class="me-icon me-close" id="me-cancel" data-i18n-aria="igCancel" aria-label="إلغاء"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
     <nav class="me-tools" id="me-tools">
-      <button type="button" data-me-tool="filter"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="9" r="5.5"/><circle cx="15" cy="9" r="5.5"/><circle cx="12" cy="15" r="5.5"/></svg><span data-i18n="meFilter">فلاتر</span></button>
-      <button type="button" data-me-tool="adjust"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg><span data-i18n="meAdjust">ضبط</span></button>
-      <button type="button" data-me-tool="text"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6V4.5h14V6M12 4.5v15M9 19.5h6"/></svg><span data-i18n="meText">نص</span></button>
-      <button type="button" data-me-tool="draw"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20c2.5 0 4-1.2 4-3.2 0-1.3-1-2.3-2.3-2.3C4.4 14.5 4 15.6 4 17v3z"/><path d="M8.6 14.4 19 4l1 1L9.6 15.4"/></svg><span data-i18n="meDraw">رسم</span></button>
-      <button type="button" data-me-tool="trim" data-me-video><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="7" r="2.5"/><circle cx="6" cy="17" r="2.5"/><path d="M8 8.5 20 18M8 15.5 20 6"/></svg><span data-i18n="meTrim">قص</span></button>
-      <button type="button" data-me-tool="sound" data-me-video><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg><span data-i18n="meSound">الصوت</span></button>
-      <button type="button" id="me-rotate" data-me-photo><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.4-5.7M20 4.5v4h-4"/></svg><span data-i18n="meRotate">تدوير</span></button>
+      <button type="button" data-me-tool="text" data-i18n-aria="meText" aria-label="نص"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6V4.5h14V6M12 4.5v15M9 19.5h6"/></svg><span data-i18n="meText">نص</span></button>
+      <button type="button" data-me-tool="draw" data-i18n-aria="meDraw" aria-label="رسم"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20c2.5 0 4-1.2 4-3.2 0-1.3-1-2.3-2.3-2.3C4.4 14.5 4 15.6 4 17v3z"/><path d="M8.6 14.4 19 4l1 1L9.6 15.4"/></svg><span data-i18n="meDraw">رسم</span></button>
+      <button type="button" data-me-tool="filter" data-i18n-aria="meFilter" aria-label="فلاتر"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="9" r="5.5"/><circle cx="15" cy="9" r="5.5"/><circle cx="12" cy="15" r="5.5"/></svg><span data-i18n="meFilter">فلاتر</span></button>
+      <button type="button" data-me-tool="adjust" data-i18n-aria="meAdjust" aria-label="ضبط"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg><span data-i18n="meAdjust">ضبط</span></button>
+      <button type="button" data-me-tool="trim" data-me-video data-i18n-aria="meTrim" aria-label="قص"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="7" r="2.5"/><circle cx="6" cy="17" r="2.5"/><path d="M8 8.5 20 18M8 15.5 20 6"/></svg><span data-i18n="meTrim">قص</span></button>
+      <button type="button" data-me-tool="sound" data-me-video data-i18n-aria="meSound" aria-label="الصوت"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg><span data-i18n="meSound">الصوت</span></button>
+      <button type="button" id="me-rotate" data-me-photo data-i18n-aria="meRotate" aria-label="تدوير"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.4-5.7M20 4.5v4h-4"/></svg><span data-i18n="meRotate">تدوير</span></button>
     </nav>
+    <button type="button" class="me-icon me-tool-done" id="me-tool-done" data-i18n-aria="meDone" aria-label="تم"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></button>
+    <p class="me-hint" id="me-hint" data-i18n="meTapText">اضغط على الشاشة لإضافة نص، واسحب يمين أو يسار لتغيير الفلتر</p>
+    <p class="me-flash" id="me-flash" aria-live="polite"></p>
+    <div class="me-trash" id="me-trash" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13M10 11v5.5M14 11v5.5"/></svg></div>
+    <div class="me-panel" id="me-panel"></div>
+    <button type="button" class="me-done" id="me-done"><span data-i18n="meDone">تم</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6"/></svg></button>
   </dialog>
 
   <script src="js/app.js"></script>

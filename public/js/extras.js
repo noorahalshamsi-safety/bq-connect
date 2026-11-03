@@ -14,6 +14,9 @@ Object.assign(dict.ar, {
   pmRepliesDone: "تم تحديث إعداد الردود",
   pmDeletePost: "حذف المنشور",
   pmDeleteSub: "ينحذف نهائياً مع التعليقات",
+  pmAnnounceStory: "أضف الإعلان للقصة",
+  pmAnnounceStorySub: "يظهر للجميع في القصص لمدة 24 ساعة",
+  pmAnnounceStoryDone: "تمت إضافة الإعلان للقصة",
   pmFollow: "متابعة {name}",
   pmUnfollow: "إلغاء متابعة {name}",
   pmFollowSub: "تطلع لك منشوراته في صفحة المتابَعين",
@@ -46,6 +49,9 @@ Object.assign(dict.en, {
   pmRepliesDone: "Reply setting updated",
   pmDeletePost: "Delete post",
   pmDeleteSub: "Removed for good, with its comments",
+  pmAnnounceStory: "Add to story",
+  pmAnnounceStorySub: "Everyone sees it in stories for 24 hours",
+  pmAnnounceStoryDone: "Announcement added to your story",
   pmFollow: "Follow {name}",
   pmUnfollow: "Unfollow {name}",
   pmFollowSub: "See their posts in your Following feed",
@@ -604,6 +610,9 @@ function openPostMenu(idea) {
       const scope = idea.replies || "all";
       main.push({ icon: MENU_ICONS[scope], label: t("pmReplies"), sub: t(REPLY_LABELS[scope]), run: () => openReplySheet(idea) });
     }
+    if (idea.type === "announcement" && selectedPerson && selectedPerson.announcer) {
+      main.push({ icon: NOTICE_ICONS.announce, label: t("pmAnnounceStory"), sub: t("pmAnnounceStorySub"), run: () => announceToStory(idea) });
+    }
     danger.push({ icon: MENU_ICONS.trash, label: t("pmDeletePost"), sub: t("pmDeleteSub"), danger: true, run: () => removeIdea(idea.id) });
   } else {
     if (idea.pid) {
@@ -621,6 +630,96 @@ function openPostMenu(idea) {
   }
   if (openId !== idea.id) main.push({ icon: MENU_ICONS.open, label: t("pmOpen"), sub: t("pmOpenSub"), run: () => openThread(idea.id) });
   openMenuSheet({ head: postMenuHead(idea), tiles, groups: [main, danger] });
+}
+
+function loadCanvasImage(src) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+
+async function announceStoryImage(idea) {
+  const w = 1080;
+  const h = 1920;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const context = canvas.getContext("2d");
+  const gradient = context.createLinearGradient(0, 0, w, h);
+  gradient.addColorStop(0, "#1d4ed8");
+  gradient.addColorStop(1, "#0b1f5c");
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, w, h);
+  let top = 260;
+  const photo = idea.media && !isVideoSrc(idea.media) ? await loadCanvasImage(idea.media) : null;
+  if (photo && photo.naturalWidth) {
+    const box = { x: 90, y: 230, w: w - 180, h: 760 };
+    const scale = Math.max(box.w / photo.naturalWidth, box.h / photo.naturalHeight);
+    const sw = box.w / scale;
+    const sh = box.h / scale;
+    context.save();
+    context.beginPath();
+    context.roundRect(box.x, box.y, box.w, box.h, 48);
+    context.clip();
+    context.drawImage(photo, (photo.naturalWidth - sw) / 2, (photo.naturalHeight - sh) / 2, sw, sh, box.x, box.y, box.w, box.h);
+    context.restore();
+    top = box.y + box.h + 90;
+  }
+  const rtl = /[\u0600-\u06FF]/.test(`${idea.title || ""}${idea.text || ""}`);
+  context.direction = rtl ? "rtl" : "ltr";
+  context.textAlign = "center";
+  context.textBaseline = "top";
+  context.fillStyle = "rgba(255, 255, 255, 0.18)";
+  context.beginPath();
+  context.roundRect(w / 2 - 150, top, 300, 84, 42);
+  context.fill();
+  context.fillStyle = "#fff";
+  context.font = "800 46px Cairo, Outfit, sans-serif";
+  context.fillText(t("announceKicker"), w / 2, top + 14);
+  top += 140;
+  const title = String(idea.title || "").trim();
+  if (title) {
+    context.font = "800 76px Cairo, Outfit, sans-serif";
+    camWrapLines(context, title, w * 0.82).slice(0, 4).forEach((line) => {
+      context.fillText(line, w / 2, top);
+      top += 104;
+    });
+    top += 30;
+  }
+  const body = String(idea.text || "").trim();
+  if (body && body !== title) {
+    context.font = "600 48px Cairo, Outfit, sans-serif";
+    context.fillStyle = "rgba(255, 255, 255, 0.9)";
+    const room = Math.max(1, Math.floor((h - 260 - top) / 70));
+    const lines = camWrapLines(context, body, w * 0.82);
+    lines.slice(0, room).forEach((line, index) => {
+      context.fillText(index === room - 1 && lines.length > room ? `${line}…` : line, w / 2, top);
+      top += 70;
+    });
+  }
+  const logo = await loadCanvasImage("/img/bq-connect.svg");
+  if (logo && logo.naturalWidth) {
+    const lw = 300;
+    const lh = (logo.naturalHeight / logo.naturalWidth) * lw;
+    context.drawImage(logo, (w - lw) / 2, h - 140 - lh, lw, lh);
+  }
+  return new Promise((resolve, reject) => canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("render"))), "image/jpeg", 0.9));
+}
+
+async function announceToStory(idea) {
+  if (!selectedPerson) return;
+  feedToast(t("bqUploading"));
+  try {
+    const media = await uploadMedia(await announceStoryImage(idea));
+    await saveIdea({ token: selectedPerson.token, type: "story", title: "", text: "", media, mentions: [], options: [] });
+    renderStories();
+    feedToast(t("pmAnnounceStoryDone"));
+  } catch {
+    feedToast(t("bqUploadFail"));
+  }
 }
 
 function openReportSheet(idea) {
