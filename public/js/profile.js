@@ -633,22 +633,13 @@ function closePerson() {
 }
 
 function personFollow(person) {
-  const follow = document.createElement("button");
-  follow.type = "button";
-  follow.className = person.followed ? "twd-follow on" : "twd-follow";
-  follow.textContent = t(person.followed ? "following" : "follow");
-  follow.addEventListener("click", async () => {
-    follow.disabled = true;
-    const data = await social("follow", { pid: person.pid });
-    follow.disabled = false;
-    if (!data || !personPage || personPage.person !== person) return;
-    const followed = Boolean(data.followed);
+  return followPill(person.pid, person.name, person.followed, (followed) => {
+    if (!personPage || personPage.person !== person) return;
     if (followed !== person.followed) person.followers = Math.max(0, (person.followers || 0) + (followed ? 1 : -1));
     person.followed = followed;
     paintPerson();
     loadIdeas();
   });
-  return follow;
 }
 
 function paintPerson() {

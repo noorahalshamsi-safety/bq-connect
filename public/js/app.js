@@ -2589,6 +2589,7 @@ function openStoryDeck(deck, index) {
 }
 
 function closeStoryViewer() {
+  closeStoryChat(false);
   clearTimeout(storyTimer);
   const video = storyVideo();
   if (video) video.pause();
@@ -2601,6 +2602,7 @@ function closeStoryViewer() {
 }
 
 function paintStoryFrame() {
+  closeStoryChat(false);
   const people = viewerRows();
   const person = people[storyGroup];
   const view = document.querySelector("#story-view");
@@ -2705,9 +2707,289 @@ async function likeStory(idea) {
   if (now) paintStorySocial(now);
 }
 
+let storyChatReply = null;
+let storyChatTimer = 0;
+
+function storyChatOpen() {
+  const chat = document.querySelector("#story-chat");
+  return Boolean(chat && chat.classList.contains("open"));
+}
+
+function closeStoryChat(resume) {
+  const chat = document.querySelector("#story-chat");
+  if (!chat || !chat.classList.contains("open")) return;
+  chat.classList.remove("open");
+  storyChatReply = null;
+  const input = chat.querySelector(".story-chat-form input");
+  if (input) input.blur();
+  clearTimeout(storyChatTimer);
+  storyChatTimer = setTimeout(() => {
+    if (!chat.classList.contains("open")) chat.hidden = true;
+  }, 240);
+  if (resume) resumeStory();
+}
+
+function storyChatRow(comment, idea, nested) {
+  const bits = authorBits(comment);
+  const row = document.createElement("article");
+  row.className = nested ? "story-chat-item reply" : "story-chat-item";
+  const face = avatarNode(bits);
+  const body = document.createElement("div");
+  body.className = "story-chat-body";
+  const meta = document.createElement("p");
+  meta.className = "story-chat-meta";
+  const name = document.createElement("strong");
+  name.textContent = bits.name;
+  if (comment.author && comment.author.official) name.appendChild(officialMark());
+  const time = document.createElement("time");
+  time.dateTime = comment.createdAt || "";
+  time.textContent = timeAgo(comment.createdAt);
+  meta.append(name, time);
+  body.appendChild(meta);
+  if (comment.text) {
+    const text = document.createElement("p");
+    text.className = "story-chat-text";
+    text.textContent = comment.text;
+    body.appendChild(text);
+  }
+  if (comment.media) {
+    const img = document.createElement("img");
+    img.className = "story-chat-media";
+    img.alt = "";
+    img.src = comment.media;
+    body.appendChild(img);
+  }
+  if (idea.canReply !== false && comment.id) {
+    const answer = document.createElement("button");
+    answer.type = "button";
+    answer.className = "story-chat-reply";
+    answer.textContent = t("twdReply");
+    answer.addEventListener("click", () => {
+      storyChatReply = { id: comment.id, name: bits.name };
+      paintStoryChatTo();
+      const input = document.querySelector("#story-chat .story-chat-form input");
+      if (input) input.focus();
+    });
+    body.appendChild(answer);
+  }
+  row.append(face, body);
+  if (comment.id) {
+    const like = document.createElement("button");
+    like.type = "button";
+    like.className = comment.liked ? "story-chat-like on" : "story-chat-like";
+    like.setAttribute("aria-label", t("likeLabel"));
+    like.setAttribute("aria-pressed", String(Boolean(comment.liked)));
+    like.appendChild(svgIcon(ICONS.like));
+    const likes = document.createElement("span");
+    likes.textContent = comment.likes ? compactCount(comment.likes) : "";
+    like.appendChild(likes);
+    like.addEventListener("click", () => {
+      const on = !like.classList.contains("on");
+      like.classList.toggle("on", on);
+      const next = Math.max(0, (Number(comment.likes) || 0) + (on === Boolean(comment.liked) ? 0 : on ? 1 : -1));
+      likes.textContent = next ? compactCount(next) : "";
+      likeComment(idea.id, comment.id).then(() => paintStoryChat());
+    });
+    row.appendChild(like);
+  }
+  const pid = authorPid(comment);
+  if (pid) {
+    [face, name].forEach((node) => {
+      node.classList.add("person-link");
+      node.addEventListener("click", () => {
+        closeStoryViewer();
+        openPerson(pid);
+      });
+    });
+  }
+  return row;
+}
+
+function paintStoryChatTo() {
+  const to = document.querySelector("#story-chat .story-chat-to");
+  if (!to) return;
+  to.hidden = !storyChatReply;
+  to.replaceChildren();
+  if (!storyChatReply) return;
+  const label = document.createElement("span");
+  const target = document.createElement("b");
+  target.textContent = storyChatReply.name;
+  label.append(`${t("twdReplyingTo")} `, target);
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.setAttribute("aria-label", t("pmCancel"));
+  cancel.textContent = "×";
+  cancel.addEventListener("click", () => {
+    storyChatReply = null;
+    paintStoryChatTo();
+  });
+  to.append(label, cancel);
+}
+
+function paintStoryChat(toEnd) {
+  const chat = document.querySelector("#story-chat");
+  if (!chat) return;
+  const idea = storySocialIdea({ id: chat.dataset.id });
+  const list = chat.querySelector(".story-chat-list");
+  const keep = list.scrollTop;
+  const comments = idea && Array.isArray(idea.comments) ? idea.comments : [];
+  chat.querySelector(".story-chat-head h3").textContent = comments.length ? tf("storyComments", { n: comments.length }) : t("storyChatTitle");
+  list.replaceChildren();
+  if (!comments.length) {
+    const empty = document.createElement("p");
+    empty.className = "story-chat-empty";
+    empty.textContent = t("storyChatEmpty");
+    list.appendChild(empty);
+  }
+  const byId = new Map(comments.map((comment) => [comment.id, comment]));
+  const rootOf = (comment) => {
+    let node = comment;
+    for (let hops = 0; node.parentId && byId.has(node.parentId) && hops < 50; hops += 1) node = byId.get(node.parentId);
+    return node.id;
+  };
+  const groups = new Map();
+  comments.forEach((comment) => {
+    const root = rootOf(comment);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(comment);
+  });
+  groups.forEach((rows, root) => rows.forEach((comment) => list.appendChild(storyChatRow(comment, idea, comment.id !== root))));
+  const form = chat.querySelector(".story-chat-form");
+  const closed = chat.querySelector(".story-chat-closed");
+  const open = Boolean(idea) && idea.canReply !== false;
+  form.hidden = !open;
+  closed.hidden = open || !idea;
+  paintStoryChatTo();
+  list.scrollTop = toEnd ? list.scrollHeight : keep;
+}
+
+function buildStoryChat() {
+  const chat = document.createElement("div");
+  chat.id = "story-chat";
+  chat.className = "story-chat";
+  chat.hidden = true;
+  const shade = document.createElement("div");
+  shade.className = "story-chat-shade";
+  shade.addEventListener("click", () => closeStoryChat(true));
+  const panel = document.createElement("section");
+  panel.className = "story-chat-panel";
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-label", t("storyChatTitle"));
+  const head = document.createElement("header");
+  head.className = "story-chat-head";
+  const grip = document.createElement("i");
+  grip.className = "sheet-grip";
+  const title = document.createElement("h3");
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "story-chat-x";
+  close.setAttribute("aria-label", t("storyChatClose"));
+  close.textContent = "×";
+  close.addEventListener("click", () => closeStoryChat(true));
+  head.append(grip, title, close);
+  const list = document.createElement("div");
+  list.className = "story-chat-list";
+  const closed = document.createElement("p");
+  closed.className = "story-chat-closed";
+  closed.textContent = t("repliesClosed");
+  closed.hidden = true;
+  const form = document.createElement("form");
+  form.className = "story-chat-form";
+  const to = document.createElement("p");
+  to.className = "story-chat-to";
+  to.hidden = true;
+  const row = document.createElement("div");
+  row.className = "story-chat-row";
+  const face = avatarNode(selectedPerson || { name: "", initial: "•" });
+  const input = document.createElement("input");
+  input.type = "text";
+  input.maxLength = 500;
+  input.autocomplete = "off";
+  input.enterKeyHint = "send";
+  input.placeholder = t("storyCommentPh");
+  input.setAttribute("aria-label", t("storyCommentPh"));
+  const send = document.createElement("button");
+  send.type = "submit";
+  send.className = "story-chat-send";
+  send.textContent = t("storyChatSend");
+  send.disabled = true;
+  input.addEventListener("input", () => {
+    send.disabled = !input.value.trim();
+  });
+  row.append(face, input, send);
+  const error = document.createElement("p");
+  error.className = "story-chat-error";
+  form.append(to, row, error);
+  let sending = false;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const idea = storySocialIdea({ id: chat.dataset.id });
+    const text = input.value.trim();
+    if (!idea || !text || sending) return;
+    error.textContent = "";
+    sending = true;
+    send.disabled = true;
+    let result = "failed";
+    try {
+      if (!(await termsCheck(text))) return;
+      result = await addComment(idea.id, text, "", storyChatReply && storyChatReply.id);
+    } finally {
+      sending = false;
+      send.disabled = !input.value.trim();
+    }
+    if (result === "ok") {
+      input.value = "";
+      send.disabled = true;
+      storyChatReply = null;
+      paintStoryChat(true);
+      paintStorySocial({ id: idea.id });
+      return;
+    }
+    if (result === "terms") openTerms(true);
+    else error.textContent = t(result === "verify" ? "needVerify" : result === "closed" ? "repliesClosed" : result === "offensive" ? "conductBlocked" : "errFailed");
+  });
+  panel.append(head, list, closed, form);
+  chat.append(shade, panel);
+  let dragFrom = null;
+  head.addEventListener("pointerdown", (event) => {
+    if (event.target.closest("button")) return;
+    dragFrom = event.clientY;
+    panel.style.transition = "none";
+    head.setPointerCapture(event.pointerId);
+  });
+  head.addEventListener("pointermove", (event) => {
+    if (dragFrom === null) return;
+    panel.style.transform = `translateY(${Math.max(0, event.clientY - dragFrom)}px)`;
+  });
+  const drop = (event) => {
+    if (dragFrom === null) return;
+    const moved = event.clientY - dragFrom;
+    dragFrom = null;
+    panel.style.transition = "";
+    panel.style.transform = "";
+    if (moved > 70) closeStoryChat(true);
+  };
+  head.addEventListener("pointerup", drop);
+  head.addEventListener("pointercancel", drop);
+  return chat;
+}
+
 function openStoryComments(idea) {
-  closeStoryViewer();
-  openThread(idea.id);
+  pauseStory();
+  let chat = document.querySelector("#story-chat");
+  if (!chat) {
+    chat = buildStoryChat();
+    document.querySelector("#story-view").appendChild(chat);
+  }
+  clearTimeout(storyChatTimer);
+  chat.dataset.id = idea.id;
+  storyChatReply = null;
+  chat.querySelector(".story-chat-error").textContent = "";
+  paintStoryChat(false);
+  chat.querySelector(".story-chat-list").scrollTop = 0;
+  chat.hidden = false;
+  void chat.offsetWidth;
+  chat.classList.add("open");
 }
 
 function paintStorySocial(item) {
@@ -2850,18 +3132,48 @@ async function social(action, extra) {
   return response.json();
 }
 
-function followButton(idea) {
+function paintFollowPill(button, followed) {
+  const on = Boolean(followed);
+  button.classList.add("twd-follow", "follow-pill");
+  button.classList.toggle("on", on);
+  button.setAttribute("aria-pressed", String(on));
+  const label = document.createElement("span");
+  label.className = "follow-on";
+  label.textContent = t(on ? "following" : "follow");
+  button.replaceChildren(label);
+  if (on) {
+    const off = document.createElement("span");
+    off.className = "follow-off";
+    off.textContent = t("unfollowBtn");
+    button.appendChild(off);
+  }
+}
+
+function followPill(pid, name, followed, done) {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "text-btn";
-  button.textContent = idea.followed ? t("following") : t("follow");
-  button.addEventListener("click", async (event) => {
-    event.stopPropagation();
-    const data = await social("follow", { pid: idea.pid });
+  paintFollowPill(button, followed);
+  const toggle = async () => {
+    button.disabled = true;
+    const data = await social("follow", { pid });
+    button.disabled = false;
     if (!data) return;
-    await loadIdeas();
+    paintFollowPill(button, data.followed);
+    if (done) done(Boolean(data.followed), data);
+  };
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (!button.classList.contains("on")) {
+      toggle();
+      return;
+    }
+    openSheet(tf("unfollowAsk", { name: name || "" }), t("unfollowAskSub"), [{ label: t("unfollowBtn"), danger: true, run: toggle }]);
   });
   return button;
+}
+
+function followButton(idea) {
+  return followPill(idea.pid, authorBits(idea).name, idea.followed, () => loadIdeas());
 }
 
 function repostButton(idea) {
@@ -3234,9 +3546,7 @@ function renderThread() {
   who.append(name, role);
   head.append(feedFace(idea, bits), who);
   if (idea.pid && !idea.mine) {
-    const follow = followButton(idea);
-    follow.className = idea.followed ? "twd-follow on" : "twd-follow";
-    head.appendChild(follow);
+    head.appendChild(followButton(idea));
   }
   const more = document.createElement("button");
   more.type = "button";
@@ -4526,7 +4836,7 @@ function paintReelCounts(item, idea) {
     repost.querySelector("span").textContent = idea.reposts ? String(idea.reposts) : t("repost");
   }
   const follow = item.querySelector(".reel-follow");
-  if (follow) follow.hidden = Boolean(idea.followed);
+  if (follow && follow.classList.contains("on") !== Boolean(idea.followed)) paintFollowPill(follow, idea.followed);
 }
 
 function reelItem(idea) {
@@ -4575,18 +4885,8 @@ function reelItem(idea) {
   });
   who.append(face, copy);
   if (pid && !idea.mine) {
-    const follow = document.createElement("button");
-    follow.type = "button";
-    follow.className = "reel-follow";
-    follow.textContent = t("follow");
-    follow.hidden = Boolean(idea.followed);
-    follow.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      follow.disabled = true;
-      const data = await social("follow", { pid });
-      follow.disabled = false;
-      if (data) loadIdeas();
-    });
+    const follow = followPill(pid, bits.name, idea.followed, () => loadIdeas());
+    follow.classList.add("reel-follow");
     who.appendChild(follow);
   }
   info.appendChild(who);
@@ -5057,7 +5357,7 @@ document.querySelector("#story-mute").addEventListener("click", (event) => {
   paintStoryMute();
 });
 storyView.addEventListener("pointerdown", (event) => {
-  if (event.target.closest("#story-close, #story-mute, #story-hl, #story-foot")) return;
+  if (event.target.closest("#story-close, #story-mute, #story-hl, #story-foot, #story-chat")) return;
   storyHolding = false;
   clearTimeout(storyHold);
   storyHold = setTimeout(() => {
@@ -5067,7 +5367,7 @@ storyView.addEventListener("pointerdown", (event) => {
 });
 storyView.addEventListener("pointerup", (event) => {
   clearTimeout(storyHold);
-  if (event.target.closest("#story-close, #story-mute, #story-hl, #story-foot")) return;
+  if (event.target.closest("#story-close, #story-mute, #story-hl, #story-foot, #story-chat")) return;
   if (storyHolding) {
     storyHolding = false;
     resumeStory();
@@ -5086,6 +5386,10 @@ storyView.addEventListener("pointercancel", () => {
 });
 document.addEventListener("keydown", (event) => {
   if (!storyView || storyView.hidden) return;
+  if (storyChatOpen()) {
+    if (event.key === "Escape") closeStoryChat(true);
+    return;
+  }
   if (event.key === "Escape") closeStoryViewer();
   if (event.key === "ArrowRight") stepStory(document.documentElement.dir === "rtl" ? -1 : 1);
   if (event.key === "ArrowLeft") stepStory(document.documentElement.dir === "rtl" ? 1 : -1);
@@ -5684,14 +5988,8 @@ function employeeCard(person) {
   role.textContent = person.position || deptLabel(person.department);
   const actions = document.createElement("div");
   actions.className = "person-actions";
-  const follow = document.createElement("button");
-  follow.type = "button";
-  follow.className = "btn";
-  follow.textContent = person.followed ? t("following") : t("follow");
-  follow.addEventListener("click", async () => {
-    const saved = await social("follow", { pid: person.pid });
-    if (!saved) return;
-    follow.textContent = saved.followed ? t("following") : t("follow");
+  const follow = followPill(person.pid, person.name, person.followed, (followed) => {
+    person.followed = followed;
   });
   actions.append(follow);
   card.append(cover, personLink(faceNode(person), person.pid), personLink(name, person.pid), role, actions);

@@ -21,6 +21,13 @@ Object.assign(dict.ar, {
   alertCommentLike: "أعجب {name} بتعليقك",
   storyComments: "التعليقات ({n})",
   storyCommentPh: "أضف تعليقاً",
+  storyChatTitle: "التعليقات",
+  storyChatSend: "نشر",
+  storyChatEmpty: "ما فيه تعليقات بعد. ابدأ المحادثة.",
+  storyChatClose: "إغلاق التعليقات",
+  unfollowBtn: "إلغاء المتابعة",
+  unfollowAsk: "تلغي متابعة {name}؟",
+  unfollowAskSub: "منشوراته ما راح تطلع لك في صفحة المتابَعين، وتقدر تتابعه مرة ثانية متى ما بغيت.",
   twdViews: "مشاهدة",
   twdViewsLabel: "المشاهدات",
   exForYou: "لك",
@@ -315,6 +322,13 @@ Object.assign(dict.en, {
   alertCommentLike: "{name} liked your comment",
   storyComments: "Comments ({n})",
   storyCommentPh: "Add a comment",
+  storyChatTitle: "Comments",
+  storyChatSend: "Post",
+  storyChatEmpty: "No comments yet. Start the conversation.",
+  storyChatClose: "Close comments",
+  unfollowBtn: "Unfollow",
+  unfollowAsk: "Unfollow {name}?",
+  unfollowAskSub: "Their posts will no longer show up in your Following feed. You can follow them again anytime.",
   twdViews: "Views",
   twdViewsLabel: "Views",
   exForYou: "For you",
@@ -1325,17 +1339,8 @@ function tweetHead(idea, bits) {
   });
   head.append(name, role, time);
   if (idea.pid && !idea.mine && !idea.followed) {
-    const follow = document.createElement("button");
-    follow.type = "button";
-    follow.className = "tw-follow";
-    follow.textContent = t("follow");
-    follow.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      follow.disabled = true;
-      const data = await social("follow", { pid: idea.pid });
-      follow.disabled = false;
-      if (data) loadIdeas();
-    });
+    const follow = followButton(idea);
+    follow.classList.add("tw-follow");
     head.appendChild(follow);
   }
   head.appendChild(more);
@@ -1670,19 +1675,7 @@ function exPersonRow(person, followed, face) {
   const role = document.createElement("small");
   role.textContent = [person.position, deptLabel(person.department)].filter(Boolean).join(" · ");
   who.append(name, role);
-  const follow = document.createElement("button");
-  follow.type = "button";
-  follow.className = followed ? "twd-follow on" : "twd-follow";
-  follow.textContent = followed ? t("following") : t("follow");
-  follow.addEventListener("click", async () => {
-    follow.disabled = true;
-    const data = await social("follow", { pid: person.pid });
-    follow.disabled = false;
-    if (!data) return;
-    follow.classList.toggle("on", Boolean(data.followed));
-    follow.textContent = data.followed ? t("following") : t("follow");
-    loadIdeas();
-  });
+  const follow = followPill(person.pid, person.name, followed || Boolean(person.followed), () => loadIdeas());
   row.append(personLink(face, person.pid), personLink(who, person.pid), follow);
   return row;
 }
