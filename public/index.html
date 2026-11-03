@@ -76,11 +76,11 @@
       <p data-i18n="registerLead">نتأكد إنك أنت من ملف الموظفين، وتختار كلمة المرور بنفسك. بعدها نربط تطبيق المصادقة وإيميلك.</p>
       <label>
         <span data-i18n="labelBadge">رقم البطاقة</span>
-        <input id="reg-badge" inputmode="numeric" autocomplete="username" maxlength="16" data-i18n-placeholder="phBadge" placeholder="مثال: 112">
+        <input id="reg-badge" type="password" inputmode="numeric" autocomplete="off" maxlength="16" dir="ltr" data-i18n-placeholder="phBadge" placeholder="مثال: 112">
       </label>
       <label>
         <span data-i18n="labelCode">آخر 4 أرقام من الهوية</span>
-        <input id="code" inputmode="numeric" autocomplete="off" maxlength="12" data-i18n-placeholder="phCode" placeholder="••••">
+        <input id="code" type="password" inputmode="numeric" autocomplete="off" maxlength="12" dir="ltr" data-i18n-placeholder="phCode" placeholder="••••">
       </label>
       <label>
         <span data-i18n="labelMobile">رقم الجوال</span>
@@ -105,7 +105,43 @@
       <p class="form-error" id="register-error" role="alert"></p>
       <p class="form-ok" id="register-done" role="status" hidden></p>
       <button class="btn" id="register-btn" type="submit" data-i18n="registerButton">تحقق وسجّل</button>
+      <div class="gate-links">
+        <button type="button" class="text-btn" data-gate="join" data-i18n="joinAsk">موظف جديد وما لقينا بياناتك؟ أرسل طلب انضمام</button>
+      </div>
       <p class="login-secure" data-i18n="registerSecure">نقارن بياناتك بملف الموظفين بشكل مشفّر، وما تنحفظ ولا تنعرض.</p>
+    </form>
+    <form id="join-form" class="gate-card" hidden novalidate>
+      <button type="button" class="bar-back gate-back" data-gate="register" data-i18n-aria="back" aria-label="رجوع"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6 9 12l6 6"/></svg></button>
+      <h1 data-i18n="joinTitle">طلب انضمام</h1>
+      <p data-i18n="joinLead">إذا كنت موظف جديد وما لقينا بياناتك، أرسل طلبك هنا. المسؤول يراجعه ويضيفك، وبعدها تسوي «تسجيل جديد» بنفس البيانات.</p>
+      <label>
+        <span data-i18n="labelBadge">رقم البطاقة</span>
+        <input id="join-badge" type="password" inputmode="numeric" autocomplete="off" maxlength="16" dir="ltr" data-i18n-placeholder="phBadge" placeholder="مثال: 112">
+      </label>
+      <label>
+        <span data-i18n="joinName">الاسم الكامل بالإنجليزي</span>
+        <input id="join-name" autocomplete="name" maxlength="80" dir="ltr" placeholder="First Middle Last">
+      </label>
+      <label>
+        <span data-i18n="joinDept">القسم</span>
+        <input id="join-dept" autocomplete="off" maxlength="80">
+      </label>
+      <label>
+        <span data-i18n="joinPosition">المسمى الوظيفي</span>
+        <input id="join-position" autocomplete="organization-title" maxlength="80">
+      </label>
+      <label>
+        <span data-i18n="labelCode">آخر 4 أرقام من الهوية</span>
+        <input id="join-code" type="password" inputmode="numeric" autocomplete="off" maxlength="12" dir="ltr" data-i18n-placeholder="phCode" placeholder="••••">
+      </label>
+      <label>
+        <span data-i18n="labelMobile">رقم الجوال</span>
+        <input id="join-mobile" inputmode="tel" autocomplete="tel" maxlength="24" dir="ltr" data-i18n-placeholder="phMobile" placeholder="05xxxxxxxx">
+      </label>
+      <p class="form-error" id="join-error" role="alert"></p>
+      <p class="form-ok" id="join-done" role="status" hidden></p>
+      <button class="btn" id="join-btn" type="submit" data-i18n="joinButton">أرسل الطلب</button>
+      <p class="login-secure" data-i18n="joinSecure">آخر 4 أرقام من الهوية ورقم الجوال ينحفظون مشفّرين وما يشوفهم أحد، حتى المسؤول.</p>
     </form>
     <form id="forgot-form" class="gate-card" hidden novalidate>
       <button type="button" class="bar-back gate-back" data-gate="login" data-i18n-aria="back" aria-label="رجوع"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6 9 12l6 6"/></svg></button>
@@ -667,6 +703,14 @@
         <h1 data-i18n="navAlerts">الإشعارات</h1>
       </div>
       <p class="screen-lead" data-i18n="bqAlertsLead">تابع التعليقات وتقدّم الأفكار وإعلانات الشركة.</p>
+      <div class="push-cta" id="push-cta" hidden>
+        <span class="push-cta-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15zM10 20.5a2.2 2.2 0 0 0 4 0"/></svg></span>
+        <div class="push-cta-copy">
+          <strong data-i18n="pushTitle">وصلك الإشعار حتى والتطبيق مقفل</strong>
+          <span id="push-note"></span>
+        </div>
+        <button type="button" class="btn push-cta-btn" id="push-btn" data-i18n="pushOn">فعّل</button>
+      </div>
       <div class="feed" id="alert-list"></div>
     </section>
     <section id="explore" hidden>
@@ -754,6 +798,7 @@
         <button type="button" role="tab" data-adm="ideas"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 1 3.5 10.9c-.7.5-1.1 1.2-1.2 2.1h-4.6c-.1-.9-.5-1.6-1.2-2.1A6 6 0 0 1 12 3z"/></svg><span data-i18n="admIdeas">الأفكار</span></button>
         <button type="button" role="tab" data-adm="complaints"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v10.5H9.5L4 20zM12 8.5v3.2M12 13.8v.01"/></svg><span data-i18n="admComplaints">الشكاوى</span></button>
         <button type="button" role="tab" data-adm="users"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11a3.2 3.2 0 1 0 0-6.4A3.2 3.2 0 0 0 9 11zM3.5 19.5c1-3 3-4.5 5.5-4.5s4.5 1.5 5.5 4.5M16 4.8a3 3 0 0 1 0 6M17.5 14.5c1.6.5 2.6 2 3 5"/></svg><span data-i18n="admUsers">الموظفين</span></button>
+        <button type="button" role="tab" data-adm="joins"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 11a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4zM4 19.5c1-3 3.2-4.5 6-4.5 1.3 0 2.5.3 3.4.9M18 13.5v6M15 16.5h6"/></svg><span data-i18n="admJoins">طلبات الانضمام</span></button>
         <button type="button" role="tab" data-adm="reports"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 21V4.5M5.5 4.5h12l-2.4 4.2 2.4 4.3h-12"/></svg><span data-i18n="admReports">البلاغات</span></button>
         <button type="button" role="tab" data-adm="conduct"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 2.8 19.5h18.4zM12 10v4.2M12 16.8v.01"/></svg><span data-i18n="admConduct">المخالفات</span></button>
         <button type="button" role="tab" data-adm="achievements"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4h8v5a4 4 0 0 1-8 0zM8 6H5a3 3 0 0 0 3 4M16 6h3a3 3 0 0 1-3 4M12 13v4M8.5 20h7"/></svg><span data-i18n="admAchievements">الإنجازات</span></button>
@@ -1210,6 +1255,7 @@
     <p class="me-flash" id="me-flash" aria-live="polite"></p>
     <div class="me-trash" id="me-trash" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13M10 11v5.5M14 11v5.5"/></svg></div>
     <div class="me-panel" id="me-panel"></div>
+    <button type="button" class="me-save" id="me-save" data-i18n-aria="meSave" aria-label="حفظ في الجوال"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/></svg></button>
     <button type="button" class="me-done" id="me-done"><span data-i18n="meDone">تم</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6"/></svg></button>
   </dialog>
 

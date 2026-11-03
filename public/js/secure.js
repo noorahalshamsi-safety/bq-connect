@@ -11,7 +11,26 @@ Object.assign(dict.ar, {
   phEmail: "name@binquraya.com",
   registerButton: "تحقق وسجّل",
   registerSecure: "نقارن بياناتك بملف الموظفين بشكل مشفّر، وما تنحفظ ولا تنعرض.",
-  alreadyRegistered: "حسابك مسجّل ومفعّل عليه التحقق بخطوتين. ادخل من صفحة الدخول، وإذا نسيت كلمة المرور اختر «نسيت كلمة المرور».",
+  alreadyRegistered: "هذا الحساب مسجّل من قبل. ادخل من صفحة الدخول، وإذا نسيت كلمة المرور اختر «نسيت كلمة المرور» أو كلّم مسؤول التطبيق يعيد تعيين حسابك.",
+  pushTitle: "وصلك الإشعار حتى والتطبيق مقفل",
+  pushOn: "فعّل",
+  pushLead: "إعجابات وتعليقات وإعلانات توصلك على شاشة الجوال مثل باقي التطبيقات.",
+  pushIosInstall: "على الآيفون: افتح التطبيق من Safari، اضغط زر المشاركة ثم «إضافة إلى الشاشة الرئيسية»، وافتحه من الأيقونة وفعّل الإشعارات من هنا.",
+  pushDenied: "الإشعارات مقفلة لهذا الموقع. فعّلها من إعدادات الجوال أو المتصفح ثم ارجع هنا.",
+  pushFail: "ما قدرنا نفعّل الإشعارات الحين. جرّب مرة ثانية.",
+  joinAsk: "موظف جديد وما لقينا بياناتك؟ أرسل طلب انضمام",
+  joinTitle: "طلب انضمام",
+  joinLead: "إذا كنت موظف جديد وما لقينا بياناتك، أرسل طلبك هنا. المسؤول يراجعه ويضيفك، وبعدها تسوي «تسجيل جديد» بنفس البيانات.",
+  joinName: "الاسم الكامل بالإنجليزي",
+  joinDept: "القسم",
+  joinPosition: "المسمى الوظيفي",
+  joinButton: "أرسل الطلب",
+  joinSecure: "آخر 4 أرقام من الهوية ورقم الجوال ينحفظون مشفّرين وما يشوفهم أحد، حتى المسؤول.",
+  joinDone: "وصلنا طلبك. أول ما يوافق المسؤول تقدر تسوي «تسجيل جديد» بنفس البيانات.",
+  joinBadName: "اكتب اسمك الكامل بالإنجليزي (اسمين على الأقل).",
+  joinBadDept: "اكتب القسم.",
+  joinBadCode: "اكتب آخر 4 أرقام من الهوية.",
+  joinBadMobile: "اكتب رقم جوال سعودي صحيح يبدأ بـ 05.",
   welcomeHi: "أهلاً فيك",
   welcomeLead: "لقينا بياناتك في ملف الموظفين. الخطوة الجاية: نربط تطبيق المصادقة بجوالك.",
   welcomeGo: "هذا أنا، كمّل",
@@ -217,7 +236,26 @@ Object.assign(dict.en, {
   phEmail: "name@binquraya.com",
   registerButton: "Verify and register",
   registerSecure: "Your details are checked in hashed form and never stored or shown.",
-  alreadyRegistered: "Your account is registered with two-step verification on. Sign in, or choose \"Forgot password\".",
+  alreadyRegistered: "This account is already registered. Sign in, choose \"Forgot password\", or ask the app admin to reset your account.",
+  pushTitle: "Get notified even when the app is closed",
+  pushOn: "Turn on",
+  pushLead: "Likes, comments and announcements show up on your phone like any other app.",
+  pushIosInstall: "On iPhone: open the app in Safari, tap Share then \"Add to Home Screen\", open it from the icon and turn notifications on here.",
+  pushDenied: "Notifications are blocked for this site. Allow them in your phone or browser settings, then come back.",
+  pushFail: "Could not turn on notifications right now. Try again.",
+  joinAsk: "New employee and not found? Send a join request",
+  joinTitle: "Join request",
+  joinLead: "If you are a new employee and we could not find you, send a request here. An admin reviews it and adds you, then you use \"Register\" with the same details.",
+  joinName: "Full name in English",
+  joinDept: "Department",
+  joinPosition: "Job title",
+  joinButton: "Send request",
+  joinSecure: "The last 4 ID digits and mobile number are stored hashed. Nobody can see them, not even admins.",
+  joinDone: "Request received. Once an admin approves it, use \"Register\" with the same details.",
+  joinBadName: "Enter your full name in English (at least two names).",
+  joinBadDept: "Enter your department.",
+  joinBadCode: "Enter the last 4 digits of your ID.",
+  joinBadMobile: "Enter a valid Saudi mobile number starting with 05.",
   welcomeHi: "Welcome",
   welcomeLead: "We found you in the employee file. Next: link the authenticator app on your phone.",
   welcomeGo: "That's me, continue",
@@ -813,6 +851,40 @@ document.querySelector("#forgot-form").addEventListener("submit", async (event) 
     done.textContent = t("forgotDone");
     done.hidden = false;
     badgeInput.value = badge;
+  } catch {
+    error.textContent = t("loginFailed");
+  } finally {
+    button.disabled = false;
+  }
+});
+
+const JOIN_ERRORS = {
+  bad_badge: "loginMissing",
+  bad_name: "joinBadName",
+  bad_department: "joinBadDept",
+  bad_code: "joinBadCode",
+  bad_mobile: "joinBadMobile",
+};
+const JOIN_FIELDS = ["#join-badge", "#join-name", "#join-dept", "#join-position", "#join-code", "#join-mobile"];
+
+document.querySelector("#join-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const error = document.querySelector("#join-error");
+  const done = document.querySelector("#join-done");
+  const button = document.querySelector("#join-btn");
+  const [badge, name, department, position, code, mobile] = JOIN_FIELDS.map((id) => document.querySelector(id).value.trim());
+  error.textContent = "";
+  done.hidden = true;
+  button.disabled = true;
+  try {
+    const { status, ok, data } = await postJson("/api/join", { badge: cleanBadgeInput(badge), name, department, position, code, mobile });
+    if (!ok) {
+      error.textContent = t(status === 429 ? "limited" : JOIN_ERRORS[data.error] || "loginFailed");
+      return;
+    }
+    JOIN_FIELDS.forEach((id) => { document.querySelector(id).value = ""; });
+    done.textContent = t("joinDone");
+    done.hidden = false;
   } catch {
     error.textContent = t("loginFailed");
   } finally {

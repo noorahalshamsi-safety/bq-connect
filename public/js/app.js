@@ -323,13 +323,13 @@ const dict = {
     navHome: "الرئيسية",
     navAlerts: "الإشعارات",
     navProfile: "حسابي",
-    alertLike: "أعجب {name} بفكرتك",
-    alertDislike: "لم تعجب {name} فكرتك",
-    alertComment: "رد {name} على فكرتك",
+    alertLike: "أعجب {name} ب{noun}",
+    alertDislike: "ضغط {name} عدم إعجاب على {noun}",
+    alertComment: "علّق {name} على {noun}",
     alertStatus: "غيّر {name} حالة فكرتك إلى {status}",
-    alertMention: "أشار {name} إليك",
+    alertMention: "أشار {name} إليك {where}",
     alertThanks: "شكرك {name}",
-    alertRepost: "أعاد {name} نشرك",
+    alertRepost: "أعاد {name} نشر {noun}",
     alertComplaint: "أرسل {name} شكوى",
     alertMessage: "أرسل {name} رسالة",
     statusLog: "سجل الحالة",
@@ -1049,13 +1049,13 @@ const dict = {
     navHome: "Home",
     navAlerts: "Notifications",
     navProfile: "Profile",
-    alertLike: "{name} liked your idea",
-    alertDislike: "{name} disliked your idea",
-    alertComment: "{name} replied to your idea",
+    alertLike: "{name} liked your {noun}",
+    alertDislike: "{name} disliked your {noun}",
+    alertComment: "{name} commented on your {noun}",
     alertStatus: "{name} moved your idea to {status}",
-    alertMention: "{name} mentioned you",
+    alertMention: "{name} mentioned you {where}",
     alertThanks: "{name} thanked you",
-    alertRepost: "{name} reposted you",
+    alertRepost: "{name} reposted your {noun}",
     alertComplaint: "{name} sent a complaint",
     alertMessage: "{name} sent you a message",
     statusLog: "Status log",
@@ -1831,6 +1831,7 @@ function saveSession(person, token) {
 }
 
 function clearSession() {
+  if (typeof pushForget === "function") pushForget(selectedPerson);
   selectedPerson = null;
   ideasCache.clear();
   localStorage.removeItem("rd-session");
@@ -4522,6 +4523,7 @@ function renderAnnouncements() {
 }
 
 const NOTICE_ICONS = {
+  join: "M10 11a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4zM4 19.5c1-3 3.2-4.5 6-4.5 1.3 0 2.5.3 3.4.9M18 13.5v6M15 16.5h6",
   like: ICONS.like,
   thanks: ICONS.like,
   dislike: ICONS.dislike,
@@ -4549,6 +4551,15 @@ function renderAlertCount() {
   const unread = alerts.filter((note) => !note.read).length;
   badge.hidden = unread === 0;
   badge.textContent = unread > 9 ? "9+" : String(unread);
+}
+
+function noticeKind(note) {
+  if (note.kind) return note.kind;
+  const idea = ideas.find((item) => item.id === note.ideaId) || (typeof admPeek !== "undefined" ? admPeek.get(note.ideaId) : null);
+  if (!idea) return "post";
+  if (idea.type === "story") return "story";
+  if (isVideoSrc(idea.media)) return "reel";
+  return idea.type || "idea";
 }
 
 function renderAlerts() {
@@ -4588,11 +4599,14 @@ function renderAlerts() {
       "achievement-ok": "alertAchOk",
       "achievement-no": "alertAchNo",
       login_new: "alertLoginNew",
+      join: "alertJoin",
     };
     const achievement = String(note.type || "").startsWith("achievement");
     const key = keys[note.type] || "alertComment";
     const quiet = ["report", "hidden", "restored", "event"].includes(note.type);
-    title.textContent = note.type === "announce" ? (note.ideaTitle || t("announceKicker")) : tf(key, { name, status: statusLabel(note.text) });
+    const kind = noticeKind(note);
+    const vars = { name, status: statusLabel(note.text), noun: t(`noun_${kind}`) || t("noun_post"), where: t(`in_${kind}`) || t("in_post") };
+    title.textContent = note.type === "announce" ? (note.ideaTitle || t("announceKicker")) : tf(key, vars);
     const sub = document.createElement("span");
     if (note.type === "login_new") sub.textContent = [note.ideaTitle, note.text ? `\u2066${note.text}\u2069` : "", t("alertLoginNewHint")].filter(Boolean).join(" · ");
     else sub.textContent = note.type === "announce" ? note.text : note.type === "status" || quiet || achievement ? note.ideaTitle || "" : [note.ideaTitle, note.text].filter(Boolean).join(" — ");
@@ -4618,8 +4632,8 @@ function renderAlerts() {
       if (note.type === "login_new") {
         showView("settings");
         showSettings("privacy");
-      } else if (note.type === "report" && selectedPerson && selectedPerson.dashboard && typeof admTab !== "undefined") {
-        admTab = "reports";
+      } else if ((note.type === "report" || note.type === "join") && selectedPerson && selectedPerson.dashboard && typeof admTab !== "undefined") {
+        admTab = note.type === "join" ? "joins" : "reports";
         showView("dashboard");
       } else if (note.type === "report" && selectedPerson && selectedPerson.moderator) showView("moderation");
       else if (achievement && note.text) openDepartment(note.text, "achievements");

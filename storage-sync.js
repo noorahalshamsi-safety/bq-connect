@@ -8,6 +8,8 @@ const INTERVAL_MS = 5000;
 const SETTLE_MS = 1500;
 // Losing any of these locks every user out, so local copies may never replace or delete them remotely.
 const CRITICAL = new Set(["data/accounts.json", "data/session.key", "data/backup.key", "data/employees.json", "data/push-keys.json"]);
+// New keys would silently break every existing push subscription, so a remote copy is never overwritten.
+const WRITE_ONCE = new Set(["data/push-keys.json"]);
 // Lives outside the synced folders, so it is never deleted and proves the bucket once held real data.
 const MARKER = "meta/bq-storage-seeded";
 const MASS_DELETE = 25;
@@ -132,6 +134,15 @@ function createSync({ client, dirs, preferLocal = [], log = console.log, root = 
           try {
             JSON.parse(bytes.toString("utf8"));
           } catch {
+            continue;
+          }
+        }
+        if (WRITE_ONCE.has(name)) {
+          const found = synced.has(name) ? { ok: true, value: true } : await client.exists(name);
+          if (!found.ok) continue;
+          if (found.value) {
+            if (warned !== `once:${name}`) log(`App Storage: not uploading ${name}, App Storage already holds it (safety stop)`);
+            warned = `once:${name}`;
             continue;
           }
         }

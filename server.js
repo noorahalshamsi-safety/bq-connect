@@ -9,6 +9,7 @@ const translator = require("./translate");
 const auth = require("./auth");
 const backup = require("./backup");
 const moderation = require("./moderation");
+const webPush = require("./push");
 
 let runBackup = () => backup.createBackup();
 
@@ -172,12 +173,17 @@ function writeJson(file, value) {
 }
 
 const pidMemo = new Map();
+const PID_KEY = auth.deriveKey("public-id");
+
+function legacyPublicId(badge) {
+  return crypto.createHmac("sha256", PEPPER).update(`pid:${badge}`).digest("hex").slice(0, 16);
+}
 
 function publicId(badge) {
   const key = String(badge);
   let pid = pidMemo.get(key);
   if (!pid) {
-    pid = crypto.createHmac("sha256", PEPPER).update(`pid:${key}`).digest("hex").slice(0, 16);
+    pid = crypto.createHmac("sha256", PID_KEY).update(`pid:${key}`).digest("hex").slice(0, 16);
     if (pidMemo.size > 20000) pidMemo.clear();
     pidMemo.set(key, pid);
   }
@@ -1043,7 +1049,7 @@ setInterval(() => {
   apiHits.forEach((row, ip) => {
     if (now - row.start > 60 * 1000) apiHits.delete(ip);
   });
-  [attempts, ipFailures, forgotUse, uploadUse, translateUse, placeUse, writeUse].forEach((map) => {
+  [attempts, ipFailures, joinUse, forgotUse, uploadUse, translateUse, placeUse, writeUse].forEach((map) => {
     map.forEach((row, key) => {
       if (now > row.reset) map.delete(key);
     });
@@ -1235,6 +1241,68 @@ function phoneMatch(person, badge, mobile) {
   return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 }
 
+const JOINS = path.join(__dirname, "data", "join-requests.json");
+const JOIN_TTL = 30 * 24 * 60 * 60 * 1000;
+const JOIN_MAX = 300;
+const joinUse = new Map();
+
+function joinLimited(ip) {
+  const now = Date.now();
+  const row = joinUse.get(ip) || { n: 0, reset: now + 60 * 60 * 1000 };
+  if (now > row.reset) {
+    row.n = 0;
+    row.reset = now + 60 * 60 * 1000;
+  }
+  row.n += 1;
+  joinUse.set(ip, row);
+  return row.n > 5;
+}
+
+function plainField(value, max) {
+  return String(value || "").replace(/[\u0000-\u001f\u007f<>]/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+function employeeRecord(input) {
+  const badge = cleanBadge(input.badge);
+  if (!badge || badge.length > 10) return "bad_badge";
+  const name = plainField(input.name, 80);
+  if (name.length < 5 || !name.includes(" ")) return "bad_name";
+  const department = plainField(input.department, 80);
+  if (department.length < 2) return "bad_department";
+  const position = plainField(input.position, 80);
+  const code = cleanCode(input.code);
+  if (!code) return "bad_code";
+  const digits = normalizeMobile(input.mobile);
+  if (!/^5\d{8}$/.test(digits)) return "bad_mobile";
+  return { badge, check: codeHash(badge, code), department, name, phone: phoneHash(badge, digits), position };
+}
+
+function readJoins() {
+  const rows = readJson(JOINS, []);
+  const cutoff = Date.now() - JOIN_TTL;
+  return (Array.isArray(rows) ? rows : []).filter((row) => row && row.badge && (Date.parse(row.createdAt) || 0) > cutoff);
+}
+
+function publicJoin(row) {
+  return { id: row.id, name: row.name, department: row.department, position: row.position, createdAt: row.createdAt };
+}
+
+function addEmployee(record) {
+  if (lookupPerson(record.badge)) return false;
+  const list = loadDirectory();
+  if (list.some((person) => String(person.badge) === record.badge)) return false;
+  const row = { badge: record.badge, check: record.check, department: record.department, name: record.name, phone: record.phone, position: record.position };
+  list.push(row);
+  const temp = `${DIRECTORY}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(list));
+  fs.renameSync(temp, DIRECTORY);
+  directory.push(row);
+  byBadge.set(row.badge, row);
+  departmentList = null;
+  audienceSize = 0;
+  return true;
+}
+
 function otpHash(badge, otp) {
   return crypto.createHmac("sha256", PEPPER).update(`otp:${badge}:${otp}`).digest("hex");
 }
@@ -1397,6 +1465,29 @@ function readViews() {
   return viewCache;
 }
 
+function migrateViewIds() {
+  const views = readViews();
+  const lists = Object.values(views).filter(Array.isArray);
+  if (!lists.length) return;
+  const renamed = new Map();
+  [...directory, ...systemPeople()].forEach((person) => renamed.set(legacyPublicId(person.badge), publicId(person.badge)));
+  let changed = 0;
+  lists.forEach((list) => {
+    list.forEach((pid, index) => {
+      const next = renamed.get(pid);
+      if (next) {
+        list[index] = next;
+        changed += 1;
+      }
+    });
+  });
+  if (!changed) return;
+  Object.keys(views).forEach((id) => {
+    if (Array.isArray(views[id])) views[id] = [...new Set(views[id])];
+  });
+  fs.writeFileSync(VIEWS, JSON.stringify(views));
+}
+
 function viewsOf(ideaId) {
   const list = readViews()[ideaId];
   return Array.isArray(list) ? list.length : 0;
@@ -1443,11 +1534,26 @@ function badgeFrom(token) {
   return person ? String(person.badge) : "";
 }
 
+function noteKind(idea) {
+  if (!idea) return "";
+  if (idea.type === "story") return "story";
+  if (isVideoMedia(idea.media)) return "reel";
+  return POST_TYPES.has(idea.type) ? idea.type : "idea";
+}
+
+function noteSnippet(idea) {
+  return String(idea.title || idea.text || "").replace(/\s+/g, " ").trim().slice(0, 80);
+}
+
+function noteAbout(idea) {
+  return { ideaId: idea.id, ideaTitle: noteSnippet(idea), kind: noteKind(idea) };
+}
+
 const TOGGLE_NOTES = new Set(["like", "dislike", "repost", "comment-like"]);
 const NOTE_ECHO_MS = 10 * 60 * 1000;
 const noteEcho = new Map();
 
-// Toggling a like on and off must not flood the owner with notifications.
+// Toggling a like on and off must not flood the owner with notifications and push messages.
 function repeatedToggle(recipientBadge, note) {
   if (!TOGGLE_NOTES.has(note.type) || !note.actorBadge) return false;
   const now = Date.now();
@@ -1463,7 +1569,7 @@ function pushNote(recipientBadge, note) {
   if (!recipientBadge || String(recipientBadge) === String(note.actorBadge || "")) return;
   if (repeatedToggle(String(recipientBadge), note)) return;
   const notes = readNotes();
-  notes.push({
+  const row = {
     id: crypto.randomUUID(),
     badge: String(recipientBadge),
     read: false,
@@ -1473,14 +1579,92 @@ function pushNote(recipientBadge, note) {
     ideaTitle: note.ideaTitle || "",
     actorName: note.actorName || "",
     text: note.text || "",
-  });
+    kind: note.kind || "",
+  };
+  notes.push(row);
   writeNotes(notes);
+  sendPush(row);
+}
+
+const PUSH_TEXT = {
+  ar: {
+    like: "أعجب {name} ب{noun}",
+    dislike: "ضغط {name} عدم إعجاب على {noun}",
+    comment: "علّق {name} على {noun}",
+    reply: "رد {name} على تعليقك",
+    "comment-like": "أعجب {name} بتعليقك",
+    mention: "أشار {name} إليك {where}",
+    repost: "أعاد {name} نشر {noun}",
+    thanks: "شكرك {name}",
+    status: "تغيّرت حالة فكرتك",
+    complaint: "أرسل {name} شكوى",
+    message: "أرسل {name} رسالة",
+    announce: "إعلان من {name}",
+    report: "بلاغ جديد على منشور",
+    hidden: "انخفى منشورك بعد مراجعة المشرف",
+    restored: "رجع منشورك يظهر للزملاء",
+    event: "تذكير: الفعالية تبدأ خلال ساعة",
+    achievement: "{name} أضاف إنجاز للقسم ينتظر موافقتك",
+    "achievement-ok": "{name} وافق على إنجازك",
+    "achievement-no": "{name} ما وافق على إنجازك",
+    login_new: "دخول جديد لحسابك",
+    join: "طلب انضمام جديد من {name}",
+  },
+  en: {
+    like: "{name} liked your {noun}",
+    dislike: "{name} disliked your {noun}",
+    comment: "{name} commented on your {noun}",
+    reply: "{name} replied to your comment",
+    "comment-like": "{name} liked your comment",
+    mention: "{name} mentioned you {where}",
+    repost: "{name} reposted your {noun}",
+    thanks: "{name} thanked you",
+    status: "Your idea's status changed",
+    complaint: "{name} sent a complaint",
+    message: "{name} sent you a message",
+    announce: "Announcement from {name}",
+    report: "New report on a post",
+    hidden: "Your post was hidden after a moderator review",
+    restored: "Your post is visible to colleagues again",
+    event: "Reminder: the event starts within an hour",
+    achievement: "{name} added a department achievement awaiting your approval",
+    "achievement-ok": "{name} approved your achievement",
+    "achievement-no": "{name} did not approve your achievement",
+    login_new: "New sign-in to your account",
+    join: "New join request from {name}",
+  },
+};
+const PUSH_NOUN = {
+  ar: { post: "منشورك", reel: "الريل حقك", story: "قصتك", idea: "فكرتك", suggestion: "اقتراحك", complaint: "ملاحظتك", announcement: "إعلانك", event: "فعاليتك", poll: "تصويتك", article: "مقالك", thanks: "رسالة الشكر حقتك", comment: "تعليقك" },
+  en: { post: "post", reel: "reel", story: "story", idea: "idea", suggestion: "suggestion", complaint: "note", announcement: "announcement", event: "event", poll: "poll", article: "article", thanks: "thank-you note", comment: "comment" },
+};
+const PUSH_WHERE = {
+  ar: { post: "في منشور", reel: "في ريل", story: "في قصة", idea: "في فكرة", suggestion: "في اقتراح", complaint: "في ملاحظة", announcement: "في إعلان", event: "في فعالية", poll: "في تصويت", article: "في مقال", thanks: "في رسالة شكر", comment: "في تعليق" },
+  en: { post: "in a post", reel: "in a reel", story: "in a story", idea: "in an idea", suggestion: "in a suggestion", complaint: "in a note", announcement: "in an announcement", event: "in an event", poll: "in a poll", article: "in an article", thanks: "in a thank-you note", comment: "in a comment" },
+};
+
+function pushMessage(row, lang) {
+  const kind = row.kind || "post";
+  const vars = { name: row.actorName || "BQ Connect", noun: PUSH_NOUN[lang][kind] || PUSH_NOUN[lang].post, where: PUSH_WHERE[lang][kind] || PUSH_WHERE[lang].post };
+  const template = row.type === "announce" ? row.ideaTitle || PUSH_TEXT[lang].announce : PUSH_TEXT[lang][row.type] || PUSH_TEXT[lang].comment;
+  const body = ["login_new", "report", "join"].includes(row.type) ? "" : row.type === "announce" ? "" : String(row.ideaTitle || "").slice(0, 80);
+  return {
+    title: template.replace(/\{(\w+)\}/g, (match, key) => vars[key] || ""),
+    body,
+    tag: row.ideaId ? `idea-${row.ideaId}` : row.type,
+    url: row.ideaId ? `/#idea=${encodeURIComponent(row.ideaId)}` : "/",
+  };
+}
+
+function sendPush(row) {
+  webPush.send(row.badge, (lang) => pushMessage(row, lang)).catch(() => {});
 }
 
 function publicNote(note) {
   return {
     id: note.id,
     type: note.type,
+    kind: note.kind || "",
     ideaId: note.ideaId,
     ideaTitle: note.ideaTitle || "",
     actorName: note.actorName || "",
@@ -2079,6 +2263,7 @@ function adminSummary() {
     reported: ideas.filter((idea) => openReports(idea).length).length,
     hidden: ideas.filter((idea) => idea.hidden).length,
     achievementsPending: adminPendingAchievements().length,
+    joinsPending: readJoins().length,
     conductToday: conductData().warnings.filter((row) => Date.now() - (Date.parse(row.at) || 0) < 24 * 60 * 60 * 1000).length,
     banned: Object.keys(conductData().bans).length,
     backup: backup.status(),
@@ -2831,6 +3016,36 @@ async function handleApi(req, res, urlPath, params) {
     return;
   }
 
+  if (req.method === "POST" && urlPath === "/api/join") {
+    const ip = clientIp(req);
+    let body;
+    try {
+      body = await readBody(req);
+    } catch {
+      send(res, 400, { error: "bad_json" });
+      return;
+    }
+    if (ipBlocked(ip) || joinLimited(ip)) {
+      send(res, 429, { error: "limited" });
+      return;
+    }
+    const record = employeeRecord(body);
+    if (typeof record === "string") {
+      send(res, 400, { error: record });
+      return;
+    }
+    send(res, 200, { received: true });
+    if (lookupPerson(record.badge)) return;
+    const rows = readJoins().filter((row) => row.badge !== record.badge);
+    if (rows.length >= JOIN_MAX) return;
+    const row = { id: crypto.randomUUID(), ...record, createdAt: new Date().toISOString() };
+    rows.push(row);
+    writeJson(JOINS, rows);
+    auth.audit("join_request", "unknown", { ip });
+    adminBadges().forEach((badge) => pushNote(badge, { type: "join", actorName: row.name, text: row.department }));
+    return;
+  }
+
   if (req.method === "POST" && (urlPath === "/api/login" || urlPath === "/api/register" || urlPath === "/api/forgot")) {
     const ip = clientIp(req);
     let body;
@@ -2944,7 +3159,7 @@ async function handleApi(req, res, urlPath, params) {
       }
     }
     auth.clearFailures(`reg:${badge}`);
-    if (auth.twoFactorOn(badge)) {
+    if (auth.twoFactorOn(badge) || !auth.canRegister(badge)) {
       send(res, 409, { error: "already_registered" });
       return;
     }
@@ -3039,6 +3254,7 @@ async function handleApi(req, res, urlPath, params) {
     }
     if (urlPath === "/api/logout-all") {
       auth.revokeSessions(badge);
+      webPush.forget(badge);
       auth.audit("logout_all", publicId(badge), loginInfo(req, body));
       send(res, 200, { ok: true });
       return;
@@ -3145,6 +3361,44 @@ async function handleApi(req, res, urlPath, params) {
       return;
     }
     send(res, 200, { name: await reversePlace(lat, lng, body.lang === "en" ? "en" : "ar") });
+    return;
+  }
+
+  if (req.method === "POST" && urlPath === "/api/push") {
+    let body;
+    try {
+      body = await readBody(req);
+    } catch {
+      send(res, 400, { error: "bad_json" });
+      return;
+    }
+    const person = personFromToken(body.token);
+    if (!person) {
+      send(res, 401, { error: "employee_required" });
+      return;
+    }
+    const badge = String(person.badge);
+    const op = String(body.op || "");
+    if (op === "key") {
+      send(res, 200, { key: webPush.publicKey(), active: webPush.hasSubscription(badge, body.endpoint) });
+      return;
+    }
+    if (op === "subscribe") {
+      const host = String(req.headers.host || "").toLowerCase();
+      const origin = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(host) && !/^[\d.]+$/.test(host) ? `https://${host}` : "";
+      if (!webPush.subscribe(badge, body.subscription, { lang: body.lang, origin })) {
+        send(res, 400, { error: "bad_subscription" });
+        return;
+      }
+      send(res, 200, { active: true });
+      return;
+    }
+    if (op === "unsubscribe") {
+      webPush.unsubscribe(badge, body.endpoint);
+      send(res, 200, { active: false });
+      return;
+    }
+    send(res, 400, { error: "bad_op" });
     return;
   }
 
@@ -3476,6 +3730,40 @@ async function handleApi(req, res, urlPath, params) {
         send(res, 200, adminSummary());
         return;
       }
+      if (action === "admin-joins") {
+        send(res, 200, { requests: readJoins().reverse().map(publicJoin) });
+        return;
+      }
+      if (action === "admin-join") {
+        const rows = readJoins();
+        const row = rows.find((item) => item.id === String(body.id || ""));
+        const decision = String(body.decision || "");
+        if (!row || !["approve", "reject"].includes(decision)) {
+          send(res, row ? 400 : 404, { error: row ? "bad_op" : "not_found" });
+          return;
+        }
+        const added = decision === "approve" ? addEmployee(row) : false;
+        writeJson(JOINS, rows.filter((item) => item.id !== row.id));
+        if (decision === "approve") auth.audit(added ? "join_approved" : "join_exists", added ? publicId(row.badge) : "unknown");
+        else auth.audit("join_rejected", "unknown");
+        send(res, 200, { added, requests: readJoins().reverse().map(publicJoin) });
+        return;
+      }
+      if (action === "admin-add-employee") {
+        const record = employeeRecord(body);
+        if (typeof record === "string") {
+          send(res, 400, { error: record });
+          return;
+        }
+        if (!addEmployee(record)) {
+          send(res, 409, { error: "exists" });
+          return;
+        }
+        writeJson(JOINS, readJoins().filter((item) => item.badge !== record.badge));
+        auth.audit("employee_added", publicId(record.badge));
+        send(res, 200, { added: true });
+        return;
+      }
       if (action === "admin-conduct") {
         send(res, 200, adminConduct(body));
         return;
@@ -3585,14 +3873,17 @@ async function handleApi(req, res, urlPath, params) {
           return;
         }
         if (op === "reset-2fa") {
-          if (badge === String(person.badge) || !auth.twoFactorOn(badge)) {
+          const registered = Boolean((auth.accountOf(badge) || {}).hash);
+          if (badge === String(person.badge) || (!auth.twoFactorOn(badge) && !registered)) {
             send(res, 400, { error: "bad_op" });
             return;
           }
-          auth.disableTwoFactor(badge);
+          if (auth.twoFactorOn(badge)) auth.disableTwoFactor(badge);
+          auth.allowReregister(badge, 24 * 60 * 60 * 1000);
           auth.revokeSessions(badge);
+          webPush.forget(badge);
           auth.audit("2fa_reset_by_admin", publicId(badge));
-          noticeMail((auth.accountOf(badge) || {}).email, "المشرف أوقف التحقق بخطوتين لحسابك في BQ Connect، وطلّع حسابك من كل الأجهزة. أول ما تدخل من جديد بيطلب منك تفعيله مرة ثانية.\nإذا ما طلبت هذا، كلّم الإدارة فوراً.");
+          noticeMail((auth.accountOf(badge) || {}).email, "المشرف أعاد تعيين حسابك في BQ Connect وطلّعه من كل الأجهزة. تقدر خلال 24 ساعة تسوي «تسجيل جديد» وتختار كلمة مرور جديدة، أو تدخل بكلمة مرورك الحالية وتفعّل التحقق بخطوتين من جديد.\nإذا ما طلبت هذا، كلّم الإدارة فوراً.");
         }
         if (op === "admin-on" || op === "admin-off") {
           if (auth.securityConfig().admins.has(badge) || (op === "admin-off" && badge === String(person.badge))) {
@@ -3608,6 +3899,7 @@ async function handleApi(req, res, urlPath, params) {
         }
         if (op === "revoke") {
           auth.revokeSessions(badge);
+          webPush.forget(badge);
           auth.audit("sessions_revoked_by_admin", publicId(badge));
         }
         if (op === "unlock") {
@@ -3860,7 +4152,7 @@ async function handleApi(req, res, urlPath, params) {
     }
     (Array.isArray(body.mentions) ? body.mentions : []).slice(0, 6).forEach((pid) => {
       const mentioned = personByPid(pid);
-      if (mentioned) pushNote(mentioned.badge, { type: "mention", ideaId: idea.id, ideaTitle: title || text.slice(0, 80), actorName: person.name, actorBadge: person.badge });
+      if (mentioned) pushNote(mentioned.badge, { type: "mention", ...noteAbout(idea), actorName: person.name, actorBadge: person.badge });
     });
     const voter = String(person.badge);
     send(res, 201, { idea: publicIdea(idea, voter), ideas: publicList(ideas, voter, idea), stats: statsFor(ideas) });
@@ -3948,8 +4240,7 @@ async function handleApi(req, res, urlPath, params) {
       if (active) {
         pushNote(ideas[index].badge, {
           type: active,
-          ideaId: ideas[index].id,
-          ideaTitle: ideas[index].title || "",
+          ...noteAbout(ideas[index]),
           actorName: person.name,
           actorBadge: key,
         });
@@ -3996,7 +4287,7 @@ async function handleApi(req, res, urlPath, params) {
       comment.likes = liked ? likes.concat([key]) : likes.filter((badge) => badge !== key);
       writeIdeas(ideas);
       if (liked && String(comment.badge) !== key) {
-        pushNote(comment.badge, { type: "comment-like", ideaId: ideas[index].id, ideaTitle: ideas[index].title || "", actorName: actor.name, actorBadge: key });
+        pushNote(comment.badge, { type: "comment-like", ...noteAbout(ideas[index]), kind: "comment", text: String(comment.text || "").slice(0, 140), actorName: actor.name, actorBadge: key });
       }
       send(res, 200, { idea: publicIdea(ideas[index], key), ideas: publicList(ideas, key, ideas[index]), stats: statsFor(ideas) });
       return;
@@ -4025,7 +4316,7 @@ async function handleApi(req, res, urlPath, params) {
       ideas[index].reposts = exists ? reposts.filter((item) => String(item.badge) !== key) : reposts.concat([{ badge: key, name: person.name, department: person.department || "", position: person.position || "", text: cleanText(body.text, 240), createdAt: new Date().toISOString() }]);
       writeIdeas(ideas);
       if (!exists) {
-        pushNote(ideas[index].badge, { type: "repost", ideaId: ideas[index].id, ideaTitle: ideas[index].title || "", actorName: person.name, actorBadge: key });
+        pushNote(ideas[index].badge, { type: "repost", ...noteAbout(ideas[index]), actorName: person.name, actorBadge: key });
       }
       send(res, 200, { idea: publicIdea(ideas[index], key), ideas: publicList(ideas, key, ideas[index]), stats: statsFor(ideas) });
       return;
@@ -4139,8 +4430,7 @@ async function handleApi(req, res, urlPath, params) {
       ideas[index].comments = comments;
       writeIdeas(ideas);
       const note = {
-        ideaId: ideas[index].id,
-        ideaTitle: ideas[index].title || "",
+        ...noteAbout(ideas[index]),
         actorName: person.name,
         actorBadge: person.badge,
         text: text.slice(0, 140),
@@ -4337,7 +4627,7 @@ function markAnnouncementsRead(badge) {
   writeJson(SEEN, seen);
 }
 
-const API_PATHS = new Set(["/api/ideas", "/api/login", "/api/login-2fa", "/api/2fa", "/api/email", "/api/register", "/api/forgot", "/api/password", "/api/logout-all", "/api/terms", "/api/sessions", "/api/views", "/api/translate", "/api/spark", "/api/session", "/api/notifications", "/api/notifications/read", "/api/social", "/api/place-name"]);
+const API_PATHS = new Set(["/api/ideas", "/api/login", "/api/login-2fa", "/api/2fa", "/api/email", "/api/register", "/api/forgot", "/api/password", "/api/logout-all", "/api/terms", "/api/sessions", "/api/views", "/api/translate", "/api/spark", "/api/session", "/api/notifications", "/api/notifications/read", "/api/social", "/api/place-name", "/api/join", "/api/push"]);
 
 function securityHeaders(res) {
   res.setHeader("Content-Security-Policy", CSP);
@@ -4406,6 +4696,7 @@ server.keepAliveTimeout = 5 * 1000;
 server.maxHeadersCount = 60;
 
 server.listen(PORT, HOST, () => {
+  migrateViewIds();
   ensureDepartmentGroups();
   ensureDailySparks();
   console.log(`BQ Connect: http://${HOST}:${PORT}`);

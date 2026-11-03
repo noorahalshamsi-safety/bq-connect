@@ -25,6 +25,9 @@ Object.assign(dict.ar, {
   meUndo: "تراجع",
   meClear: "مسح الرسم",
   meDrawHint: "ارسم بإصبعك على الصورة",
+  meNeon: "نيون",
+  meSave: "حفظ في الجوال",
+  meSavedDevice: "انحفظت الصورة",
   meStart: "البداية",
   meEnd: "النهاية",
   meTrimNote: "اختر الجزء اللي تبيه، بحد أقصى 60 ثانية",
@@ -63,6 +66,9 @@ Object.assign(dict.en, {
   meUndo: "Undo",
   meClear: "Clear drawing",
   meDrawHint: "Draw with your finger on the picture",
+  meNeon: "Neon",
+  meSave: "Save to device",
+  meSavedDevice: "Photo saved",
   meStart: "Start",
   meEnd: "End",
   meTrimNote: "Pick the part you want, up to 60 seconds",
@@ -199,23 +205,36 @@ function paintText(context, width, height, item) {
   return { left: x - reach / 2, top: centerY - reach / 2, width: reach, height: reach };
 }
 
+function traceStroke(context, width, height, points, lineWidth) {
+  context.lineWidth = lineWidth;
+  context.beginPath();
+  if (points.length === 1) {
+    context.arc(points[0][0] * width, points[0][1] * height, lineWidth / 2, 0, Math.PI * 2);
+    context.fill();
+    return;
+  }
+  context.moveTo(points[0][0] * width, points[0][1] * height);
+  for (let index = 1; index < points.length; index += 1) context.lineTo(points[index][0] * width, points[index][1] * height);
+  context.stroke();
+}
+
 function paintStroke(context, width, height, stroke) {
-  const points = stroke.points;
+  const lineWidth = Math.max(1, stroke.size * width);
   context.save();
-  context.strokeStyle = stroke.color;
-  context.fillStyle = stroke.color;
-  context.lineWidth = Math.max(1, stroke.size * width);
   context.lineCap = "round";
   context.lineJoin = "round";
-  if (points.length === 1) {
-    context.beginPath();
-    context.arc(points[0][0] * width, points[0][1] * height, context.lineWidth / 2, 0, Math.PI * 2);
-    context.fill();
-  } else {
-    context.beginPath();
-    context.moveTo(points[0][0] * width, points[0][1] * height);
-    for (let index = 1; index < points.length; index += 1) context.lineTo(points[index][0] * width, points[index][1] * height);
-    context.stroke();
+  context.strokeStyle = stroke.color;
+  context.fillStyle = stroke.color;
+  if (stroke.neon) {
+    context.shadowColor = stroke.color;
+    context.shadowBlur = lineWidth * 1.6;
+  }
+  traceStroke(context, width, height, stroke.points, lineWidth);
+  if (stroke.neon) {
+    context.shadowBlur = 0;
+    context.strokeStyle = "#ffffff";
+    context.fillStyle = "#ffffff";
+    traceStroke(context, width, height, stroke.points, lineWidth * 0.42);
   }
   context.restore();
 }
@@ -366,9 +385,12 @@ function mePaint() {
   meVideo.style.filter = filter === "none" ? "" : filter;
   const context = meLayer.getContext("2d");
   context.clearRect(0, 0, meLayer.width, meLayer.height);
-  meState.boxes = paintOverlay(context, meLayer.width, meLayer.height, meState.edits);
+  const inline = meState.inline;
+  const shown = inline ? { ...meState.edits, texts: meState.edits.texts.map((item) => (item === inline.item ? null : item)) } : meState.edits;
+  meState.boxes = paintOverlay(context, meLayer.width, meLayer.height, shown);
+  if (inline) meInlineStyle(inline.node, inline.item);
   const picked = meState.boxes[meState.textIndex];
-  if (meState.tool === "text" && picked) {
+  if (meState.tool === "text" && picked && !inline) {
     context.save();
     context.setLineDash([8, 6]);
     context.lineWidth = 2;
@@ -512,6 +534,89 @@ function meAddText(y) {
   meShowTool("text");
 }
 
+function meInlineStyle(node, item) {
+  const style = meTextStyle(item);
+  const size = Math.max(10, Math.round((meFrame.clientWidth || 1) * item.size));
+  const light = meLight(item.color);
+  const glow = light ? "rgba(0, 0, 0, 0.55)" : "rgba(255, 255, 255, 0.35)";
+  node.dataset.style = style;
+  node.style.fontSize = `${size}px`;
+  node.style.fontWeight = style === "bar" ? "700" : "800";
+  node.style.color = style === "box" ? (light ? "#111111" : "#ffffff") : item.color;
+  node.style.background = style === "box" ? item.color : style === "bar" ? "rgba(0, 0, 0, 0.55)" : "transparent";
+  node.style.padding = style === "bar" ? `${Math.round(size * 0.35)}px 5%` : style === "box" ? `${Math.round(size * 0.225)}px ${Math.round(size * 0.45)}px` : `0 ${Math.round(size * 0.2)}px`;
+  node.style.borderRadius = style === "box" ? `${Math.round(size * 0.35)}px` : "0";
+  node.style.textShadow = style === "plain" ? `0 ${Math.round(size * 0.04)}px ${Math.round(size * 0.5)}px ${glow}` : "none";
+}
+
+function meCaretEnd(node) {
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  range.collapse(false);
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function meCloseInline() {
+  meFrame.querySelectorAll(".me-inline").forEach((node) => node.remove());
+  if (meState) meState.inline = null;
+}
+
+function meOpenInline(item) {
+  meCloseInline();
+  const wrap = document.createElement("div");
+  wrap.className = "me-inline";
+  const node = document.createElement("div");
+  node.className = "me-inline-text";
+  node.contentEditable = "true";
+  node.spellcheck = false;
+  node.dir = "auto";
+  node.setAttribute("role", "textbox");
+  node.setAttribute("aria-label", t("meTextPh"));
+  node.dataset.ph = t("meTextPh");
+  node.textContent = item.value;
+  node.style.top = `${Math.min(0.4, Math.max(0.12, item.y)) * 100}%`;
+  const sync = () => {
+    let value = node.innerText.replace(/\r/g, "").replace(/\n+$/, "");
+    if (value.length > 140) {
+      value = value.slice(0, 140);
+      node.textContent = value;
+      meCaretEnd(node);
+    }
+    item.value = value;
+    node.classList.toggle("empty", !value);
+  };
+  node.addEventListener("input", sync);
+  node.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      meShowTool("none");
+    }
+  });
+  node.addEventListener("paste", (event) => {
+    event.preventDefault();
+    const text = ((event.clipboardData && event.clipboardData.getData("text/plain")) || "").replace(/\s+/g, " ");
+    if (!document.execCommand("insertText", false, text)) node.textContent += text;
+    sync();
+  });
+  wrap.addEventListener("pointerdown", (event) => {
+    event.stopPropagation();
+    if (event.target !== wrap) return;
+    event.preventDefault();
+    meShowTool("none");
+  });
+  wrap.append(node);
+  meFrame.append(wrap);
+  meState.inline = { node, item };
+  meInlineStyle(node, item);
+  sync();
+  requestAnimationFrame(() => {
+    node.focus();
+    meCaretEnd(node);
+  });
+}
+
 function mePanelText() {
   const item = meCurrentText();
   const row = document.createElement("div");
@@ -520,8 +625,9 @@ function mePanelText() {
   style.type = "button";
   style.className = "me-icon me-style";
   style.setAttribute("aria-label", t("meStyle"));
-  style.textContent = "Aa";
+  style.textContent = "T";
   style.dataset.style = meTextStyle(item);
+  style.addEventListener("pointerdown", (event) => event.preventDefault());
   style.addEventListener("click", () => {
     const next = ME_STYLES[(ME_STYLES.indexOf(meTextStyle(item)) + 1) % ME_STYLES.length];
     item.style = next;
@@ -534,35 +640,19 @@ function mePanelText() {
     style.dataset.style = next;
     mePaint();
   });
-  const input = document.createElement("textarea");
-  input.className = "me-text";
-  input.rows = 1;
-  input.maxLength = 140;
-  input.dir = "auto";
-  input.placeholder = t("meTextPh");
-  input.value = item.value;
-  const grow = () => {
-    input.style.height = "44px";
-    input.style.height = `${Math.max(44, input.scrollHeight)}px`;
-  };
-  input.addEventListener("input", () => {
-    item.value = input.value;
-    grow();
-    mePaint();
-  });
-  requestAnimationFrame(grow);
   const remove = meRound(t("meTextDelete"), "me-text-del", "M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13", () => {
     meState.edits.texts.splice(meState.textIndex, 1);
     meState.textIndex = Math.max(0, meState.edits.texts.length - 1);
     meShowTool("none");
   });
-  row.append(style, input, remove);
+  remove.addEventListener("pointerdown", (event) => event.preventDefault());
+  row.append(style, remove);
   const hue = meHueBar(item.color, (color) => {
     item.color = color;
     mePaint();
   });
-  mePanel.append(row, hue, meNote("meTextHint"));
-  setTimeout(() => input.focus(), 60);
+  mePanel.append(row, hue);
+  meOpenInline(item);
 }
 
 function mePanelDraw() {
@@ -576,7 +666,13 @@ function mePanelDraw() {
   });
   const actions = document.createElement("div");
   actions.className = "me-actions";
+  const neon = meButton(t("meNeon"), "me-chip me-neon", () => {
+    pen.neon = !pen.neon;
+    neon.classList.toggle("on", pen.neon);
+  });
+  neon.classList.toggle("on", Boolean(pen.neon));
   actions.append(
+    neon,
     meButton(t("meUndo"), "me-chip", () => {
       meState.edits.strokes.pop();
       mePaint();
@@ -681,6 +777,7 @@ function meCycleFilter(step) {
 
 function meShowTool(tool) {
   if (!meState) return;
+  meCloseInline();
   if (meState.tool === "text" && tool !== "text") meState.edits.texts = meState.edits.texts.filter((row) => row.value.trim());
   meState.tool = tool;
   mePanel.replaceChildren();
@@ -702,6 +799,7 @@ function meShowTool(tool) {
 
 function meFinish(result) {
   if (!meState) return;
+  meCloseInline();
   const state = meState;
   meState = null;
   meDrag = null;
@@ -789,6 +887,7 @@ async function openMediaEditor(file, initial, options = {}) {
     meVideo.hidden = !video;
     document.querySelectorAll("#me-tools [data-me-video]").forEach((button) => (button.hidden = !video));
     document.querySelectorAll("#me-tools [data-me-photo]").forEach((button) => (button.hidden = video));
+    document.querySelector("#me-save").hidden = video;
     mePanel.replaceChildren();
     meDialog.showModal();
     meHint(true);
@@ -897,6 +996,7 @@ meStage.addEventListener("pointerdown", (event) => {
   if (meState.tool === "draw") {
     if (meState.edits.strokes.length >= ME_STROKE_MAX) return;
     const stroke = { color: meState.pen.color, size: meState.pen.size, points: [[point.x, point.y]] };
+    if (meState.pen.neon) stroke.neon = true;
     meState.edits.strokes.push(stroke);
     meDrag = { id: event.pointerId, stroke };
   } else {
@@ -1004,6 +1104,27 @@ document.querySelector("#me-rotate").addEventListener("click", () => {
 });
 document.querySelector("#me-cancel").addEventListener("click", () => meFinish(null));
 document.querySelector("#me-done").addEventListener("click", () => meFinish(true));
+document.querySelector("#me-save").addEventListener("click", async (event) => {
+  if (!meState || meState.video) return;
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const blob = await renderPhoto(meState.file, meState.edits);
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `bq-connect-${Date.now()}.jpg`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    meFlash(t("meSavedDevice"));
+  } catch {
+    meFlash(t("meFailed"));
+  } finally {
+    button.disabled = false;
+  }
+});
 meDialog.addEventListener("cancel", (event) => {
   event.preventDefault();
   meFinish(null);

@@ -191,10 +191,22 @@ async function checkLogin(badge, password, exists) {
   return "";
 }
 
+function allowReregister(badge, ms) {
+  const account = ensureAccount(badge);
+  account.reopenUntil = new Date(Date.now() + ms).toISOString();
+  saveAccounts();
+}
+
+function canRegister(badge) {
+  const account = accountOf(badge);
+  if (!account || !account.hash) return true;
+  return Date.parse(account.reopenUntil || 0) > Date.now();
+}
+
 async function setPassword(badge, password, patch) {
   const account = ensureAccount(badge);
   const { salt, hash, kdf } = await hashPassword(password);
-  Object.assign(account, patch || {}, { salt, hash, kdf, pending: null, sessions: [], ver: (Number(account.ver) || 0) + 1, changedAt: new Date().toISOString() });
+  Object.assign(account, patch || {}, { salt, hash, kdf, pending: null, sessions: [], reopenUntil: null, ver: (Number(account.ver) || 0) + 1, changedAt: new Date().toISOString() });
   saveAccounts();
   return account;
 }
@@ -685,7 +697,14 @@ function audit(type, who, info) {
   writePrivate(AUDIT_FILE, JSON.stringify({ rows: list.slice(-3000) }, null, 1));
 }
 
+function deriveKey(label) {
+  return crypto.createHmac("sha256", secret).update(`derive:${label}`).digest();
+}
+
 module.exports = {
+  deriveKey,
+  allowReregister,
+  canRegister,
   accountOf,
   acceptTerms,
   audit,

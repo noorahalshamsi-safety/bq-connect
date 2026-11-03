@@ -557,7 +557,7 @@ const ADM_STATUSES = {
   complaints: ["all", "received", "review", "resolved"],
 };
 const ADM_USER_FILTERS = [["all", "admUsersAll"], ["admins", "admUsersAdmins"], ["registered", "admUsersRegistered"], ["locked", "admUsersLocked"], ["banned", "admUsersBanned"]];
-const ADM_TAB_COUNTS = { ideas: "ideasWaiting", complaints: "complaintsOpen", reports: "reported", achievements: "achievementsPending", conduct: "conductToday" };
+const ADM_TAB_COUNTS = { ideas: "ideasWaiting", complaints: "complaintsOpen", reports: "reported", achievements: "achievementsPending", conduct: "conductToday", joins: "joinsPending" };
 const ADM_LOG_KEYS = {
   login: "admLogLogin",
   login_fail: "admLogLoginFail",
@@ -597,6 +597,11 @@ const ADM_LOG_KEYS = {
   conduct_banned: "admLogConductBan",
   login_banned: "admLogLoginBanned",
   unbanned_by_admin: "admLogUnban",
+  join_request: "admLogJoinRequest",
+  join_approved: "admLogJoinApproved",
+  join_rejected: "admLogJoinRejected",
+  join_exists: "admLogJoinRejected",
+  employee_added: "admLogEmployeeAdded",
 };
 const ADM_LOG_TONE = {
   conduct_warning: "red",
@@ -627,8 +632,12 @@ const ADM_LOG_TONE = {
   admin_revoke: "violet",
   sessions_revoked_by_admin: "violet",
   unlocked_by_admin: "violet",
+  join_approved: "green",
+  employee_added: "green",
+  join_rejected: "violet",
 };
 const ADM_ICONS = {
+  joins: "M10 11a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4zM4 19.5c1-3 3.2-4.5 6-4.5 1.3 0 2.5.3 3.4.9M18 13.5v6M15 16.5h6",
   users: "M9 11a3.2 3.2 0 1 0 0-6.4A3.2 3.2 0 0 0 9 11zM3.5 19.5c1-3 3-4.5 5.5-4.5s4.5 1.5 5.5 4.5M16 4.8a3 3 0 0 1 0 6M17.5 14.5c1.6.5 2.6 2 3 5",
   log: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7.5V12l3 2",
   ideas: "M9 18h6M10 21h4M12 3a6 6 0 0 1 3.5 10.9c-.7.5-1.1 1.2-1.2 2.1h-4.6c-.1-.9-.5-1.6-1.2-2.1A6 6 0 0 1 12 3z",
@@ -803,6 +812,7 @@ function paintAdmSummary(data) {
     [t("admSumReported"), data.reported, "reports", () => showAdmTab("reports")],
     [t("admSumAchievements"), data.achievementsPending, "achievements", () => showAdmTab("achievements")],
     [t("admSumConduct"), data.conductToday, "conduct", () => showAdmTab("conduct")],
+    [t("admJoins"), data.joinsPending, "joins", () => showAdmTab("joins")],
   ];
   const total = waiting.reduce((sum, row) => sum + (Number(row[1]) || 0), 0);
   const attention = adminNode("section", "adm-attention");
@@ -854,6 +864,7 @@ function renderAdmTool() {
   else if (admTab === "content") renderAdmContent(body);
   else if (admTab === "users") renderAdmUsers(body);
   else if (admTab === "achievements") renderAdmAchievements(body);
+  else if (admTab === "joins") renderAdmJoins(body);
   else if (admTab === "spark") renderAdmSpark(body);
   else if (admTab === "log") renderAdmLog(body);
   else if (admTab === "conduct") renderAdmConduct(body);
@@ -1274,7 +1285,7 @@ function admUserRow(user) {
       });
       tools.appendChild(view);
       tools.appendChild(act("admForceOut", "revoke", "logout", "admConfirmForceOut"));
-      if (current.twoFactor && current.pid !== selectedPerson.pid) tools.appendChild(act("admReset2fa", "reset-2fa", "shield", "admConfirmReset2fa"));
+      if ((current.twoFactor || current.registered) && current.pid !== selectedPerson.pid) tools.appendChild(act("admReset2fa", "reset-2fa", "shield", "admConfirmReset2fa"));
     }
     if (current.locked) tools.appendChild(act("admUnlock", "unlock", "unlock"));
     if (current.banned) tools.appendChild(act("admUnban", "unban", "unlock", "admConfirmUnban", "primary"));
@@ -1461,6 +1472,117 @@ async function renderAdmAchievements(body) {
       adminNode("p", "adm-who", [item.name, item.position].filter(Boolean).join(" · ")),
       tools,
     );
+    return card;
+  }));
+}
+
+const ADM_JOIN_FIELDS = [
+  ["badge", "labelBadge", "password", "numeric", 16],
+  ["name", "joinName", "text", "", 80],
+  ["department", "joinDept", "text", "", 80],
+  ["position", "joinPosition", "text", "", 80],
+  ["code", "labelCode", "password", "numeric", 12],
+  ["mobile", "labelMobile", "text", "tel", 24],
+];
+
+function admAddEmployeeForm(onAdded) {
+  const form = adminNode("form", "adm-card adm-join-form");
+  form.noValidate = true;
+  const toggle = admBtn(t("admAddEmployee"), "ghost", "joins");
+  const fields = adminNode("div", "adm-join-fields");
+  fields.hidden = true;
+  toggle.setAttribute("aria-expanded", "false");
+  toggle.addEventListener("click", () => {
+    fields.hidden = !fields.hidden;
+    toggle.setAttribute("aria-expanded", String(!fields.hidden));
+    if (!fields.hidden) fields.querySelector("input").focus();
+  });
+  const inputs = {};
+  fields.appendChild(adminNode("p", "adm-who", t("admAddEmployeeLead")));
+  ADM_JOIN_FIELDS.forEach(([key, label, type, mode, max]) => {
+    const wrap = adminNode("label", "adm-join-field");
+    const input = adminNode("input", "adm-input");
+    input.type = type;
+    input.maxLength = max;
+    input.autocomplete = "off";
+    if (mode) input.inputMode = mode;
+    if (mode || key === "name") input.dir = "ltr";
+    wrap.append(adminNode("span", "", t(label)), input);
+    inputs[key] = input;
+    fields.appendChild(wrap);
+  });
+  const error = adminNode("p", "form-error");
+  error.setAttribute("role", "alert");
+  const done = adminNode("p", "form-ok");
+  done.setAttribute("role", "status");
+  done.hidden = true;
+  const submit = admBtn(t("admAddEmployeeBtn"), "primary", "check");
+  submit.type = "submit";
+  fields.append(error, done, submit);
+  form.append(toggle, fields);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    error.textContent = "";
+    done.hidden = true;
+    submit.disabled = true;
+    const payload = Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, input.value.trim()]));
+    try {
+      const response = await fetch("/api/social", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: selectedPerson ? selectedPerson.token : "", action: "admin-add-employee", ...payload }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        error.textContent = t(data.error === "exists" ? "admEmployeeExists" : JOIN_ERRORS[data.error] || "dashFail");
+        return;
+      }
+      Object.values(inputs).forEach((input) => { input.value = ""; });
+      done.textContent = t("admEmployeeAdded");
+      done.hidden = false;
+      onAdded();
+    } catch {
+      error.textContent = t("dashFail");
+    } finally {
+      submit.disabled = false;
+    }
+  });
+  return form;
+}
+
+async function renderAdmJoins(body) {
+  const data = await social("admin-joins", {});
+  if (admTab !== "joins") return;
+  if (!data) {
+    adminNotice(body, "dashFail");
+    return;
+  }
+  const form = admAddEmployeeForm(() => admRefresh());
+  if (!data.requests.length) {
+    admEmpty(body, "admNoJoins", "joins");
+    body.prepend(form);
+    return;
+  }
+  body.replaceChildren(form, ...data.requests.map((item) => {
+    const card = adminNode("article", "adm-card adm-ach");
+    const head = adminNode("div", "adm-card-head");
+    head.append(adminNode("span", "adm-status s-dept", item.department), adminNode("time", "adm-time", timeAgo(item.createdAt)));
+    const tools = adminNode("div", "adm-tools");
+    [["approve", "admJoinApprove", "primary", "check"], ["reject", "achReject", "ghost", "close"]].forEach(([decision, key, kind, icon]) => {
+      const button = admBtn(t(key), kind, icon);
+      button.addEventListener("click", async () => {
+        tools.querySelectorAll("button").forEach((node) => { node.disabled = true; });
+        const saved = await social("admin-join", { id: item.id, decision });
+        if (saved) {
+          renderAdmJoins(body);
+          admRefresh();
+        } else tools.querySelectorAll("button").forEach((node) => { node.disabled = false; });
+      });
+      tools.appendChild(button);
+    });
+    const title = adminNode("strong", "adm-card-title", item.name);
+    title.dir = "ltr";
+    card.append(head, title, adminNode("p", "adm-who", item.position || ""), tools);
     return card;
   }));
 }
