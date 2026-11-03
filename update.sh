@@ -15,3 +15,4 @@ else
   echo "App Storage link: MISSING - open the App Storage tool and link the bucket before you republish"
 fi
 git log --oneline -1
+node restore.js check || true

@@ -71,10 +71,20 @@ function savedBackups(dir) {
   }
 }
 
+function vaultStatus() {
+  try {
+    const saved = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "vault-status.json"), "utf8")) || {};
+    return saved.lastAt ? { lastAt: String(saved.lastAt), kept: Number(saved.kept) || 0 } : null;
+  } catch {
+    return null;
+  }
+}
+
 function status() {
   const saved = readStatus();
   const kept = savedBackups(config().dir).length;
   return {
+    vault: vaultStatus(),
     lastAt: saved.lastAt || "",
     size: Number(saved.lastSize) || 0,
     files: Number(saved.files) || 0,
@@ -84,11 +94,12 @@ function status() {
   };
 }
 
-function listFiles(dir, out = []) {
+function listFiles(dir, out = [], skipMedia = false) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) listFiles(full, out);
-    else if (entry.isFile() && !entry.name.endsWith(".tmp") && !(dir === DATA_DIR && SKIP.has(entry.name))) {
+    if (entry.isDirectory()) {
+      if (!(skipMedia && dir === DATA_DIR && entry.name === "media")) listFiles(full, out, skipMedia);
+    } else if (entry.isFile() && !entry.name.endsWith(".tmp") && !(dir === DATA_DIR && SKIP.has(entry.name))) {
       out.push(path.relative(DATA_DIR, full).split(path.sep).join("/"));
     }
   }
@@ -117,34 +128,42 @@ function stampOf(date) {
   return `${date.getFullYear()}${two(date.getMonth() + 1)}${two(date.getDate())}-${two(date.getHours())}${two(date.getMinutes())}${two(date.getSeconds())}`;
 }
 
-async function createBackup() {
-  const cfg = config();
+async function writeArchive(file, options = {}) {
   const key = loadKey(true);
   if (!key) throw new Error("key");
-  fs.mkdirSync(cfg.dir, { recursive: true });
-  const file = path.join(cfg.dir, `bq-backup-${stampOf(new Date())}.bqb`);
   const temp = `${file}.part`;
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
   const counter = { files: 0 };
   try {
     fs.writeFileSync(temp, Buffer.concat([MAGIC, iv]), { mode: 0o600 });
-    await pipeline(Readable.from(archive(listFiles(DATA_DIR), counter)), zlib.createGzip({ level: 6 }), cipher, fs.createWriteStream(temp, { flags: "a" }));
+    await pipeline(Readable.from(archive(listFiles(DATA_DIR, [], Boolean(options.skipMedia)), counter)), zlib.createGzip({ level: 6 }), cipher, fs.createWriteStream(temp, { flags: "a" }));
     fs.appendFileSync(temp, cipher.getAuthTag());
     fs.renameSync(temp, file);
   } catch (error) {
     fs.rmSync(temp, { force: true });
+    throw error;
+  }
+  return { file, size: fs.statSync(file).size, files: counter.files };
+}
+
+async function createBackup() {
+  const cfg = config();
+  fs.mkdirSync(cfg.dir, { recursive: true });
+  let result;
+  try {
+    result = await writeArchive(path.join(cfg.dir, `bq-backup-${stampOf(new Date())}.bqb`));
+  } catch (error) {
     writeStatus({ failedAt: new Date().toISOString() });
     throw error;
   }
   savedBackups(cfg.dir).slice(cfg.keep).forEach((name) => fs.rmSync(path.join(cfg.dir, name), { force: true }));
-  const size = fs.statSync(file).size;
-  writeStatus({ lastAt: new Date().toISOString(), lastFile: path.basename(file), lastSize: size, files: counter.files });
-  return { file, size, files: counter.files };
+  writeStatus({ lastAt: new Date().toISOString(), lastFile: path.basename(result.file), lastSize: result.size, files: result.files });
+  return result;
 }
 
-async function openBackup(file, onEntry) {
-  const key = loadKey(false);
+async function openBackup(file, onEntry, givenKey) {
+  const key = givenKey || loadKey(false);
   if (!key) throw new Error("no_key");
   const total = fs.statSync(file).size;
   if (total < HEAD_BYTES + TAG_BYTES + 1) throw new Error("too_small");
@@ -249,7 +268,7 @@ function schedule(onResult) {
   return run;
 }
 
-module.exports = { createBackup, restoreBackup, schedule, status, verifyBackup };
+module.exports = { createBackup, openBackup, restoreBackup, schedule, status, verifyBackup, writeArchive };
 
 if (require.main === module) {
   const [command, file] = process.argv.slice(2);

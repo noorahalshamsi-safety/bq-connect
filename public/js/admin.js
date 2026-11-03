@@ -842,6 +842,7 @@ function admBackupStrip(info) {
     : t("admBackupFirst");
   const copy = adminNode("div", "adm-backup-copy");
   copy.append(adminNode("strong", "", t(title)), adminNode("span", "", line));
+  if (info.vault) copy.appendChild(adminNode("span", "", tf("admVaultLine", { time: timeAgo(info.vault.lastAt), n: adminNumber(info.vault.kept) })));
   const run = admBtn(t("admBackupNow"), bad ? "primary" : "ghost", "download");
   run.addEventListener("click", async () => {
     run.disabled = true;

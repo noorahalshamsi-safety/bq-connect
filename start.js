@@ -4,6 +4,11 @@
 const http = require("http");
 const path = require("path");
 const storage = require("./storage-sync");
+const vault = require("./vault");
+
+const AUTO_SNAPSHOT_MS = 6 * 60 * 60 * 1000;
+const STOP_SNAPSHOT_MS = 15000;
+const DROP_HINT = "The data restored from App Storage has less than the last vault snapshot, so the app stays in maintenance and syncs nothing. In the Repl Shell run `node restore.js` to see the snapshots and pick one, then republish. If the drop is intended, add the secret BQ_ACCEPT_DATA_DROP=1, republish once, then remove it.";
 
 const PORT = Number(process.env.PORT) || 4173;
 const HOST = process.env.HOST || "0.0.0.0";
@@ -37,9 +42,10 @@ async function restoreWithRetry(preferLocal) {
   let delay = 1000;
   for (let attempt = 1; ; attempt += 1) {
     try {
-      const sync = storage.createSync({ client: await storage.connect(), dirs: ["data", "backups"], preferLocal });
+      const client = await storage.connect();
+      const sync = storage.createSync({ client, dirs: ["data", "backups"], preferLocal });
       await sync.restore();
-      return sync;
+      return { client, sync };
     } catch (error) {
       if (attempt <= 3 || attempt % 10 === 0) console.error(`App Storage not ready (attempt ${attempt}): ${error.message}`);
       if (attempt === 4) console.error(LINK_HINT);
@@ -57,15 +63,35 @@ async function main() {
   process.env.BACKUP_DIR = process.env.BACKUP_DIR || path.join(__dirname, "backups");
   const preferLocal = String(process.env.BQ_PREFER_LOCAL || "").split(",").map((name) => name.trim()).filter(Boolean);
   const placeholder = await holdPort();
-  const sync = await restoreWithRetry(preferLocal);
+  const { client, sync } = await restoreWithRetry(preferLocal);
+  const request = await vault.pendingRestore(client);
+  if (request) {
+    const result = await vault.applyRestore(client, request);
+    if (result.ok) sync.trust();
+  } else if (process.env.BQ_ACCEPT_DATA_DROP !== "1") {
+    const drop = await vault.checkDrop(client);
+    if (drop) {
+      console.error(`Vault: ${drop}. ${DROP_HINT}`);
+      return;
+    }
+  }
   await releasePort(placeholder);
   sync.start();
   require("./server");
+  vault.snapshot(client, request ? "restored" : "start").catch((error) => console.error(`Vault: ${error.message}`));
+  const auto = setInterval(() => {
+    if (vault.changed()) vault.snapshot(client, "auto").catch((error) => console.error(`Vault: ${error.message}`));
+  }, AUTO_SNAPSHOT_MS);
+  auto.unref();
   let stopping = false;
   const stop = async () => {
     if (stopping) return;
     stopping = true;
+    clearInterval(auto);
     await sync.stop();
+    if (vault.changed()) {
+      await Promise.race([vault.snapshot(client, "stop").catch((error) => console.error(`Vault: ${error.message}`)), wait(STOP_SNAPSHOT_MS)]);
+    }
     process.exit(0);
   };
   process.on("SIGTERM", stop);

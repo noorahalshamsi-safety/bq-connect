@@ -183,6 +183,8 @@ function createSync({ client, dirs, preferLocal = [], log = console.log, root = 
 
   return {
     restore,
+    // After an owner-requested restore the smaller files are intended, so the shrink stop must let them through.
+    trust: () => counts.clear(),
     flush: () => queue(() => pushOnce(true)),
     start() {
       queue(() => pushOnce());
