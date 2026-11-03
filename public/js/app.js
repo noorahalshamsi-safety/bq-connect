@@ -3439,11 +3439,12 @@ function closeThread() {
 }
 
 let startRoute = location.hash;
-const ROUTE_VIEWS = new Set(["alerts", "profile", "groups", "explore", "search", "storyboard", "announcements", "recognition", "growth", "settings"]);
+const ROUTE_VIEWS = new Set(["hub", "alerts", "profile", "groups", "explore", "search", "storyboard", "announcements", "recognition", "growth", "settings"]);
 
 function routeHash() {
   if (openId) return `#idea=${encodeURIComponent(openId)}`;
   if (view === "person" && typeof personPage !== "undefined" && personPage && personPage.pid) return `#p=${encodeURIComponent(personPage.pid)}`;
+  if (view === "department" && activeDept) return `#d=${encodeURIComponent(activeDept)}`;
   if (ROUTE_VIEWS.has(view) || view === "dashboard" || view === "moderation") return `#v=${view}`;
   return "";
 }
@@ -3459,9 +3460,11 @@ function restoreRoute() {
   startRoute = "";
   const page = route.match(/^#v=([a-z]+)$/);
   const person = route.match(/^#p=(.+)$/);
+  const dept = route.match(/^#d=(.+)$/);
   const allowed = page && (ROUTE_VIEWS.has(page[1]) || (page[1] === "dashboard" && selectedPerson.dashboard) || (page[1] === "moderation" && selectedPerson.moderator));
   if (allowed && view === "home" && !openId) showView(page[1]);
   else if (person && view === "home" && !openId) openPerson(decodeURIComponent(person[1]));
+  else if (dept && view === "home" && !openId) openDepartment(decodeURIComponent(dept[1]));
 }
 
 function syncFormMode() {
