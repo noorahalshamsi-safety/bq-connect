@@ -39,10 +39,14 @@ args = "Start application"
 name = "Start application"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "node preview-safe.js"
-waitForPort = 5000
-
 [workflows.workflow.metadata]
 outputType = "webview"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "node development/postgres/launch.cjs"
+waitForPort = 5000
+
+[nix]
+channel = "stable-25_05"
+packages = ["postgresql_16"]

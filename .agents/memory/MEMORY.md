@@ -1,1 +1,2 @@
 - [Read-only SQL configuration effects](sql-validation-side-effects.md) — a metadata SELECT can add local PostgreSQL tooling/config; check workspace changes during design-only verification.
+- [Development provisioning](development-provisioning.md) — empty SQL state never authorizes fresh provisioning; missing metadata must not replace keys.

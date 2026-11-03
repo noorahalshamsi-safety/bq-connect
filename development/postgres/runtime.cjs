@@ -1,0 +1,203 @@
+// Separate development process; never imported by start.js or production auth.
+const fs=require("node:fs"),path=require("node:path"),http=require("node:http"),https=require("node:https");
+const crypto=require("node:crypto"),{Writable,Readable}=require("node:stream");
+const {verify}=require("./isolation.cjs"),{Repository,hash}=require("./repository.cjs");
+const {install}=require("./virtual-fs.cjs");
+const workspace=path.resolve(__dirname,"../..");
+async function start(root) {
+  const proof=verify(root),repo=new Repository(proof);
+  let context=null,queue=Promise.resolve(),auth,app,readyResolve;
+  const ready=new Promise(resolve=>readyResolve=resolve);
+  const serial=fn=>{const work=queue.then(fn,fn);queue=work.catch(()=>{});return work;};
+  async function hydrate(t) {
+    const media=await t.client.query("SELECT * FROM dev.media WHERE state IN('ready','retained')");
+    return {...t,buffers:new Map([...t.files].map(([f,r])=>[f,Buffer.from(JSON.stringify(r.value))])),
+      changed:new Set(),temps:new Map(),events:[],media:new Map(media.rows.map(row=>[row.legacy_path,{...row,legacy:row.legacy_path,object:path.join(proof.objects,row.id)}])),actor:""};
+  }
+  async function refresh() {
+    auth?.__refresh();
+    app?.__refresh();
+    const saved=await context.client.query("SELECT * FROM dev.runtime_state");
+    const state=Object.fromEntries(saved.rows.map(r=>[r.name,r.value]));
+    for(const [group,collection] of [["auth",auth?.__maps],["app",app?.__maps]])for(const [name,map]of Object.entries(collection||{})){
+      map.clear();for(const [k,v]of state[`${group}:${name}`]||[])map.set(k,v);
+    }
+  }
+  async function persist(c) {
+    for(const file of c.changed) {
+      const value=JSON.parse(c.buffers.get(file).toString()),r=c.files.get(file);
+      await repo.save(c.client,file,value,r.revision);
+      c.files.set(file,{value,revision:r.revision+1});
+    }
+    await repo.commitMedia(c.client,c.media,c.files);
+    for(const [group,collection] of [["auth",auth?.__maps],["app",app?.__maps]])for(const [name,map]of Object.entries(collection||{}))
+      await c.client.query("INSERT INTO dev.runtime_state(name,value) VALUES($1,$2::jsonb) ON CONFLICT(name) DO UPDATE SET value=excluded.value",[`${group}:${name}`,JSON.stringify([...map])]);
+    for(const event of c.events)await repo.enqueue(c.client,event.topic,event.payload);
+  }
+  async function finish(c,commit) {
+    try {if(commit){await persist(c);if(c.fault==="before_commit")throw Error("synthetic_injected_commit_failure");await c.client.query("COMMIT");}else await c.client.query("ROLLBACK");}
+    catch(e){await c.client.query("ROLLBACK").catch(()=>{});throw e;}
+    finally{c.client.release();context=null;}
+    if(commit)repo.drainFixtureOutbox().catch(()=>{}); // Provider delivery is fixture-only.
+  }
+  const enqueue=(topic,payload)=>{
+    if(!context)throw Error("outbox_transaction_required");
+    context.events.push({topic,payload});
+    return Promise.resolve();
+  };
+  async function job(fn) {
+    return serial(async()=>{
+      const c=context=await hydrate(await repo.begin());
+      try {await refresh();await fn();await finish(c,true);}
+      catch(e){if(context)await finish(c,false);console.error("Synthetic PostgreSQL job refused:",e.code||"transaction_error");}
+    });
+  }
+  global.__bqDevInterval=(fn,ms)=>{const timer=setInterval(()=>job(fn),ms);timer.unref();return timer;};
+  const boot=context=await hydrate(await repo.begin());
+  const files=["auth.js","server.js","backup.js","push.js","moderation.js","spark-agent.js","translate.js","persistence-safety.js"];
+  // Transform only the isolated copies. The production source remains unchanged.
+  for(const file of files) {
+    let source=fs.readFileSync(path.join(workspace,file),"utf8");
+    if(file==="auth.js"){
+      source='const setInterval=global.__bqDevInterval;\n'+source.replaceAll('.replace(/^0+/, "")',"");
+      source+='\nmodule.exports.__maps={failures,mailLog,usedTickets};\nmodule.exports.__refresh=()=>{for(const k of Object.keys(accounts))delete accounts[k];Object.assign(accounts,safety.readAccounts(ACCOUNTS));loadedStamp=accountsStamp();securityCache={stamp:"",value:null};};\n';
+    }
+    if(file==="server.js"){
+      const marker="handleApi(req, res, urlPath, params).catch(";
+      if(!source.includes(marker))throw Error("route_wrapper_source_changed");
+      source='const setInterval=global.__bqDevInterval;\n'+source.replace(marker,"return "+marker).replaceAll('.replace(/^0+/, "")',"");
+      source+='\nmodule.exports.__maps={attempts,pendingOtp,pendingEmail,apiHits,ipFailures,writeUse,forgotUse,translateUse,placeUse,joinUse,uploadUse,noteEcho};\nmodule.exports.__refresh=()=>{const fresh=loadDirectory();directory.splice(0,directory.length,...fresh);byBadge.clear();fresh.forEach(p=>byBadge.set(String(p.badge),p));departmentList=null;audienceSize=0;viewCache=null;sharedJson.clear();conductCache={stamp:"",data:null};avatarCache={stamp:"",byBadge:new Map(),byPid:new Map()};};\nmodule.exports.__server=server;\n';
+    }
+    fs.writeFileSync(path.join(proof.app,file),source,{mode:0o600});
+  }
+  const publicDir=path.join(proof.app,"public");
+  // Read-only links preserve existing assets; only the isolated HTML gains a
+  // transport shim assigning one stable request key across a network retry.
+  if(fs.existsSync(publicDir)&&fs.lstatSync(publicDir).isSymbolicLink())fs.unlinkSync(publicDir);
+  fs.mkdirSync(publicDir,{recursive:true});
+  for(const item of fs.readdirSync(path.join(workspace,"public"))) {
+    const dest=path.join(publicDir,item);
+    if(item==="index.html") {
+      const html=fs.readFileSync(path.join(workspace,"public",item),"utf8");
+      fs.writeFileSync(dest,html.replace("<head>","<head><script src=\"/synthetic-request.js\"></script>"));
+    } else if(!fs.existsSync(dest))fs.symlinkSync(path.join(workspace,"public",item),dest);
+  }
+  fs.writeFileSync(path.join(publicDir,"synthetic-request.js"),`(()=>{const native=window.fetch.bind(window);window.fetch=async(input,options)=>{const r=new Request(input,options);if(new URL(r.url).origin!==location.origin||!["POST","PATCH","DELETE"].includes(r.method))return native(r);const h=new Headers(r.headers);if(!h.has("Idempotency-Key"))h.set("Idempotency-Key",crypto.randomUUID());const request=new Request(r,{headers:h}),retry=request.clone();try{return await native(request);}catch(error){return native(retry);}};})();`);
+  const virtual=install(proof,()=>context);
+  auth=require(path.join(proof.app,"auth.js"));
+  auth.sendMail=(to,subject,text)=>enqueue("mail",{to,subject,text});
+  const push=require(path.join(proof.app,"push.js"));
+  const originalPublic=push.publicKey;
+  push.publicKey=()=>{if(!context.files.get("push-keys.json")?.value?.privateJwk)throw Error("vapid_key_missing");return originalPublic();};
+  push.send=(badge,message)=>enqueue("push",{badge,message});
+  const backup=require(path.join(proof.app,"backup.js"));
+  const backupStatus=()=>JSON.parse(context.buffers.get("backup-status.json"));
+  backup.status=()=>{const saved=backupStatus();return{vault:null,lastAt:saved.lastAt||"",size:saved.lastSize||0,files:saved.files||0,kept:saved.kept||0,failed:false,keyReady:true};};
+  backup.createBackup=async()=>{
+    const bundle={kind:"SYNTHETIC_PG_BACKUP",dataset:proof.dataset,files:Object.fromEntries([...context.buffers].map(([f,b])=>[f,JSON.parse(b)])),media:{}};
+    for(const [legacy,row]of context.media)bundle.media[legacy]=(row.bytes||virtual.original.readFileSync(row.object)).toString("base64");
+    const iv=crypto.randomBytes(12),cipher=crypto.createCipheriv("aes-256-gcm",Buffer.from(proof.backupKey,"hex"),iv);
+    const bytes=Buffer.concat([iv,cipher.update(JSON.stringify(bundle)),cipher.final(),cipher.getAuthTag()]);
+    const id=crypto.randomUUID(),manifest={dataset:proof.dataset,files:context.files.size,sha256:hash(bytes),media:context.media.size};
+    await context.client.query("INSERT INTO dev.backups(id,ciphertext,manifest) VALUES($1,$2,$3::jsonb)",[id,bytes,JSON.stringify(manifest)]);
+    const state={lastAt:new Date().toISOString(),lastSize:bytes.length,files:context.files.size,kept:1};
+    fs.writeFileSync(path.join(proof.app,"data/backup-status.json"),JSON.stringify(state));
+    return state;
+  };
+  backup.schedule=()=>{
+    global.__bqDevInterval(async()=>{
+      const settings=JSON.parse(context.buffers.get("backup-settings.json")),last=backupStatus();
+      const hours=Math.max(1,Number(settings.intervalHours)||24);
+      if(settings.enabled!==false&&Date.now()-Date.parse(last.lastAt||"1970-01-01")>=hours*3600000)await backup.createBackup();
+    },60000).unref();
+    return()=>backup.createBackup();
+  };
+  // HTTP SMS provider boundary is an explicit fixture transport, never internet.
+  const realHttps=https.request;
+  https.request=(url,options,callback)=>{
+    const host=typeof url==="string"?new URL(url).hostname:url.hostname;
+    if(!/^(api\.twilio\.com|api\.taqnyat\.sa)$/.test(host||""))throw Error("external_transport_not_available_in_synthetic_development");
+    if(typeof options==="function"){callback=options;options={};}
+    const chunks=[],request=new Writable({write(chunk,encoding,done){chunks.push(Buffer.from(chunk));done();}});
+    request.setTimeout=()=>request;
+    request.on("finish",()=>{enqueue("sms",{host,body:Buffer.concat(chunks).toString()});const response=Readable.from([Buffer.from('{"synthetic":true}')]);response.statusCode=201;callback(response);});
+    return request;
+  };
+  async function handle(listener,req,res) {
+    if(req.url==="/health/live"){res.writeHead(200,{"Content-Type":"application/json"});res.end('{"live":true}');return;}
+    await ready;
+    return serial(async()=>{
+      let c,timer;
+      const original={writeHead:res.writeHead.bind(res),write:res.write.bind(res),end:res.end.bind(res)};
+      const chunks=[];let endedResolve,ended=false,status=200;
+      const ending=new Promise(resolve=>endedResolve=resolve);
+      function restore(){Object.assign(res,original);}
+      try {
+        c=context=await hydrate(await repo.begin());await refresh();
+        if(!c.files.get("accounts.json")||!c.files.get("employees.json")||!c.files.get("ideas.json"))throw Error("critical_entity_missing");
+        c.actor=auth.readSession(req.headers["x-session"])||"";
+        const key=req.headers["idempotency-key"];
+        if(key&&(!/^[A-Za-z0-9:_-]{8,120}$/.test(key)))throw Error("invalid_idempotency_key");
+        if(key) {
+          const injected=await c.client.query("SELECT point FROM dev.test_faults WHERE request_key=$1 FOR UPDATE",[key]);
+          c.fault=injected.rows[0]?.point;
+          if(c.fault)await c.client.query("DELETE FROM dev.test_faults WHERE request_key=$1",[key]);
+        }
+        // Capture raw request bytes without consuming the IncomingMessage stream.
+        const body=[];req.on("data",x=>body.push(Buffer.from(x)));
+        res.writeHead=(code,headers)=>{status=code;res.statusCode=code;if(headers&&typeof headers==="object")for(const[k,v]of Object.entries(headers))res.setHeader(k,v);return res;};
+        res.write=(chunk,encoding,cb)=>{if(chunk)chunks.push(Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk,typeof encoding==="string"?encoding:undefined));if(typeof cb==="function")cb();return true;};
+        res.end=(chunk,encoding,cb)=>{if(ended)chunks.length=0;if(chunk)chunks.push(Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk,typeof encoding==="string"?encoding:undefined));ended=true;endedResolve();if(typeof cb==="function")cb();return res;};
+        const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error("request_transaction_timeout")),25000);});
+        // The original HTTP callback must return handleApi's Promise; otherwise
+        // its early res.end (e.g. forgot password) precedes later awaited writes.
+        await Promise.race([(async()=>{await listener(req,res);await ending;})(),timeout]);
+        clearTimeout(timer);
+        const digest=hash(Buffer.concat([Buffer.from(`${req.method}:${req.url}:`),...body]));
+        const actor=hash(String(req.headers["x-session"]||"anonymous"));
+        if(key&&["POST","PATCH","DELETE"].includes(req.method)) {
+          const existing=await c.client.query("SELECT * FROM dev.requests WHERE actor=$1 AND request_key=$2",[actor,key]);
+          if(existing.rowCount) {
+            const saved=existing.rows[0];if(saved.digest!==digest)throw Error("idempotency_input_mismatch");
+            await finish(c,false);restore();for(const k of res.getHeaderNames())res.removeHeader(k);
+            original.writeHead(saved.status,saved.headers);original.end(saved.body);return;
+          }
+        }
+        const response=Buffer.concat(chunks);
+        if(key&&["POST","PATCH","DELETE"].includes(req.method)&&status<500)await c.client.query("INSERT INTO dev.requests VALUES($1,$2,$3,$4,$5::jsonb,$6)",
+          [actor,key,digest,status,JSON.stringify(res.getHeaders()),response]);
+        await finish(c,status<500);restore();
+        if(c.fault==="after_commit_drop"){res.destroy();return;}
+        // A killed/ambiguous connection here is recoverable with the same key.
+        original.writeHead(status);original.end(response);
+      }catch(e){
+        clearTimeout(timer);
+        if(context&&c)await finish(c,false).catch(()=>{});
+        restore();
+        if(!res.headersSent){for(const k of res.getHeaderNames())res.removeHeader(k);const conflict=e.message==="idempotency_input_mismatch"||e.message==="stale_entity_revision";
+          original.writeHead(conflict?409:503,{"Content-Type":"application/json","Cache-Control":"no-store"});original.end(JSON.stringify({error:conflict?"conflict":"database_unavailable"}));}
+        console.error("Synthetic HTTP transaction refused:",e.code||e.message);
+      }
+    });
+  }
+  const realCreate=http.createServer;
+  http.createServer=function(...args){
+    const listener=args.pop(),server=realCreate.call(http,...args,(req,res)=>handle(listener,req,res).catch(()=>res.destroy()));
+    const listen=server.listen.bind(server);
+    server.listen=(...params)=>{
+      const callback=typeof params.at(-1)==="function"?params.pop():()=>{};
+      return listen(...params,async()=>{
+        try{await callback();await finish(boot,true);readyResolve();}
+        catch(e){console.error("Synthetic activation refused:",e.message);await finish(boot,false).catch(()=>{});process.exitCode=1;server.close();}
+      });
+    };
+    return server;
+  };
+  app=require(path.join(proof.app,"server.js"));
+  http.createServer=realCreate;
+  const outboxTimer=setInterval(()=>repo.drainFixtureOutbox().catch(()=>{}),1000);outboxTimer.unref();
+  await ready;
+  return {repo,proof,server:app.__server,close:async()=>{clearInterval(outboxTimer);await new Promise(r=>app.__server.close(r));await repo.pool.end();virtual.restore();https.request=realHttps;}};
+}
+if(require.main===module)start(process.argv[2]).catch(e=>{console.error("Synthetic PostgreSQL application refused:",e.code||e.message);process.exit(1);});
+module.exports={start};

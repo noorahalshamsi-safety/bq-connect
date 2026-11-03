@@ -98,3 +98,45 @@ mtime_ms = 1793704556153
 storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/0348a4f0-7cb1-4472-8b4d-3b554be71a51/1ff18768-7548-4250-b62d-f7bc77623272"
 storage_version_token = "1793704747715369"
 content_type = "application/octet-stream"
+
+[[outputs]]
+id = "J7hnPjIHhIbPYqH8BsavU"
+uri = "file://reports/POSTGRESQL_DEVELOPMENT_INTEGRATION.md"
+type = "text"
+title = "PostgreSQL development integration review"
+description = "Architecture, changed files, API/entity matrices, auth compatibility, verification limits and production NO-GO."
+logical_id = "b806294d-dcb4-4367-991c-71c9e3999959"
+content_hash = "sha256:548148fe47a34a1cb00d7da3e60d24c386f1030cad32d6f3b7f2755b926ff454"
+size = 27813
+mtime_ms = 1793708453350
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/b806294d-dcb4-4367-991c-71c9e3999959/2ffecbf0-fcba-4164-9438-6a5bd75901fa"
+storage_version_token = "1793708455278031"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "X8So09Xv_gSMdL5wwYkND"
+uri = "file://generated-artifacts/phase2/http-results.json"
+type = "unspecified"
+title = "HTTP integration test results"
+description = "56 passing checks across 138 requests, using invented records and isolated PostgreSQL."
+logical_id = "8288f08a-2ab9-4e43-bf8c-1809ad1a165a"
+content_hash = "sha256:a1aa0e2fa2f8e731a80524d239313a37c1a6fff70d3f6322388d1df731da5fff"
+size = 53901
+mtime_ms = 1793708225373
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/8288f08a-2ab9-4e43-bf8c-1809ad1a165a/77545211-5059-4d98-a604-a32ed52199a1"
+storage_version_token = "1793708456599239"
+content_type = "application/octet-stream"
+
+[[outputs]]
+id = "JZwtbf-uduSxQUD7lRfQc"
+uri = "file://generated-artifacts/phase2/legacy-regression-matrix.json"
+type = "unspecified"
+title = "Original 53 regression adaptations"
+description = "33 PASS, 14 BLOCKED and 6 NOT TESTED, with evidence and explicit remaining gaps."
+logical_id = "d0f2659c-1d1b-49fc-8f44-93065e4cea0a"
+content_hash = "sha256:d4df3b6b8b602009362d9725ac82b0be4b72a6e72ce2aff13cd8a5254393db88"
+size = 13561
+mtime_ms = 1793708453330
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/d0f2659c-1d1b-49fc-8f44-93065e4cea0a/8edcd265-756e-461a-b094-d3999bb0146f"
+storage_version_token = "1793708457912978"
+content_type = "application/octet-stream"
