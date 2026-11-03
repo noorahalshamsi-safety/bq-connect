@@ -1,9 +1,13 @@
 // Run in the Repl Shell. Works on the published app's App Storage, never on the workspace data/ folder.
 //   node restore.js            list the vault snapshots and what App Storage holds now
 //   node restore.js <number>   restore that snapshot on the next publish (a snapshot of the current data is taken first)
-//   node restore.js cancel     drop a pending restore
+//   node restore.js merge <file.bqb> <key>   add what an older backup has and App Storage lacks, on the next publish
+//   node restore.js cancel     drop a pending restore or merge
 //   node restore.js check      compare App Storage with the newest snapshot (update.sh runs this)
 const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const backup = require("./backup");
 const vault = require("./vault");
 
 function riyadh(iso) {
@@ -49,7 +53,60 @@ async function main() {
 
   if (command === "cancel") {
     await client.delete(vault.REQUEST, { ignoreNotFound: true });
-    console.log("Pending restore cancelled");
+    await client.delete(vault.IMPORT_REQUEST, { ignoreNotFound: true });
+    console.log("Pending restore and merge cancelled");
+    return;
+  }
+
+  if (command === "merge") {
+    const [file, keyFile] = process.argv.slice(3);
+    if (!file || !keyFile || !fs.existsSync(file) || !fs.existsSync(keyFile)) {
+      console.log("Usage: node restore.js merge <old-backup.bqb> <its backup.key>  (upload both files to the Repl first)");
+      process.exitCode = 1;
+      return;
+    }
+    const key = vault.keyFrom(fs.readFileSync(keyFile, "utf8"));
+    if (!key) {
+      console.log("FAILED: the key file is not a backup key.");
+      process.exitCode = 1;
+      return;
+    }
+    const stage = fs.mkdtempSync(path.join(os.tmpdir(), "bq-merge-"));
+    const preview = fs.mkdtempSync(path.join(os.tmpdir(), "bq-live-"));
+    try {
+      await backup.openBackup(file, async (rel, data) => {
+        const out = path.resolve(stage, rel);
+        if (!out.startsWith(stage + path.sep)) throw new Error("bad_path");
+        fs.mkdirSync(path.dirname(out), { recursive: true });
+        fs.writeFileSync(out, data);
+      }, key);
+    } catch {
+      console.log("FAILED: the backup does not open with that key.");
+      fs.rmSync(stage, { recursive: true, force: true });
+      fs.rmSync(preview, { recursive: true, force: true });
+      process.exitCode = 1;
+      return;
+    }
+    for (const name of ["accounts.json", "ideas.json"]) {
+      const { ok, value } = await client.downloadAsText(`data/${name}`);
+      if (ok) fs.writeFileSync(path.join(preview, name), value);
+    }
+    const added = vault.mergeInto(preview, stage);
+    fs.rmSync(stage, { recursive: true, force: true });
+    fs.rmSync(preview, { recursive: true, force: true });
+    const stamp = Date.now();
+    const remoteFile = `${vault.IMPORT_DIR}${stamp}.bqb`;
+    const remoteKey = `${vault.IMPORT_DIR}${stamp}.key`;
+    const sentFile = await client.uploadFromBytes(remoteFile, fs.readFileSync(file));
+    const sentKey = await client.uploadFromText(remoteKey, key.toString("hex"));
+    if (!sentFile.ok || !sentKey.ok) {
+      console.log("FAILED: could not upload to App Storage. Try again.");
+      process.exitCode = 1;
+      return;
+    }
+    await client.uploadFromText(vault.IMPORT_REQUEST, JSON.stringify({ file: remoteFile, key: remoteKey, at: new Date().toISOString() }));
+    console.log(`Merge scheduled: adds about ${added.accounts} accounts, ${added.posts} posts, ${added.media} media files. Nothing that exists now is changed or removed.`);
+    console.log("Now open Deployments and press Republish. Then delete the two uploaded files from the Repl.");
     return;
   }
 

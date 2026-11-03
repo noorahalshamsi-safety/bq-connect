@@ -65,6 +65,7 @@ async function main() {
   const placeholder = await holdPort();
   const { client, sync } = await restoreWithRetry(preferLocal);
   const request = await vault.pendingRestore(client);
+  const merge = await vault.pendingImport(client);
   if (request) {
     const result = await vault.applyRestore(client, request);
     if (result.ok) sync.trust();
@@ -75,10 +76,11 @@ async function main() {
       return;
     }
   }
+  if (merge) await vault.applyImport(client, merge);
   await releasePort(placeholder);
   sync.start();
   require("./server");
-  vault.snapshot(client, request ? "restored" : "start").catch((error) => console.error(`Vault: ${error.message}`));
+  vault.snapshot(client, request ? "restored" : merge ? "merged" : "start").catch((error) => console.error(`Vault: ${error.message}`));
   const auto = setInterval(() => {
     if (vault.changed()) vault.snapshot(client, "auto").catch((error) => console.error(`Vault: ${error.message}`));
   }, AUTO_SNAPSHOT_MS);

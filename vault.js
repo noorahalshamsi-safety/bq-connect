@@ -206,11 +206,109 @@ async function applyRestore(client, request, log = console.log) {
   return result;
 }
 
+const IMPORT_REQUEST = "meta/import-request.json";
+const IMPORT_DIR = "meta/import/";
+
+async function pendingImport(client) {
+  const request = await remoteJson(client, IMPORT_REQUEST, null);
+  const inside = (name) => typeof name === "string" && name.startsWith(IMPORT_DIR) && !name.includes("..");
+  return request && inside(request.file) && inside(request.key) ? request : null;
+}
+
+function keyFrom(text) {
+  const hex = String(text || "").trim();
+  return /^[0-9a-f]{64}$/.test(hex) ? Buffer.from(hex, "hex") : null;
+}
+
+function writeJsonAtomic(file, value) {
+  const temp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(value, null, 2), { mode: 0o600 });
+  fs.renameSync(temp, file);
+}
+
+// Adds what an older backup has and the live data lacks. Nothing that exists now is changed or removed.
+function mergeInto(dataDir, stage) {
+  const added = { accounts: 0, posts: 0, media: 0 };
+  const accountsFile = path.join(dataDir, "accounts.json");
+  const accounts = readJson(accountsFile, {}) || {};
+  const oldAccounts = readJson(path.join(stage, "accounts.json"), {}) || {};
+  for (const [badge, account] of Object.entries(oldAccounts)) {
+    if (account && account.hash && !Object.prototype.hasOwnProperty.call(accounts, badge)) {
+      accounts[badge] = account;
+      added.accounts += 1;
+    }
+  }
+  if (added.accounts) writeJsonAtomic(accountsFile, accounts);
+
+  const ideasFile = path.join(dataDir, "ideas.json");
+  const ideas = readJson(ideasFile, []);
+  const live = Array.isArray(ideas) ? ideas : [];
+  const oldIdeas = readJson(path.join(stage, "ideas.json"), []);
+  const ids = new Set(live.map((idea) => String(idea && idea.id)));
+  const numbers = new Set(live.map((idea) => Number(idea && idea.number) || 0).filter(Boolean));
+  let next = Math.max(0, ...numbers, ...(Array.isArray(oldIdeas) ? oldIdeas.map((idea) => Number(idea && idea.number) || 0) : [])) + 1;
+  for (const idea of Array.isArray(oldIdeas) ? oldIdeas : []) {
+    if (!idea || !idea.id || ids.has(String(idea.id))) continue;
+    const copy = { ...idea };
+    if (Number(copy.number) && numbers.has(Number(copy.number))) copy.number = next++;
+    if (Number(copy.number)) numbers.add(Number(copy.number));
+    live.push(copy);
+    ids.add(String(copy.id));
+    added.posts += 1;
+  }
+  if (added.posts) writeJsonAtomic(ideasFile, live);
+
+  const oldMedia = path.join(stage, "media");
+  if (fs.existsSync(oldMedia)) {
+    for (const file of walk(oldMedia)) {
+      const target = path.join(dataDir, "media", path.relative(oldMedia, file));
+      if (fs.existsSync(target)) continue;
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(file, `${target}.${process.pid}.tmp`);
+      fs.renameSync(`${target}.${process.pid}.tmp`, target);
+      added.media += 1;
+    }
+  }
+  return added;
+}
+
+async function applyImport(client, request, log = console.log) {
+  const result = { type: "import", name: request.file, at: new Date().toISOString(), ok: false };
+  try {
+    const key = keyFrom((await client.downloadAsText(request.key)).value);
+    if (!key) throw new Error("the uploaded key file is not a backup key");
+    await snapshot(client, "preimport", log);
+    const stage = await unpack(client, request.file, key);
+    try {
+      result.added = mergeInto(DATA_DIR, stage);
+    } finally {
+      fs.rmSync(stage, { recursive: true, force: true });
+    }
+    result.ok = true;
+    result.counts = localCounts();
+    log(`Vault: merged ${request.file} (+${result.added.accounts} accounts, +${result.added.posts} posts, +${result.added.media} media)`);
+  } catch (error) {
+    result.error = error.message;
+    log(`Vault: merge of ${request.file} failed, data left as it was: ${error.message}`);
+  }
+  await client.uploadFromText(RESULT, JSON.stringify(result));
+  await client.delete(IMPORT_REQUEST, { ignoreNotFound: true });
+  await client.delete(request.key, { ignoreNotFound: true });
+  if (result.ok) await client.delete(request.file, { ignoreNotFound: true });
+  return result;
+}
+
 module.exports = {
+  IMPORT_DIR,
+  IMPORT_REQUEST,
   INDEX,
   NAME,
   REQUEST,
   RESULT,
+  applyImport,
+  keyFrom,
+  mergeInto,
+  pendingImport,
   applyRestore,
   changed,
   checkDrop,
