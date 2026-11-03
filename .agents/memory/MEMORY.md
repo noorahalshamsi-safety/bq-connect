@@ -3,3 +3,4 @@
 - [Compatibility runtime safety](compatibility-runtime-safety.md) — serialization and fail-stop timeouts are intentional until legacy mutable state becomes request-scoped.
 - [Dependency upgrade boundaries](dependency-upgrade-boundaries.md) — a newer transitive major outside the storage SDK's declared range is not a supported audit-only fix.
 - [Memory evidence boundaries](memory-evidence-boundaries.md) — lower post-GC live heap does not establish bounded RSS or successful full-feed capacity.
+- [Feed pagination approval](feed-pagination-approval.md) — private paging tests are not approval to change the full-feed API/UI or claim full-application capacity.

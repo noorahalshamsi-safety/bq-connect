@@ -182,3 +182,17 @@ mtime_ms = 1793728574853
 storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/f926408f-0454-4d1e-96ce-28c7f5f9ceb9/356264a3-ccba-44d2-8712-e6c91cbf9c2e"
 storage_version_token = "1793728624752989"
 content_type = "text/html"
+
+[[outputs]]
+id = "QYOpkK6EJ8Xg-jvHCD0sk"
+uri = "file://generated-artifacts/phase2e/phase2e-feed-review.html"
+type = "html"
+title = "Phase 2E feed scalability and pagination review"
+description = "Dependency and authorization audit, measured memory stages, private SQL paging prototype, exact parity evidence, performance limits, compatibility decisions and separate readiness verdicts."
+logical_id = "c8b9adb5-73cf-4f35-b83a-cc8005ef79bc"
+content_hash = "sha256:baddca8983a71c8b04081730081ce0679f05951aaf72ff9f7f95f82f4ab33a14"
+size = 33953
+mtime_ms = 1793730881341
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/c8b9adb5-73cf-4f35-b83a-cc8005ef79bc/9e550a43-f916-40b4-bdca-5789d9212c95"
+storage_version_token = "1793730908788392"
+content_type = "text/html"
