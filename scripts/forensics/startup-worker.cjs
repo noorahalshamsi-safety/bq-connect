@@ -25,4 +25,4 @@ storage.connect = async () => {
   if (settings.connectionFailure) throw new Error("injected connection failure");
   return client;
 };
-require(path.join(app, "start.js"));
+require(path.join(app, settings.localOnly ? "server.js" : "start.js"));

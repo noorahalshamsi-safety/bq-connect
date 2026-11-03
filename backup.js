@@ -9,6 +9,7 @@ const path = require("path");
 const zlib = require("zlib");
 const { Readable, Writable } = require("stream");
 const { pipeline } = require("stream/promises");
+const safety = require("./persistence-safety");
 
 const DATA_DIR = path.join(__dirname, "data");
 const KEY_FILE = path.join(DATA_DIR, "backup.key");
@@ -41,10 +42,7 @@ function loadKey(create) {
     if (/^[0-9a-f]{64}$/.test(value)) return Buffer.from(value, "hex");
   } catch {}
   if (!create) return null;
-  try {
-    fs.writeFileSync(KEY_FILE, `${crypto.randomBytes(32).toString("hex")}\n`, { mode: 0o600, flag: "wx" });
-  } catch {}
-  return loadKey(false);
+  throw safety.fault("backup_key_missing_or_invalid");
 }
 
 function readStatus() {
@@ -99,21 +97,16 @@ function listFiles(dir, out = [], skipMedia = false) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (!(skipMedia && dir === DATA_DIR && entry.name === "media")) listFiles(full, out, skipMedia);
-    } else if (entry.isFile() && !entry.name.endsWith(".tmp") && !(dir === DATA_DIR && SKIP.has(entry.name))) {
+    } else if (entry.isFile() && !entry.name.endsWith(".tmp") && !entry.name.endsWith(".write-lock") && !(dir === DATA_DIR && SKIP.has(entry.name))) {
       out.push(path.relative(DATA_DIR, full).split(path.sep).join("/"));
     }
   }
   return out;
 }
 
-async function* archive(files, counter) {
+async function* archive(files, counter, root = DATA_DIR) {
   for (const rel of files) {
-    let data;
-    try {
-      data = await fs.promises.readFile(path.join(DATA_DIR, rel));
-    } catch {
-      continue;
-    }
+    const data = await fs.promises.readFile(path.join(root, rel));
     const head = Buffer.from(JSON.stringify({ p: rel, s: data.length }));
     const size = Buffer.alloc(4);
     size.writeUInt32BE(head.length);
@@ -131,20 +124,39 @@ function stampOf(date) {
 async function writeArchive(file, options = {}) {
   const key = loadKey(true);
   if (!key) throw new Error("key");
-  const temp = `${file}.part`;
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
-  const counter = { files: 0 };
+  safety.validateData(DATA_DIR);
+  const stage = fs.mkdtempSync(path.join(os.tmpdir(), "bq-backup-stage-"));
+  fs.chmodSync(stage, 0o700);
+  const names = listFiles(DATA_DIR, [], Boolean(options.skipMedia));
+  const hashes = {};
   try {
-    fs.writeFileSync(temp, Buffer.concat([MAGIC, iv]), { mode: 0o600 });
-    await pipeline(Readable.from(archive(listFiles(DATA_DIR, [], Boolean(options.skipMedia)), counter)), zlib.createGzip({ level: 6 }), cipher, fs.createWriteStream(temp, { flags: "a" }));
-    fs.appendFileSync(temp, cipher.getAuthTag());
-    fs.renameSync(temp, file);
-  } catch (error) {
-    fs.rmSync(temp, { force: true });
-    throw error;
-  }
-  return { file, size: fs.statSync(file).size, files: counter.files };
+    // Freeze this process's bytes before any await; external writers are not
+    // made transactional by this copy. Validate the source did not change.
+    for (const rel of names) {
+      const bytes = fs.readFileSync(path.join(DATA_DIR, rel));
+      hashes[rel] = safety.sha(bytes);
+      const target = path.join(stage, rel);
+      fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(target, bytes, { mode: 0o600 });
+    }
+    if (JSON.stringify(names) !== JSON.stringify(listFiles(DATA_DIR, [], Boolean(options.skipMedia)))
+      || names.some((rel) => safety.digest(path.join(DATA_DIR, rel)) !== hashes[rel])) throw safety.fault("snapshot_source_changed");
+    const frozenCounts = safety.counts(stage);
+    const temp = `${file}.part`;
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+    const counter = { files: 0 };
+    try {
+      fs.writeFileSync(temp, Buffer.concat([MAGIC, iv]), { mode: 0o600 });
+      await pipeline(Readable.from(archive(names, counter, stage)), zlib.createGzip({ level: 6 }), cipher, fs.createWriteStream(temp, { flags: "a" }));
+      fs.appendFileSync(temp, cipher.getAuthTag());
+      fs.renameSync(temp, file);
+    } catch (error) {
+      fs.rmSync(temp, { force: true });
+      throw error;
+    }
+    return { file, size: fs.statSync(file).size, files: counter.files, counts: frozenCounts, contentHashes: hashes, includesMedia: !options.skipMedia };
+  } finally { fs.rmSync(stage, { recursive: true, force: true }); }
 }
 
 async function createBackup() {

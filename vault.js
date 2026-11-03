@@ -1,10 +1,12 @@
-// Encrypted snapshots of data/ kept in App Storage under vault/. That folder is outside the synced
-// folders, so republishing, a broken deploy or an emptied data/ folder can never delete them.
-// Media files are left out: they stay in App Storage on their own and would make every snapshot huge.
+// Remote activation and authoritative index writes are fenced pending a verified
+// durable provider. Offline candidates use a local recovery journal, not a
+// distributed transaction. Existing production archives are never auto-adopted.
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const backup = require("./backup");
+const safety = require("./persistence-safety");
+const crypto = require("crypto");
 
 const DATA_DIR = path.join(__dirname, "data");
 const INDEX = "vault/index.json";
@@ -77,8 +79,13 @@ function stampOf(date) {
 }
 
 async function readIndex(client) {
-  const list = await remoteJson(client, INDEX, []);
-  return Array.isArray(list) ? list.filter((item) => item && NAME.test(String(item.name))) : [];
+  const response = await client.downloadAsText(INDEX);
+  if (!response.ok) throw safety.fault("authoritative_index_unavailable");
+  let list;
+  try { list = JSON.parse(response.value); } catch { throw safety.fault("authoritative_index_corrupt"); }
+  if (!Array.isArray(list) || !list.length || list.some((item) => !item || !NAME.test(String(item.name)) || !item.counts
+    || ["accounts", "posts", "employees"].some((key) => !Number.isSafeInteger(item.counts[key]) || item.counts[key] < 0))) throw safety.fault("authoritative_index_invalid");
+  return list;
 }
 
 function writeLocalStatus(status) {
@@ -92,16 +99,17 @@ function writeLocalStatus(status) {
 let lastPrint = "";
 
 async function snapshot(client, reason, log = console.log) {
+  safety.requireDurableBackend();
   const at = new Date();
   const name = `vault/bq-${stampOf(at)}-${reason}.bqb`;
   const temp = path.join(os.tmpdir(), `bq-vault-${process.pid}-${at.getTime()}.bqb`);
   const print = fingerprint();
   try {
-    const result = await backup.writeArchive(temp, { skipMedia: true });
+    const result = await backup.writeArchive(temp, { skipMedia: false });
     const bytes = fs.readFileSync(temp);
     const sent = await client.uploadFromBytes(name, bytes);
     if (!sent.ok) throw new Error(`upload failed: ${sent.error && sent.error.message}`);
-    const entry = { name, at: at.toISOString(), reason, size: bytes.length, files: result.files, counts: localCounts() };
+    const entry = { name, at: at.toISOString(), reason, size: bytes.length, files: result.files, counts: result.counts, includesMedia: result.includesMedia, contentHashes: result.contentHashes };
     const kept = [];
     for (const item of [entry, ...(await readIndex(client)).filter((item) => item.name !== name)]) {
       if (kept.length >= KEEP && at.getTime() - Date.parse(item.at) > KEEP_MS) await client.delete(item.name, { ignoreNotFound: true });
@@ -125,6 +133,7 @@ function changed() {
 // Accounts are never deleted by the app and posts rarely vanish in bulk, so either happening
 // between two runs means the data came back wrong and must not be served or synced.
 async function checkDrop(client) {
+  safety.validateData(DATA_DIR);
   const last = (await readIndex(client))[0];
   if (!last || !last.counts) return "";
   const now = localCounts();
@@ -178,32 +187,10 @@ async function unpack(client, name, key) {
 }
 
 async function applyRestore(client, request, log = console.log) {
-  const result = { name: request.name, at: new Date().toISOString(), ok: false };
-  try {
-    await snapshot(client, "prerestore", log);
-    const stage = await unpack(client, request.name);
-    try {
-      for (const file of walk(stage)) {
-        const rel = path.relative(stage, file);
-        const target = path.join(DATA_DIR, rel);
-        fs.mkdirSync(path.dirname(target), { recursive: true });
-        const temp = `${target}.${process.pid}.tmp`;
-        fs.copyFileSync(file, temp);
-        fs.renameSync(temp, target);
-      }
-    } finally {
-      fs.rmSync(stage, { recursive: true, force: true });
-    }
-    result.ok = true;
-    result.counts = localCounts();
-    log(`Vault: restored ${request.name} (${result.counts.accounts} accounts, ${result.counts.posts} posts)`);
-  } catch (error) {
-    result.error = error.message;
-    log(`Vault: restore of ${request.name} failed, data left as it was: ${error.message}`);
-  }
-  await client.uploadFromText(RESULT, JSON.stringify(result));
-  await client.delete(REQUEST, { ignoreNotFound: true });
-  return result;
+  // SDK cannot safely activate a distributed authoritative generation.
+  // Preserve request, archive, keys and live files; do not run legacy promotion.
+  log("Vault: recovery_commit_unavailable; restore request and data preserved");
+  return { ok: false, code: "recovery_commit_unavailable", name: request.name };
 }
 
 const IMPORT_REQUEST = "meta/import-request.json";
@@ -228,10 +215,29 @@ function writeJsonAtomic(file, value) {
 
 // Adds what an older backup has and the live data lacks. Nothing that exists now is changed or removed.
 function mergeInto(dataDir, stage) {
+  if (process.env.REPLIT_DEPLOYMENT) safety.requireDurableBackend();
+  safety.recoverDirectory(dataDir);
+  safety.validateData(dataDir);
+  const liveAccounts = safety.readAccounts(path.join(dataDir, "accounts.json"));
+  const sourceAccounts = fs.existsSync(path.join(stage, "accounts.json")) ? safety.readJson(path.join(stage, "accounts.json")) : {};
+  if (!sourceAccounts || typeof sourceAccounts !== "object" || Array.isArray(sourceAccounts)) throw safety.fault("import_accounts_schema");
+  safety.assertKeyDomain(dataDir, stage, Object.entries(sourceAccounts).filter(([id, row]) => row?.hash && !Object.hasOwn(liveAccounts, id)).map(([, row]) => row));
+  const candidate = path.join(path.dirname(dataDir), `.data-candidate-${crypto.randomUUID()}`);
+  fs.cpSync(dataDir, candidate, { recursive: true });
+  try {
+    const result = mergeCandidate(candidate, stage);
+    safety.validateData(candidate);
+    safety.preserveMembership(liveAccounts, safety.readAccounts(path.join(candidate, "accounts.json")));
+    safety.activateLocal(dataDir, candidate);
+    return result;
+  } finally { fs.rmSync(candidate, { recursive: true, force: true }); }
+}
+
+function mergeCandidate(dataDir, stage) {
   const added = { accounts: 0, posts: 0, media: 0 };
   const accountsFile = path.join(dataDir, "accounts.json");
-  const accounts = readJson(accountsFile, {}) || {};
-  const oldAccounts = readJson(path.join(stage, "accounts.json"), {}) || {};
+  const accounts = safety.readAccounts(accountsFile);
+  const oldAccounts = fs.existsSync(path.join(stage, "accounts.json")) ? safety.readJson(path.join(stage, "accounts.json")) : {};
   for (const [badge, account] of Object.entries(oldAccounts)) {
     if (account && account.hash && !Object.prototype.hasOwnProperty.call(accounts, badge)) {
       accounts[badge] = account;
@@ -241,9 +247,10 @@ function mergeInto(dataDir, stage) {
   if (added.accounts) writeJsonAtomic(accountsFile, accounts);
 
   const ideasFile = path.join(dataDir, "ideas.json");
-  const ideas = readJson(ideasFile, []);
+  const ideas = safety.readJson(ideasFile);
   const live = Array.isArray(ideas) ? ideas : [];
-  const oldIdeas = readJson(path.join(stage, "ideas.json"), []);
+  const oldIdeas = fs.existsSync(path.join(stage, "ideas.json")) ? safety.readJson(path.join(stage, "ideas.json")) : [];
+  if (!Array.isArray(oldIdeas)) throw safety.fault("import_posts_schema");
   const ids = new Set(live.map((idea) => String(idea && idea.id)));
   const numbers = new Set(live.map((idea) => Number(idea && idea.number) || 0).filter(Boolean));
   let next = Math.max(0, ...numbers, ...(Array.isArray(oldIdeas) ? oldIdeas.map((idea) => Number(idea && idea.number) || 0) : [])) + 1;
@@ -273,29 +280,8 @@ function mergeInto(dataDir, stage) {
 }
 
 async function applyImport(client, request, log = console.log) {
-  const result = { type: "import", name: request.file, at: new Date().toISOString(), ok: false };
-  try {
-    const key = keyFrom((await client.downloadAsText(request.key)).value);
-    if (!key) throw new Error("the uploaded key file is not a backup key");
-    await snapshot(client, "preimport", log);
-    const stage = await unpack(client, request.file, key);
-    try {
-      result.added = mergeInto(DATA_DIR, stage);
-    } finally {
-      fs.rmSync(stage, { recursive: true, force: true });
-    }
-    result.ok = true;
-    result.counts = localCounts();
-    log(`Vault: merged ${request.file} (+${result.added.accounts} accounts, +${result.added.posts} posts, +${result.added.media} media)`);
-  } catch (error) {
-    result.error = error.message;
-    log(`Vault: merge of ${request.file} failed, data left as it was: ${error.message}`);
-  }
-  await client.uploadFromText(RESULT, JSON.stringify(result));
-  await client.delete(IMPORT_REQUEST, { ignoreNotFound: true });
-  await client.delete(request.key, { ignoreNotFound: true });
-  if (result.ok) await client.delete(request.file, { ignoreNotFound: true });
-  return result;
+  log("Vault: recovery_commit_unavailable; import request, key, archive and data preserved");
+  return { ok: false, code: "recovery_commit_unavailable", type: "import", name: request.file };
 }
 
 module.exports = {

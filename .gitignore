@@ -8,3 +8,8 @@ data-restored-*/
 models/
 .vendor-tmp/
 /generated-artifacts/
+/.data-candidate-*/
+/.data-old-*/
+/.data-quarantine-*/
+/.sync-candidate-*/
+/.persistence-journal.json

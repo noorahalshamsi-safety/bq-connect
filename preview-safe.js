@@ -3,6 +3,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const net = require("net");
+const crypto = require("crypto");
 const { spawn } = require("child_process");
 
 const source = __dirname;
@@ -15,6 +16,7 @@ const modules = [
   "push.js",
   "spark-agent.js",
   "translate.js",
+  "persistence-safety.js",
 ];
 
 for (const file of modules) {
@@ -22,6 +24,12 @@ for (const file of modules) {
 }
 fs.cpSync(path.join(source, "public"), path.join(sandbox, "public"), { recursive: true });
 fs.mkdirSync(path.join(sandbox, "data"), { recursive: true });
+// Explicit, disposable provisioning only: never use this to initialize real storage.
+fs.writeFileSync(path.join(sandbox, "data/session.key"), crypto.randomBytes(48).toString("hex"), { mode: 0o600 });
+fs.writeFileSync(path.join(sandbox, "data/backup.key"), crypto.randomBytes(32).toString("hex"), { mode: 0o600 });
+for (const [name, value] of Object.entries({ "accounts.json": {}, "employees.json": [], "ideas.json": [] })) {
+  fs.writeFileSync(path.join(sandbox, "data", name), JSON.stringify(value), { mode: 0o600 });
+}
 
 const childEnv = {
   PATH: process.env.PATH || "",

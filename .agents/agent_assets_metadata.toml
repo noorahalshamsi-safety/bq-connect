@@ -42,3 +42,31 @@ mtime_ms = 1793700833925
 storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/c365ecc3-45ca-41b3-ac36-ec9e9909619c/1b50c651-f6a1-4b00-a0a8-30bd5c8f12cf"
 storage_version_token = "1793701247502229"
 content_type = "application/octet-stream"
+
+[[outputs]]
+id = "NoAa_gk_HJO_YwK3JYfoa"
+uri = "file://generated-artifacts/repair/P0_PERSISTENCE_REPAIR_REPORT.md"
+type = "text"
+title = "Development Persistence Repair — NO-GO Review"
+description = "Changed files, root causes, all 53 before/after results, verified SDK limits, recovery/adoption plans, remaining blockers and approval gates. No production changes or deployment."
+logical_id = "e466b159-f583-4730-89b1-7f6f7cb61905"
+content_hash = "sha256:395fc11618dd21c26690a95d44d337c71d06ca4edd526c0428a50d08335ea032"
+size = 31955
+mtime_ms = 1793702882709
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/e466b159-f583-4730-89b1-7f6f7cb61905/09ae7c14-004b-472e-a9e8-644285611bb9"
+storage_version_token = "1793702927055077"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "lTQoF1bi6ZP1zeUqxFIFV"
+uri = "file://generated-artifacts/repair/test-results.json"
+type = "unspecified"
+title = "Repair Regression Evidence — 53 Scenarios"
+description = "43 PASS, 1 FAIL, 9 BLOCKED. Original 34: 24 PASS, 1 FAIL, 9 BLOCKED. Additional 19: all PASS. Synthetic before/after integrity evidence only."
+logical_id = "895dc22e-5435-4083-8fd7-027ba8fe9049"
+content_hash = "sha256:6a734fe08e081f81e0510fa6b89c4d93db553260240353b48cbdeeb919f0179f"
+size = 228914
+mtime_ms = 1793702753913
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/895dc22e-5435-4083-8fd7-027ba8fe9049/df388120-cc5a-460b-86c5-f8dafb32e894"
+storage_version_token = "1793702928492452"
+content_type = "application/octet-stream"

@@ -9,19 +9,31 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const assert = require("node:assert/strict");
 const net = require("node:net");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const { FileStorage, files } = require("./file-storage.cjs");
 
 const workspace = path.resolve(__dirname, "../..");
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), "bq-forensics-"));
 const sourceFiles = ["start.js", "storage-sync.js", "vault.js", "auth.js", "backup.js",
-  "server.js", "moderation.js", "push.js", "spark-agent.js", "translate.js"];
+  "server.js", "moderation.js", "push.js", "spark-agent.js", "translate.js", "persistence-safety.js"];
 const baselineName = "vault/bq-20260101-000000-start.bqb";
 const password = "SyntheticOnly-password-123";
 const children = new Set();
 const observedContexts = new Map();
 const results = [];
 const selected = process.argv.find((arg) => arg.startsWith("--only="))?.slice(7).split(",");
+// Documented invariant adaptations: rejection BEFORE activation/write is now
+// correct for these negative scenarios. Unlisted exceptions remain BLOCKED.
+// Provider-dependent positive scenarios are NOT converted into passing tests.
+const expectedGuards = {
+  T08: ["critical_json_missing_or_corrupt"], T09: ["critical_json_missing_or_corrupt", "authoritative_index_unavailable"],
+  T10: ["critical_key_missing"], T11: ["account_generation_rollback"],
+  T12: ["account_membership_loss"], T13: ["dataset_provisioning_requires_approval"],
+  T14: ["durable_commit_provider_unavailable"], T15: ["durable_commit_provider_unavailable"],
+  T19: ["referenced_media_missing"], T23: ["import_2fa_key_domain_mismatch"],
+  T27: ["critical_json_missing_or_corrupt"], T28: ["backup_key_missing_or_invalid"],
+  T34: ["account_membership_loss"],
+};
 let sequence = 0;
 let fixture;
 let token;
@@ -117,6 +129,8 @@ function totp(secret, offset = 0) {
 async function makeFixture() {
   const app = path.join(temp, "fixture");
   codeCopy(app);
+  write(path.join(app, "data/session.key"), crypto.randomBytes(48).toString("hex"));
+  write(path.join(app, "data/accounts.json"), {});
   write(path.join(app, "data/backup.key"), crypto.randomBytes(32).toString("hex"));
   write(path.join(app, "data/employees.json"), [101, 102, 103, 104].map((badge) => ({
     badge: String(badge), name: `Synthetic employee ${badge}`, department: "Synthetic test", position: "Test only",
@@ -166,6 +180,14 @@ function mirror(context, client = context.client) {
   });
 }
 
+function manifestFor(context) {
+  return { version: 1, datasetId: "synthetic-dataset", generation: 2, bucketFingerprint: "deadbeef1234",
+    files: Object.fromEntries(files(dataFile(context, "")).map((name) => [name, hash(fs.readFileSync(dataFile(context, name)))])) };
+}
+function guarded(run, expected) {
+  try { run(); return false; } catch (error) { return error.code === expected; }
+}
+
 async function test(id, scenario, expectation, run) {
   if (selected && !selected.includes(id)) return;
   observedContexts.clear();
@@ -175,6 +197,14 @@ async function test(id, scenario, expectation, run) {
     results.push(row);
     console.log(`${row.status} ${id}: ${scenario} — ${row.observed}`);
   } catch (error) {
+    if (expectedGuards[id]?.includes(error.code)) {
+      const proof = evidence();
+      if (["T14", "T15"].includes(id)) assert.ok(proof.every((row) => row.persistentUnchanged), "A rejected shrink still changed persistent data");
+      results.push({ id, scenario, expectation, status: "PASS", observed: `Rejected before unsafe activation/commit: ${error.code}`, evidence: proof,
+        adaptation: "Fail-closed rejection replaces the original unsafe continuation; expected security invariant unchanged. This does not establish functional recovery or distributed durability." });
+      console.log(`PASS ${id}: expected guard ${error.code}`);
+      return;
+    }
     results.push({ id, scenario, expectation, status: "BLOCKED", observed: error.message, evidence: evidence() });
     console.log(`BLOCKED ${id}: ${scenario} — ${error.message}`);
   }
@@ -195,11 +225,15 @@ async function launch(context, options = {}) {
     app: context.app, objects: context.objects,
     connectionFailure: Boolean(options.connectionFailure), storageOptions: options.storageOptions || {},
     failPromotion: options.failPromotion,
+    localOnly: Boolean(options.localOnly),
   });
   const processChild = spawn(process.execPath, [path.join(__dirname, "startup-worker.cjs"), settings], {
     cwd: context.app,
     env: { PATH: process.env.PATH || "", HOME: context.root, TMPDIR: os.tmpdir(), HOST: "127.0.0.1",
-      PORT: String(port), REPL_ID: "synthetic-forensics", REPLIT_DEPLOYMENT: "1",
+      PORT: String(port), REPL_ID: "synthetic-forensics", REPLIT_DEPLOYMENT: options.localOnly ? "" : "1",
+      ...(options.expectedManifest ? { BQ_EXPECTED_DATASET_ID: options.expectedManifest.datasetId,
+        BQ_EXPECTED_GENERATION: String(options.expectedManifest.generation),
+        BQ_EXPECTED_BUCKET_FINGERPRINT: options.expectedManifest.bucketFingerprint } : {}),
       BQ_TRANSLATE: "0", BACKUP_DIR: path.join(context.app, "backups") },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -234,9 +268,9 @@ async function launch(context, options = {}) {
     try {
       const response = await worker.session();
       if (response.text.includes("maintenance")) maintenanceSeen = true;
-      if (options.connectionFailure && response.text.includes("maintenance")) return worker;
+      if ((options.connectionFailure || options.expectMaintenance) && response.text.includes("maintenance")) return worker;
       if (response.contentType?.includes("application/json") && response.status === (options.expectedSessionStatus || 200)) {
-        for (let wait = 0; wait < 60 && !output.includes("Vault: saved"); wait += 1) await delay(50);
+        for (let wait = 0; !options.localOnly && wait < 60 && !output.includes("Vault: saved"); wait += 1) await delay(50);
         return worker;
       }
     } catch {}
@@ -671,13 +705,16 @@ async function main() {
 const codeFingerprint = Object.fromEntries(sourceFiles.map((name) =>
   [name, hash(fs.readFileSync(path.join(workspace, name))).slice(0, 12)]));
 
-main().catch((error) => {
+main().then(() => require("./repair-regressions.cjs")({
+  test, makeCase, load, dataFile, summary, accounts, write, files, hash,
+  launch, guarded, manifestFor, fixture, totp, totpSecret, password, token, children,
+})).catch((error) => {
   results.push({ id: "HARNESS", scenario: "Harness execution", status: "BLOCKED", observed: error.message });
 }).finally(async () => {
   for (const child of children) child.kill("SIGKILL");
   const sourceUnchanged = sourceFiles.every((name) =>
     hash(fs.readFileSync(path.join(workspace, name))).slice(0, 12) === codeFingerprint[name]);
-  const destination = path.join(workspace, "generated-artifacts/forensics");
+  const destination = path.join(workspace, "generated-artifacts/repair");
   let combined = results;
   let previousRunAt;
   if (selected && fs.existsSync(path.join(destination, "test-results.json"))) {

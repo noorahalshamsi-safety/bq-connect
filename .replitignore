@@ -1,1 +1,6 @@
 /generated-artifacts/
+/.data-candidate-*/
+/.data-old-*/
+/.data-quarantine-*/
+/.sync-candidate-*/
+/.persistence-journal.json

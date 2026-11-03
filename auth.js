@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const tls = require("tls");
+const safety = require("./persistence-safety");
 
 const DATA_DIR = path.join(__dirname, "data");
 const ACCOUNTS = path.join(DATA_DIR, "accounts.json");
@@ -39,33 +40,20 @@ function readJsonFile(file, fallback) {
 }
 
 function writePrivate(file, text) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(temp, text, { mode: 0o600 });
-  fs.renameSync(temp, file);
+  safety.atomicWrite(file, text);
 }
 
 function loadSecret() {
-  try {
-    const value = fs.readFileSync(SECRET_FILE, "utf8").trim();
-    if (/^[0-9a-f]{96}$/.test(value)) return value;
-  } catch {}
-  const value = crypto.randomBytes(48).toString("hex");
-  writePrivate(SECRET_FILE, value);
-  return value;
+  return safety.readKey(SECRET_FILE, 96);
 }
 
 const secret = loadSecret();
-const accounts = readJsonFile(ACCOUNTS, {});
+const accounts = safety.readAccounts(ACCOUNTS);
 const failures = new Map();
 const mailLog = new Map();
 
 function accountsStamp() {
-  try {
-    return fs.statSync(ACCOUNTS).mtimeMs;
-  } catch {
-    return 0;
-  }
+  return safety.digest(ACCOUNTS);
 }
 
 let loadedStamp = accountsStamp();
@@ -73,16 +61,34 @@ let loadedStamp = accountsStamp();
 function syncAccounts() {
   const stamp = accountsStamp();
   if (stamp === loadedStamp) return;
-  const fresh = readJsonFile(ACCOUNTS, null);
-  if (!fresh) return;
+  const fresh = safety.readAccounts(ACCOUNTS);
+  safety.preserveMembership(accounts, fresh);
   for (const key of Object.keys(accounts)) delete accounts[key];
   Object.assign(accounts, fresh);
   loadedStamp = stamp;
 }
 
 function saveAccounts() {
-  writePrivate(ACCOUNTS, JSON.stringify(accounts, null, 2));
-  loadedStamp = accountsStamp();
+  let fd;
+  const lock = `${ACCOUNTS}.write-lock`;
+  try {
+    if (process.env.REPLIT_DEPLOYMENT) safety.requireDurableBackend();
+    // Local filesystem CAS only. No automatic stale-lock stealing.
+    fd = fs.openSync(lock, "wx", 0o600);
+    if (accountsStamp() !== loadedStamp) throw safety.fault("account_write_conflict");
+    safety.accounts(accounts);
+    safety.preserveMembership(safety.readAccounts(ACCOUNTS), accounts);
+    writePrivate(ACCOUNTS, JSON.stringify(accounts, null, 2));
+    loadedStamp = accountsStamp();
+  } catch (error) {
+    const fresh = safety.readAccounts(ACCOUNTS);
+    for (const key of Object.keys(accounts)) delete accounts[key];
+    Object.assign(accounts, fresh);
+    loadedStamp = accountsStamp();
+    throw error.code === "EEXIST" ? safety.fault("account_write_conflict") : error;
+  } finally {
+    if (fd !== undefined) { fs.closeSync(fd); fs.unlinkSync(lock); }
+  }
 }
 
 function accountOf(badge) {
@@ -178,13 +184,15 @@ async function checkLogin(badge, password, exists) {
   }
   const pending = account && account.pending && Date.parse(account.pending.exp) > Date.now() ? account.pending : null;
   if (pending && (await matches(text, pending))) {
-    account.salt = pending.salt;
-    account.hash = pending.hash;
-    account.kdf = pending.kdf;
-    account.pending = null;
-    account.sessions = [];
-    account.ver = (Number(account.ver) || 0) + 1;
-    account.changedAt = new Date().toISOString();
+    const current = accountOf(badge);
+    if (!current || current.pending?.hash !== pending.hash || current.hash !== account.hash) return "";
+    current.salt = pending.salt;
+    current.hash = pending.hash;
+    current.kdf = pending.kdf;
+    current.pending = null;
+    current.sessions = [];
+    current.ver = (Number(current.ver) || 0) + 1;
+    current.changedAt = new Date().toISOString();
     saveAccounts();
     return "ok";
   }
@@ -204,16 +212,16 @@ function canRegister(badge) {
 }
 
 async function setPassword(badge, password, patch) {
-  const account = ensureAccount(badge);
   const { salt, hash, kdf } = await hashPassword(password);
+  const account = ensureAccount(badge);
   Object.assign(account, patch || {}, { salt, hash, kdf, pending: null, sessions: [], reopenUntil: null, ver: (Number(account.ver) || 0) + 1, changedAt: new Date().toISOString() });
   saveAccounts();
   return account;
 }
 
 async function setPending(badge, password, patch) {
-  const account = ensureAccount(badge);
   const { salt, hash, kdf } = await hashPassword(password);
+  const account = ensureAccount(badge);
   Object.assign(account, patch || {});
   account.pending = { salt, hash, kdf, exp: new Date(Date.now() + PENDING_MS).toISOString() };
   saveAccounts();
@@ -326,6 +334,19 @@ function readSession(token) {
 function currentSessionId(token) {
   const parts = tokenParts(token);
   return parts ? sessionKey(parts.sid) : "";
+}
+
+// Internal-only diagnostic. Never expose account existence through a public API.
+function sessionStatus(token) {
+  const parts = tokenParts(token);
+  if (!parts) return "signature_or_expiry_invalid";
+  const account = accountOf(parts.badge);
+  if (!account?.hash) return "account_missing";
+  if (String(Number(account.ver) || 0) !== parts.ver) return "version_revoked";
+  const row = liveSessions(account).find((item) => item.sid === parts.sid);
+  if (!row) return "session_revoked";
+  if (Date.now() - (Date.parse(row.lastSeen || row.createdAt) || 0) > IDLE_MS) return "idle_expired";
+  return "accepted";
 }
 
 const TOTP_STEP_MS = 30 * 1000;
@@ -702,6 +723,7 @@ function deriveKey(label) {
 }
 
 module.exports = {
+  sessionStatus,
   deriveKey,
   allowReregister,
   canRegister,

@@ -4642,6 +4642,11 @@ function securityHeaders(res) {
 
 const server = http.createServer((req, res) => {
   securityHeaders(res);
+  if (req.url === "/health/live" || req.url === "/health/ready") {
+    res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    res.end(JSON.stringify({ live: true, ready: true }));
+    return;
+  }
   const rawUrl = req.url || "/";
   const splitAt = rawUrl.indexOf("?");
   let urlPath = splitAt === -1 ? rawUrl : rawUrl.slice(0, splitAt);
