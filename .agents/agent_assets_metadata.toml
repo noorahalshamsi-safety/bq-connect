@@ -14,3 +14,31 @@ mtime_ms = 1793699592489
 storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/f5ac7502-d246-4590-a9c0-1adfb970d2b7/f51a1281-1c94-4bb1-95b9-69492e9dd60c"
 storage_version_token = "1793699678798799"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "feOrudP-rSAZz-c7S4uu4"
+uri = "file://reports/P0_ACCOUNT_PERSISTENCE_FORENSICS.md"
+type = "text"
+title = "P0 Account Persistence Forensic Report"
+description = "Storage identity evidence, exact startup trace, 34 synthetic scenarios, proposed P0 fixes, rollback plan and approval gates. Production incident root cause remains unverified."
+logical_id = "0962f34c-cec4-4738-8239-d2c9511ae6e7"
+content_hash = "sha256:f2473f69079ee963fe424fb94f062391d6299a359d3e0e006952911283c3fecf"
+size = 40639
+mtime_ms = 1793701143973
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/0962f34c-cec4-4738-8239-d2c9511ae6e7/9163be75-e738-462f-ba63-3ba039470aff"
+storage_version_token = "1793701246241968"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "Q30icdveTq_ZgkyEtmNT9"
+uri = "file://generated-artifacts/forensics/test-results.json"
+type = "unspecified"
+title = "Synthetic Persistence Test Evidence"
+description = "34 scenarios: 16 PASS, 18 failed safety expectations, 0 BLOCKED. Includes synthetic before/after counts and integrity hashes; no production records or credential values."
+logical_id = "c365ecc3-45ca-41b3-ac36-ec9e9909619c"
+content_hash = "sha256:c801dfe36666aabbbe5798bd81a0e923c1a2d6212a80e775a550581019223fa1"
+size = 150700
+mtime_ms = 1793700833925
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/c365ecc3-45ca-41b3-ac36-ec9e9909619c/1b50c651-f6a1-4b00-a0a8-30bd5c8f12cf"
+storage_version_token = "1793701247502229"
+content_type = "application/octet-stream"

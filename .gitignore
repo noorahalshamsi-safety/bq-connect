@@ -7,3 +7,4 @@ data-restored-*/
 *.tmp
 models/
 .vendor-tmp/
+/generated-artifacts/
