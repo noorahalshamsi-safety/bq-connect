@@ -1,0 +1,16 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "BqrBGEs-CKhPwUjFTRFLM"
+uri = "file://PRODUCTION_AUDIT.md"
+type = "text"
+title = "BQ Connect — Initial Production Audit"
+description = "Verified setup and scan findings, persistence evidence, limits, and prioritized next steps. The full authenticated audit is not complete."
+logical_id = "f5ac7502-d246-4590-a9c0-1adfb970d2b7"
+content_hash = "sha256:cc373b139064fba2caea411b1c02157cc01b00f3454c7160dd5816f8fc2eba93"
+size = 15179
+mtime_ms = 1793699592489
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/f5ac7502-d246-4590-a9c0-1adfb970d2b7/f51a1281-1c94-4bb1-95b9-69492e9dd60c"
+storage_version_token = "1793699678798799"
+content_type = "text/markdown"

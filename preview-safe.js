@@ -2,6 +2,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const net = require("net");
 const { spawn } = require("child_process");
 
 const source = __dirname;
@@ -40,6 +41,23 @@ const child = spawn(process.execPath, [path.join(sandbox, "server.js")], {
   stdio: "inherit",
 });
 
+// Preserve the imported external-port mapping without changing production ports.
+// The workflow uses 5000; the existing default preview route points to PORT (4173).
+const routedPort = Number(process.env.PORT) || 4173;
+const alias = routedPort === 5000 ? null : net.createServer((socket) => {
+  const upstream = net.connect(5000, "127.0.0.1");
+  socket.on("error", () => upstream.destroy());
+  upstream.on("error", () => socket.destroy());
+  socket.pipe(upstream).pipe(socket);
+});
+if (alias) {
+  alias.on("error", () => {
+    console.error("The isolated preview could not bind its imported port alias.");
+    child.kill("SIGTERM");
+  });
+  alias.listen(routedPort, "0.0.0.0");
+}
+
 let stopping = false;
 function cleanUp() {
   fs.rmSync(sandbox, { recursive: true, force: true });
@@ -48,6 +66,7 @@ function cleanUp() {
 function stop(signal) {
   if (stopping) return;
   stopping = true;
+  if (alias) alias.close();
   child.once("exit", () => {
     cleanUp();
     process.exit(0);

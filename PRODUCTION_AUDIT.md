@@ -1,6 +1,6 @@
 # BQ Connect — Initial Production Audit
 
-**Scope:** Read-only repository and configuration review, static security scans, and isolated development-preview startup. No employee/account data was opened, no production endpoint was tested, no production records were changed, and no publish or redeploy was performed.
+**Scope:** Initial repository/configuration review, static security scans, storage metadata checks, and isolated development-preview startup. No employee/account records or key values were opened, no production endpoint was tested, no production records were changed, and no publish or redeploy was performed. This is not the complete twelve-phase functional/security audit requested in the attached brief; authenticated journeys and incident verification remain outstanding.
 
 ## Executive summary
 
@@ -8,7 +8,7 @@ The project is a custom Node.js HTTP application with a plain JavaScript fronten
 
 The repository shows a deliberate persistence and recovery design, including guards against empty storage and unexpected decreases in key record counts. The reported “accounts disappear after republish” root cause is **NOT YET VERIFIED**: this review cannot establish which production bucket/data generation was restored at the time of an incident, or whether users experienced lost accounts versus invalidated sessions. Replit documents that deployment filesystem data is not persistent across republishing; the App Storage restore path is therefore critical.
 
-The deployment service currently reports a public VM deployment with a successful build. This audit did not request its URL or inspect runtime logs or employee-facing production responses.
+The deployment service currently reports a public VM deployment with a successful build. Recent deployment startup logs were returned alongside workflow logs: they show storage restore, an import/merge, and successful server startup. Storage metadata was checked read-only (existence of markers/files and aggregate vault snapshot counts); no employee-facing production responses were requested.
 
 **Most urgent:** preserve the current production configuration and data; verify the production bucket identity and restore/snapshot counts using an approved, read-only procedure; resolve the high-severity `uuid` advisory in a separate reviewed change.
 
@@ -26,7 +26,7 @@ The deployment service currently reports a public VM deployment with a successfu
 | Email/SMS/push | SMTP settings are file/environment-backed; SMS providers and web push are implemented. Their live credentials and end-to-end delivery were not checked. |
 | Tests and migrations | No README, automated test suite, or database migration files were found in the project root. The data model is JSON-file based. |
 
-Replit's current documentation says deployment filesystem data does not persist across republishing; persistent application data should use a database or App Storage. The configured App Storage path is present in code, but its production contents and history were not inspected.
+Replit's current documentation says deployment filesystem data does not persist across republishing; persistent application data should use a database or App Storage. The configured App Storage path is present in code. Metadata confirms the configured bucket is reachable, the seeded marker exists, and account/key objects and the vault index exist. This does not prove historical bucket identity or validate the underlying employee/account records. Source: [Replit publishing documentation](https://docs.replit.com/build/publish-your-app).
 
 ## Republish/account-loss investigation
 
@@ -34,13 +34,15 @@ Replit's current documentation says deployment filesystem data does not persist 
 
 Evidence from the repository:
 
-- `server.js` defines local JSON paths for employee/account and social data.
+- `server.js:22-48` defines local JSON paths for social, employee and media data; `auth.js:6-11` defines the account/key paths.
 - `.replit` configures the `vm` target, runs `node start.js`, and links an App Storage bucket.
-- `start.js` only loads `server.js` directly when storage syncing is disabled; for published deployments it restores App Storage first, checks for pending recovery/import requests and count drops, then starts syncing and the server.
+- `start.js:58-83` only loads `server.js` directly when storage syncing is disabled; for published deployments it restores App Storage first, checks for pending recovery/import requests and count drops, then starts syncing and the server.
 - `storage-sync.js` only enables mirroring in a published deployment. It restores remote files before serving and protects critical files from some replacement/deletion cases.
 - `vault.js` creates encrypted snapshots and compares account/employee/post counts to detect certain drops. The archive explicitly excludes media; media depends on the ordinary App Storage sync.
 - The development workspace contains ignored `data/` files. Their contents were deliberately not inspected or copied into the development preview.
 - Replit deployment metadata confirms the current deployment target is VM and the current build is successful; it does not identify the historical bucket or data loaded during a prior republish.
+- Read-only metadata from the configured bucket shows five vault entries. The newest snapshot is dated 2026-11-03 09:41:19 UTC and records 8 accounts, 17 non-story posts, and 6,311 employee-directory rows. The preceding two snapshots also record 8 accounts, with 2 posts each. These are snapshot aggregates, not a validation of current account records or evidence that the reported historical loss did not occur.
+- Recent startup logs show 35 files restored, followed by an import/merge and server startup. That is evidence the current restore path ran, not proof that it restored the correct historical generation.
 
 What remains unknown: the historical bucket ID and contents at the time of reported loss; whether the production process restored the expected bucket; whether the latest vault snapshot contains the affected records; whether only the session key/session records changed; and whether media was affected. No evidence in this workspace proves account deletion, bucket mismatch, or session invalidation as the root cause.
 
@@ -51,9 +53,9 @@ What remains unknown: the historical bucket ID and contents at the time of repor
 ### SEC-01 — High — vulnerable transitive `uuid` dependency
 
 - **Evidence:** Replit dependency audit reports `uuid@9.0.1`, advisory `GHSA-w5hq-g745-h8pq`, high severity. Scanner indicates a fix is available at `11.1.1`, requiring a major-version update.
-- **Impact:** A vulnerable dependency is present in the installed dependency graph. The exact import path and runtime exposure should be confirmed before upgrading.
+- **Impact:** A vulnerable dependency is present in the installed dependency graph. `npm ls uuid` traces it through `@replit/object-storage` → `@google-cloud/storage` → `gaxios` and `teeny-request`. Runtime exploitability was not tested.
 - **Status:** Open; no dependency was changed during this audit.
-- **Recommended action:** Identify the direct parent in the lockfile, review compatibility, update the parent or dependency in a dedicated change, then run dependency audit and app-level regression tests.
+- **Recommended action:** Review compatible updates to the storage SDK and its dependency tree in a dedicated change, then run dependency audit and storage regression tests. Do not apply an unreviewed major override to this production persistence path.
 - **Regression test:** dependency audit is clean and the affected feature path passes tests after the major-version change.
 
 ### SEC-02 — Medium — deployment data depends on successful App Storage restore/sync
@@ -95,7 +97,7 @@ These observations are code review evidence, not proof that every authorization 
 | Admin/moderation | Present | Present | JSON configuration/audit files | Server-side role checks present; all endpoints not tested | No |
 | Arabic/English translation | Present | Local model pipeline | In-memory bounded cache | Authenticated route and per-user limit | No model warm/download or quality test |
 | Daily prompts/sparks | Present | Local generation | JSON | Authenticated route | No |
-| PWA/mobile layout | Manifest/service worker and responsive frontend files present | Static assets | Browser cache | N/A | Desktop preview only |
+| PWA/mobile layout | Manifest/service worker and responsive frontend files present | Static assets | Browser cache | N/A | Entry screen visually checked at desktop and 390px mobile; signed-in UI not verified |
 | Backups/recovery | No user-facing UI assessment | Encrypted snapshots and restore helpers | App Storage | Operational actions not exercised | No |
 
 ## Scan and test results
@@ -106,9 +108,11 @@ These observations are code review evidence, not proof that every authorization 
 | SAST | **No findings reported** | Replit static scanner |
 | HoundDog privacy/security scan | **No findings reported** | Replit scanner |
 | Existing automated tests | **Not present** | No test/spec files found |
-| Production account persistence | **BLOCKED / NOT TESTED** | Requires approved read-only access to production storage/history; no production records were read |
+| Production account persistence | **NOT VERIFIED** | Current startup logs and snapshot metadata are consistent with an active restore path; incident-specific history and record integrity remain unverified |
 | Isolated development preview | **PASS** | Started from a temporary source copy with an empty data directory; it does not use workspace `data/` or `backups/` |
-| Authenticated end-to-end tests | **BLOCKED** | Safe synthetic employee/account fixtures and test mail/SMS services are not configured |
+| Authenticated end-to-end tests | **NOT TESTED** | Deferred from this setup/initial-review pass; a synthetic fixture harness and test mail/SMS services are still needed |
+| Syntax checks | **PASS** | `node --check` passed for the preview helper and the copied server modules |
+| Browser observations | **Warnings** | Unrecognized `bluetooth` Permissions-Policy feature; complex/password form accessibility warnings. No browser runtime error was reported on the entry screen. |
 
 ## Remediation roadmap
 

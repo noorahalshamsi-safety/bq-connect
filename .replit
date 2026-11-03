@@ -11,6 +11,10 @@ HOST = "0.0.0.0"
 localPort = 4173
 externalPort = 80
 
+[[ports]]
+localPort = 5000
+externalPort = 5000
+
 [deployment]
 deploymentTarget = "vm"
 build = ["npm", "install", "--omit=dev"]
@@ -18,3 +22,27 @@ run = ["node", "start.js"]
 
 [objectStorage]
 defaultBucketID = "replit-objstore-df2b12f8-b7e9-4f8b-bb9d-e3f13ecdeb0d"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "node preview-safe.js"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
