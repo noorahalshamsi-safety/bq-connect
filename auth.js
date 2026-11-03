@@ -13,13 +13,20 @@ const AUDIT_FILE = path.join(DATA_DIR, "security-log.json");
 const SESSION_MS = 3 * 24 * 60 * 60 * 1000;
 const SESSION_LIMIT = 15;
 const TOUCH_MS = 5 * 60 * 1000;
+const IDLE_MS = 24 * 60 * 60 * 1000;
 const DEVICE_MEMORY = 20;
 const LOCK_AFTER = 5;
 const LOCK_MS = 15 * 60 * 1000;
+const LOCK_MAX_MS = 24 * 60 * 60 * 1000;
+// Keys whose lockout doubles on every repeat, so guessing the 4 ID digits takes years instead of days.
+const ESCALATING = /^reg:/;
 const PENDING_MS = 24 * 60 * 60 * 1000;
 const MAIL_GAP_MS = 10 * 60 * 1000;
 const MAIL_DAILY = 5;
-const SCRYPT = { N: 32768, r: 8, p: 1, maxmem: 96 * 1024 * 1024 };
+// Hashes without a kdf field were made with SCRYPT_V1 and are upgraded on the next successful login.
+const SCRYPT_V1 = { N: 32768, r: 8, p: 1, maxmem: 96 * 1024 * 1024 };
+const SCRYPT = { N: 32768, r: 8, p: 3, maxmem: 96 * 1024 * 1024 };
+const KDF = 2;
 const PASSWORD_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
 
 function readJsonFile(file, fallback) {
@@ -122,22 +129,22 @@ function buildSecurityConfig() {
   };
 }
 
-function scryptHash(password, salt) {
+function scryptHash(password, salt, params = SCRYPT) {
   return new Promise((resolve, reject) => {
-    crypto.scrypt(String(password), Buffer.from(salt, "hex"), 64, SCRYPT, (error, key) => (error ? reject(error) : resolve(key.toString("hex"))));
+    crypto.scrypt(String(password), Buffer.from(salt, "hex"), 64, params, (error, key) => (error ? reject(error) : resolve(key.toString("hex"))));
   });
 }
 
 async function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString("hex");
-  return { salt, hash: await scryptHash(password, salt) };
+  return { salt, hash: await scryptHash(password, salt), kdf: KDF };
 }
 
-const DUMMY = { salt: crypto.randomBytes(16).toString("hex"), hash: crypto.randomBytes(64).toString("hex") };
+const DUMMY = { salt: crypto.randomBytes(16).toString("hex"), hash: crypto.randomBytes(64).toString("hex"), kdf: KDF };
 
 async function matches(password, record) {
   const target = record && record.salt && record.hash ? record : DUMMY;
-  const actual = Buffer.from(await scryptHash(password, target.salt), "hex");
+  const actual = Buffer.from(await scryptHash(password, target.salt, target.kdf === KDF ? SCRYPT : SCRYPT_V1), "hex");
   const expected = Buffer.from(target.hash, "hex");
   return target !== DUMMY && actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 }
@@ -158,11 +165,22 @@ function strongPassword(value) {
 async function checkLogin(badge, password, exists) {
   const account = exists ? accountOf(badge) : null;
   const text = String(password || "").slice(0, 128);
-  if (await matches(text, account)) return "ok";
+  if (await matches(text, account)) {
+    if (account.kdf !== KDF) {
+      const fresh = await hashPassword(text);
+      const current = accountOf(badge);
+      if (current && current.hash === account.hash) {
+        Object.assign(current, fresh);
+        saveAccounts();
+      }
+    }
+    return "ok";
+  }
   const pending = account && account.pending && Date.parse(account.pending.exp) > Date.now() ? account.pending : null;
   if (pending && (await matches(text, pending))) {
     account.salt = pending.salt;
     account.hash = pending.hash;
+    account.kdf = pending.kdf;
     account.pending = null;
     account.sessions = [];
     account.ver = (Number(account.ver) || 0) + 1;
@@ -175,17 +193,17 @@ async function checkLogin(badge, password, exists) {
 
 async function setPassword(badge, password, patch) {
   const account = ensureAccount(badge);
-  const { salt, hash } = await hashPassword(password);
-  Object.assign(account, patch || {}, { salt, hash, pending: null, sessions: [], ver: (Number(account.ver) || 0) + 1, changedAt: new Date().toISOString() });
+  const { salt, hash, kdf } = await hashPassword(password);
+  Object.assign(account, patch || {}, { salt, hash, kdf, pending: null, sessions: [], ver: (Number(account.ver) || 0) + 1, changedAt: new Date().toISOString() });
   saveAccounts();
   return account;
 }
 
 async function setPending(badge, password, patch) {
   const account = ensureAccount(badge);
-  const { salt, hash } = await hashPassword(password);
+  const { salt, hash, kdf } = await hashPassword(password);
   Object.assign(account, patch || {});
-  account.pending = { salt, hash, exp: new Date(Date.now() + PENDING_MS).toISOString() };
+  account.pending = { salt, hash, kdf, exp: new Date(Date.now() + PENDING_MS).toISOString() };
   saveAccounts();
   return account;
 }
@@ -285,6 +303,7 @@ function readSession(token) {
   if (!account || !account.hash || String(Number(account.ver) || 0) !== parts.ver) return "";
   const row = liveSessions(account).find((item) => item.sid === parts.sid);
   if (!row) return "";
+  if (Date.now() - (Date.parse(row.lastSeen || row.createdAt) || 0) > IDLE_MS) return "";
   if (Date.now() - (Date.parse(row.lastSeen) || 0) > TOUCH_MS) {
     row.lastSeen = new Date().toISOString();
     saveAccounts();
@@ -503,14 +522,17 @@ function locked(key) {
 
 function noteFailure(key) {
   const now = Date.now();
-  const row = failures.get(String(key)) || { n: 0, until: 0, first: now };
+  const row = failures.get(String(key)) || { n: 0, until: 0, first: now, strikes: 0 };
   if (now - row.first > LOCK_MS) {
     row.n = 0;
     row.first = now;
   }
+  if (row.strikes && now - row.until > LOCK_MAX_MS) row.strikes = 0;
   row.n += 1;
   if (row.n >= LOCK_AFTER) {
-    row.until = now + LOCK_MS;
+    row.strikes = (row.strikes || 0) + 1;
+    const span = ESCALATING.test(String(key)) ? Math.min(LOCK_MS * 2 ** (row.strikes - 1), LOCK_MAX_MS) : LOCK_MS;
+    row.until = now + span;
     row.n = 0;
     row.first = now;
   }
@@ -521,6 +543,20 @@ function noteFailure(key) {
 function clearFailures(key) {
   failures.delete(String(key));
 }
+
+setInterval(() => {
+  const now = Date.now();
+  failures.forEach((row, key) => {
+    const stale = row.strikes ? row.until < now && now - row.until > LOCK_MAX_MS : now - row.first > LOCK_MS;
+    if (stale) failures.delete(key);
+  });
+  mailLog.forEach((list, key) => {
+    if (!list.length || now - list[list.length - 1] > 24 * 60 * 60 * 1000) mailLog.delete(key);
+  });
+  usedTickets.forEach((until, key) => {
+    if (until < now) usedTickets.delete(key);
+  });
+}, 10 * 60 * 1000).unref();
 
 function mailAllowed(key) {
   const now = Date.now();

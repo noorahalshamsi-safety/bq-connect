@@ -376,12 +376,21 @@ function mediaLooksRight(ext, head) {
   return head.slice(4, 8).toString("ascii") === "ftyp";
 }
 
+function mediaInUse(media) {
+  const inHighlight = Object.values(readJson(HIGHLIGHTS, {})).some((list) =>
+    (Array.isArray(list) ? list : []).some((row) => (row.items || []).some((item) => item.media === media)));
+  return inHighlight || readIdeas().some((idea) => mediaSetOf(idea).includes(media) ||
+    (Array.isArray(idea.comments) && idea.comments.some((comment) => comment.media === media)));
+}
+
 function removeStoredMedia(media) {
   const stored = MEDIA_PATH.exec(String(media || ""));
   if (!stored) return;
-  const inHighlight = Object.values(readJson(HIGHLIGHTS, {})).some((list) =>
-    (Array.isArray(list) ? list : []).some((row) => (row.items || []).some((item) => item.media === media)));
-  if (!inHighlight) fs.unlink(path.join(MEDIA_DIR, `${stored[1]}.${stored[2]}`), () => {});
+  // Callers save the edited ideas synchronously right after this call; checking on the next turn sees
+  // that saved state, so a file another post or comment still points at is never deleted.
+  setImmediate(() => {
+    if (!mediaInUse(media)) fs.unlink(path.join(MEDIA_DIR, `${stored[1]}.${stored[2]}`), () => {});
+  });
 }
 
 function highlightsOf(badge) {
@@ -406,12 +415,128 @@ function storyArchive(badge) {
     .map((idea) => ({ id: idea.id, media: idea.media, text: idea.text || "", createdAt: idea.createdAt }));
 }
 
+function stripJpeg(data) {
+  const parts = [data.subarray(0, 2)];
+  let pos = 2;
+  while (pos + 4 <= data.length) {
+    if (data[pos] !== 0xff) return data;
+    const marker = data[pos + 1];
+    if (marker === 0xff) {
+      pos += 1;
+      continue;
+    }
+    if (marker === 0xda || marker === 0xd9) {
+      parts.push(data.subarray(pos));
+      return Buffer.concat(parts);
+    }
+    if ((marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
+      parts.push(data.subarray(pos, pos + 2));
+      pos += 2;
+      continue;
+    }
+    const length = data.readUInt16BE(pos + 2);
+    if (length < 2 || pos + 2 + length > data.length) return data;
+    // APP1 holds Exif (GPS, device) and XMP, APP13 holds IPTC, COM is free text.
+    if (marker !== 0xe1 && marker !== 0xed && marker !== 0xfe) parts.push(data.subarray(pos, pos + 2 + length));
+    pos += 2 + length;
+  }
+  return data;
+}
+
+function stripPng(data) {
+  const parts = [data.subarray(0, 8)];
+  let pos = 8;
+  while (pos + 12 <= data.length) {
+    const length = data.readUInt32BE(pos);
+    const type = data.toString("latin1", pos + 4, pos + 8);
+    const end = pos + 12 + length;
+    if (end > data.length) return data;
+    if (!["eXIf", "tEXt", "zTXt", "iTXt", "tIME"].includes(type)) parts.push(data.subarray(pos, end));
+    pos = end;
+    if (type === "IEND") return Buffer.concat(parts);
+  }
+  return data;
+}
+
+function stripWebp(data) {
+  let pos = 12;
+  while (pos + 8 <= data.length) {
+    const type = data.toString("latin1", pos, pos + 4);
+    const size = data.readUInt32LE(pos + 4);
+    if (pos + 8 + size > data.length) break;
+    if (type === "EXIF" || type === "XMP ") data.fill(0, pos + 8, pos + 8 + size);
+    pos += 8 + size + (size & 1);
+  }
+  return data;
+}
+
+function stripIsoMedia(data) {
+  const boxes = (start, end, visit) => {
+    let pos = start;
+    while (pos + 8 <= end) {
+      let size = data.readUInt32BE(pos);
+      let header = 8;
+      if (size === 1) {
+        if (pos + 16 > end) return;
+        size = Number(data.readBigUInt64BE(pos + 8));
+        header = 16;
+      } else if (size === 0) {
+        size = end - pos;
+      }
+      if (size < header || pos + size > end) return;
+      visit(data.toString("latin1", pos + 4, pos + 8), pos, header, size);
+      pos += size;
+    }
+  };
+  // Location and device tags live in moov/udta and moov/meta; renaming them to "free" keeps every offset valid.
+  boxes(0, data.length, (type, pos, header, size) => {
+    if (type !== "moov") return;
+    boxes(pos + header, pos + size, (child, at) => {
+      if (child === "udta" || child === "meta") data.write("free", at + 4, "latin1");
+    });
+  });
+  return data;
+}
+
+function stripMetadata(ext, data) {
+  try {
+    if (ext === "jpg") return stripJpeg(data);
+    if (ext === "png") return stripPng(data);
+    if (ext === "webp") return stripWebp(data);
+    if (ext === "mp4" || ext === "mov") return stripIsoMedia(data);
+  } catch {}
+  return data;
+}
+
+const UPLOAD_WINDOW_MS = 60 * 60 * 1000;
+const UPLOAD_MAX_FILES = 80;
+const UPLOAD_MAX_BYTES = 800 * 1024 * 1024;
+const uploadUse = new Map();
+
+function uploadRow(badge) {
+  const now = Date.now();
+  let row = uploadUse.get(String(badge));
+  if (!row || now > row.reset) {
+    row = { n: 0, bytes: 0, reset: now + UPLOAD_WINDOW_MS };
+    uploadUse.set(String(badge), row);
+  }
+  return row;
+}
+
 function receiveMedia(req, res) {
   const person = personFromToken(req.headers["x-session"]);
   if (!person) {
     send(res, 401, { error: "employee_required" });
     return;
   }
+  const quota = uploadRow(person.badge);
+  if (quota.n >= UPLOAD_MAX_FILES || quota.bytes >= UPLOAD_MAX_BYTES) {
+    res.setHeader("Retry-After", String(Math.ceil((quota.reset - Date.now()) / 1000)));
+    send(res, 429, { error: "limited" });
+    req.resume();
+    return;
+  }
+  quota.n += 1;
   const kind = MEDIA_TYPES[String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase()];
   if (!kind) {
     send(res, 415, { error: "bad_type" });
@@ -439,11 +564,13 @@ function receiveMedia(req, res) {
   });
   req.on("end", () => {
     if (failed) return;
-    const data = Buffer.concat(chunks);
-    if (data.length < 16 || !mediaLooksRight(kind.ext, data.subarray(0, 16))) {
+    const raw = Buffer.concat(chunks);
+    if (raw.length < 16 || !mediaLooksRight(kind.ext, raw.subarray(0, 16))) {
       send(res, 415, { error: "bad_type" });
       return;
     }
+    const data = stripMetadata(kind.ext, raw);
+    quota.bytes += data.length;
     const name = `${crypto.randomUUID()}.${kind.ext}`;
     fs.mkdirSync(MEDIA_DIR, { recursive: true });
     fs.writeFile(path.join(MEDIA_DIR, name), data, (error) => {
@@ -916,6 +1043,16 @@ setInterval(() => {
   apiHits.forEach((row, ip) => {
     if (now - row.start > 60 * 1000) apiHits.delete(ip);
   });
+  [attempts, ipFailures, forgotUse, uploadUse, translateUse, placeUse, writeUse].forEach((map) => {
+    map.forEach((row, key) => {
+      if (now > row.reset) map.delete(key);
+    });
+  });
+  [pendingOtp, pendingEmail].forEach((map) => {
+    map.forEach((row, key) => {
+      if (now > row.exp) map.delete(key);
+    });
+  });
 }, 5 * 60 * 1000).unref();
 
 const ipFailures = new Map();
@@ -973,6 +1110,42 @@ function tooManyAttempts(ip) {
   row.n += 1;
   attempts.set(ip, row);
   return row.n > 8;
+}
+
+function attemptsBlocked(ip) {
+  const row = attempts.get(ip);
+  return Boolean(row && Date.now() < row.reset && row.n >= 8);
+}
+
+const WRITE_LIMITS = { post: [20, 10 * 60 * 1000], comment: [60, 10 * 60 * 1000], group: [10, 24 * 60 * 60 * 1000] };
+const writeUse = new Map();
+
+function writeLimited(badge, kind) {
+  const [max, span] = WRITE_LIMITS[kind];
+  const key = `${kind}:${badge}`;
+  const now = Date.now();
+  const row = writeUse.get(key) || { n: 0, reset: now + span };
+  if (now > row.reset) {
+    row.n = 0;
+    row.reset = now + span;
+  }
+  row.n += 1;
+  writeUse.set(key, row);
+  return row.n > max;
+}
+
+const forgotUse = new Map();
+
+function forgotLimited(ip) {
+  const now = Date.now();
+  const row = forgotUse.get(ip) || { n: 0, reset: now + 60 * 60 * 1000 };
+  if (now > row.reset) {
+    row.n = 0;
+    row.reset = now + 60 * 60 * 1000;
+  }
+  row.n += 1;
+  forgotUse.set(ip, row);
+  return row.n > 10;
 }
 
 const translateUse = new Map();
@@ -1270,8 +1443,25 @@ function badgeFrom(token) {
   return person ? String(person.badge) : "";
 }
 
+const TOGGLE_NOTES = new Set(["like", "dislike", "repost", "comment-like"]);
+const NOTE_ECHO_MS = 10 * 60 * 1000;
+const noteEcho = new Map();
+
+// Toggling a like on and off must not flood the owner with notifications.
+function repeatedToggle(recipientBadge, note) {
+  if (!TOGGLE_NOTES.has(note.type) || !note.actorBadge) return false;
+  const now = Date.now();
+  const key = `${recipientBadge}|${note.actorBadge}|${note.type}|${note.ideaId || ""}|${note.text || ""}`;
+  const last = noteEcho.get(key) || 0;
+  if (noteEcho.size > 5000) noteEcho.forEach((at, item) => { if (now - at > NOTE_ECHO_MS) noteEcho.delete(item); });
+  if (now - last < NOTE_ECHO_MS) return true;
+  noteEcho.set(key, now);
+  return false;
+}
+
 function pushNote(recipientBadge, note) {
   if (!recipientBadge || String(recipientBadge) === String(note.actorBadge || "")) return;
+  if (repeatedToggle(String(recipientBadge), note)) return;
   const notes = readNotes();
   notes.push({
     id: crypto.randomUUID(),
@@ -2683,6 +2873,10 @@ async function handleApi(req, res, urlPath, params) {
     }
 
     if (urlPath === "/api/forgot") {
+      if (ipBlocked(ip) || forgotLimited(ip)) {
+        send(res, 429, { error: "limited" });
+        return;
+      }
       if (!auth.mailConfigured()) {
         send(res, 503, { error: "mail_off" });
         return;
@@ -2710,7 +2904,7 @@ async function handleApi(req, res, urlPath, params) {
       send(res, 400, { error: "weak" });
       return;
     }
-    if (!badge || auth.locked(`reg:${badge}`) || ipBlocked(ip)) {
+    if (!badge || auth.locked(`reg:${badge}`) || ipBlocked(ip) || attemptsBlocked(ip)) {
       send(res, 429, { error: "limited" });
       return;
     }
@@ -2719,6 +2913,7 @@ async function handleApi(req, res, urlPath, params) {
     const identity = person && code.length === 4 && codesMatch(person, badge, code) && phoneMatch(person, badge, body.mobile);
     if (!identity) {
       auth.noteFailure(`reg:${badge}`);
+      noteIpFailure(ip);
       auth.audit("register_fail", person ? publicId(badge) : "unknown", loginInfo(req, body));
       if (tooManyAttempts(ip)) send(res, 429, { error: "limited" });
       else send(res, 401, { error: "mismatch" });
@@ -2742,6 +2937,7 @@ async function handleApi(req, res, urlPath, params) {
       }
       if (!acceptOtp(badge, entered, body.mobile)) {
         auth.noteFailure(`reg:${badge}`);
+        noteIpFailure(ip);
         if (tooManyAttempts(ip)) send(res, 429, { error: "limited" });
         else send(res, 401, { error: "otp" });
         return;
@@ -3159,12 +3355,12 @@ async function handleApi(req, res, urlPath, params) {
     }
     if (action === "follow-department") {
       const department = String(body.department || "");
-      if (!department) {
+      const row = followsFor(person.badge);
+      if (!department || !(row.departments.includes(department) || department === person.department || allDepartments().includes(department))) {
         send(res, 400, { error: "bad_department" });
         return;
       }
       const all = readJson(FOLLOWS, {});
-      const row = followsFor(person.badge);
       row.departments = row.departments.includes(department) ? row.departments.filter((item) => item !== department) : [...row.departments, department];
       all[String(person.badge)] = row;
       writeJson(FOLLOWS, all);
@@ -3174,7 +3370,12 @@ async function handleApi(req, res, urlPath, params) {
     if (action === "profile") {
       const all = readJson(PROFILES, {});
       const photo = String(body.photo || "");
-      const safePhoto = /^data:image\/(png|jpeg|jpg|webp);base64,/i.test(photo) && photo.length <= 160000 ? photo : profileOf(person.badge).photo || "";
+      const picture = photo.length <= 160000 ? /^data:image\/(png|jpeg|jpg|webp);base64,([A-Za-z0-9+/]+={0,2})$/i.exec(photo) : null;
+      const pictureExt = picture ? { png: "png", jpeg: "jpg", jpg: "jpg", webp: "webp" }[picture[1].toLowerCase()] : "";
+      const pictureBytes = picture ? Buffer.from(picture[2], "base64") : null;
+      const safePhoto = pictureBytes && pictureBytes.length >= 16 && mediaLooksRight(pictureExt, pictureBytes.subarray(0, 16))
+        ? `data:image/${picture[1].toLowerCase()};base64,${stripMetadata(pictureExt, pictureBytes).toString("base64")}`
+        : profileOf(person.badge).photo || "";
       const bio = cleanText(body.bio, 160);
       if (bio !== (profileOf(person.badge).bio || "") && screenText(res, person, "bio", [bio])) return;
       all[String(person.badge)] = { bio, photo: body.photo === "" ? "" : safePhoto };
@@ -3377,6 +3578,12 @@ async function handleApi(req, res, urlPath, params) {
           return;
         }
         const badge = String(target.badge);
+        const fixedActor = auth.securityConfig().admins.has(String(person.badge));
+        const otherAdmin = badge !== String(person.badge) && adminBadges().has(badge);
+        if (!fixedActor && (op === "admin-on" || op === "admin-off" || (otherAdmin && (op === "reset-2fa" || op === "revoke")))) {
+          send(res, 403, { error: "fixed_admin_only" });
+          return;
+        }
         if (op === "reset-2fa") {
           if (badge === String(person.badge) || !auth.twoFactorOn(badge)) {
             send(res, 400, { error: "bad_op" });
@@ -3407,6 +3614,7 @@ async function handleApi(req, res, urlPath, params) {
           auth.clearFailures(badge);
           auth.clearFailures(`2fa:${badge}`);
           auth.clearFailures(`pw:${badge}`);
+          auth.clearFailures(`reg:${badge}`);
           auth.audit("unlocked_by_admin", publicId(badge));
         }
         if (op === "unban") liftBan(badge);
@@ -3421,6 +3629,10 @@ async function handleApi(req, res, urlPath, params) {
         }
         const badge = String(target.badge);
         if (body.revoke) {
+          if (badge !== String(person.badge) && adminBadges().has(badge) && !auth.securityConfig().admins.has(String(person.badge))) {
+            send(res, 403, { error: "fixed_admin_only" });
+            return;
+          }
           if (!auth.revokeSession(badge, body.revoke)) {
             send(res, 400, { error: "bad_session" });
             return;
@@ -3501,6 +3713,10 @@ async function handleApi(req, res, urlPath, params) {
         send(res, 400, { error: "text_required" });
         return;
       }
+      if (writeLimited(person.badge, "group")) {
+        send(res, 429, { error: "limited" });
+        return;
+      }
       if (screenText(res, person, "group", [name])) return;
       const groups = readJson(GROUPS, []);
       const group = { id: crypto.randomUUID(), name, department: person.department || "", members: [String(person.badge)], createdAt: new Date().toISOString() };
@@ -3554,6 +3770,10 @@ async function handleApi(req, res, urlPath, params) {
       send(res, 403, { error: "terms" });
       return;
     }
+    if (writeLimited(person.badge, "post")) {
+      send(res, 429, { error: "limited" });
+      return;
+    }
     const official = isAnnouncer(person);
     const officialOnly = type === "announcement" || type === "event";
     if (isAdminAccount(person) || (officialOnly ? !official : official && type !== "post" && type !== "story")) {
@@ -3561,6 +3781,12 @@ async function handleApi(req, res, urlPath, params) {
       return;
     }
     const thanks = type === "thanks" ? personByPid(body.thanksPid) : null;
+    const groupId = cleanText(body.groupId, 80);
+    const group = groupId ? readJson(GROUPS, []).find((item) => item.id === groupId) : null;
+    if (groupId && !(group && (group.members || []).map(String).includes(String(person.badge)))) {
+      send(res, 403, { error: "forbidden" });
+      return;
+    }
     const poll = type === "poll" ? (Array.isArray(body.options) ? body.options : []).map((option) => cleanText(option, 80)).filter(Boolean).slice(0, 4).map((option) => ({ text: option, votes: [] })) : [];
     const eventAt = type === "event" ? cleanEventAt(body.eventAt) : "";
     if ((type === "idea" || type === "suggestion" || type === "complaint" || type === "poll" || type === "article" || type === "event") && !title) {
@@ -3609,8 +3835,8 @@ async function handleApi(req, res, urlPath, params) {
       project: cleanText(body.project, 60),
       thanksBadge: thanks ? String(thanks.badge) : "",
       poll,
-      groupId: cleanText(body.groupId, 80),
-      groupName: cleanText(body.groupName, 60),
+      groupId: group ? group.id : "",
+      groupName: group ? cleanText(group.name, 60) : "",
       replies: REPLY_SCOPES.has(body.replies) ? body.replies : "all",
       status: type === "idea" || type === "complaint" ? "received" : "",
       statusLog: type === "idea" || type === "complaint" ? [statusEntry(person, "received")] : [],
@@ -3877,6 +4103,10 @@ async function handleApi(req, res, urlPath, params) {
         send(res, 403, { error: "replies_closed" });
         return;
       }
+      if (writeLimited(person.badge, "comment")) {
+        send(res, 429, { error: "limited" });
+        return;
+      }
       if (!text && !media) {
         send(res, 400, { error: "text_required" });
         return;
@@ -4128,6 +4358,12 @@ const server = http.createServer((req, res) => {
   try {
     urlPath = decodeURIComponent(urlPath);
   } catch {
+    res.writeHead(400);
+    res.end("Bad request");
+    return;
+  }
+  // fs calls throw synchronously on NUL bytes, which would take the whole process down.
+  if (urlPath.includes("\0")) {
     res.writeHead(400);
     res.end("Bad request");
     return;
