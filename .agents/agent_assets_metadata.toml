@@ -294,3 +294,17 @@ mtime_ms = 1793805827955
 storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/fb6f031d-41b1-44bc-9402-5261508a6199/84f8442a-cd58-4e49-92cd-275a1dcc0cec"
 storage_version_token = "1793805829273736"
 content_type = "text/html"
+
+[[outputs]]
+id = "UBg0R5YPv7h6BbM0rrE6p"
+uri = "file://generated-artifacts/production-preparation/live-source-discovery.html"
+type = "html"
+title = "Live-source discovery — findings and exact operator action"
+description = "Verified deployment metadata, explicit source/custody/inventory blockers, protected aggregate manifest procedure and documented production-provisioning limits."
+logical_id = "890a272b-020e-43b3-a7e6-e8e2203a8c5b"
+content_hash = "sha256:e6d736b4b96442c008e758ae7061d1881d87279f7fb0f32a2b66f236bd4dcd27"
+size = 12367
+mtime_ms = 1793806893407
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/890a272b-020e-43b3-a7e6-e8e2203a8c5b/b87cc967-d49a-4b38-ae3a-ab470f2175d4"
+storage_version_token = "1793806895488861"
+content_type = "text/html"

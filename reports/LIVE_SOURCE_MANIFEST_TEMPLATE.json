@@ -1,0 +1,256 @@
+{
+  "payload": {
+    "format": "BQ_PROTECTED_SOURCE_OBSERVATION_V1",
+    "observedAt": "1970-01-01T00:00:00.000Z",
+    "origin": "https://bq-connect.replit.app",
+    "revision": "UNCONFIRMED",
+    "algorithm": "HMAC-SHA256",
+    "authority": {
+      "kind": "unknown",
+      "runtimeBindingChecked": false,
+      "datasetHmac": null,
+      "generationHmac": null,
+      "bucketHmac": null,
+      "stableReadChecked": false,
+      "consistency": "unverified"
+    },
+    "custody": {
+      "sessionPresent": false,
+      "backupPresent": false,
+      "activeAndPendingFactorsChecked": false,
+      "originalSessionContinuityChecked": false,
+      "keySetHmac": null
+    },
+    "inventory": {
+      "accounts": null,
+      "employees": null,
+      "posts": null,
+      "comments": null,
+      "relationships": null,
+      "unmappedDataFiles": null,
+      "documents": {
+        "accounts.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "announce-seen.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "announcements.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "backup-status.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "backup.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "bookmarks.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "conduct.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "daily-sparks.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "dept-profiles.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "employees.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "follows.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "groups.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "highlights.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "ideas.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "join-requests.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "mail.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "messages.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "moderators.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "notifications.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "profiles.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "push-keys.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "push-subs.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "security-log.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "security.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "sms.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "smtp.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "vault-status.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        },
+        "views.json": {
+          "present": false,
+          "count": null,
+          "originalBytesHmac": null,
+          "semanticHmac": null,
+          "membershipHmac": null
+        }
+      },
+      "media": {
+        "objectCount": null,
+        "byteCount": null,
+        "missingReferences": null,
+        "unreadableObjects": null,
+        "referenceClosureChecked": false,
+        "manifestHmac": null
+      }
+    },
+    "writers": {
+      "inventoryComplete": false,
+      "processCount": null,
+      "httpWriters": null,
+      "backgroundWriters": null,
+      "externalWriters": null,
+      "pendingOperations": null,
+      "inventoryHmac": null
+    },
+    "recovery": {
+      "independentBackupAvailable": false,
+      "backupGenerationHmac": null,
+      "restoreReconciled": false,
+      "restoreGenerationHmac": null,
+      "mediaComplete": false
+    }
+  },
+  "signature": null
+}

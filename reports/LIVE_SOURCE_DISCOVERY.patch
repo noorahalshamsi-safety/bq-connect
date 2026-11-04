@@ -1,0 +1,338 @@
+diff --git a/deploy/managed/live-source-contract.cjs b/deploy/managed/live-source-contract.cjs
+new file mode 100644
+index 0000000..c86ee62
+--- /dev/null
++++ b/deploy/managed/live-source-contract.cjs
+@@ -0,0 +1,81 @@
++// Aggregate-only evidence boundary. Never loads app startup/auth/storage modules,
++// connects to a service, inspects a process, or authorizes migration/activation.
++const crypto=require("node:crypto");
++const documentNames=Object.keys(require("../../development/postgres/codec.cjs").specs).sort();
++const fail=code=>{const e=new Error(code);e.code=code;throw e;};
++const schema={
++  format:["BQ_PROTECTED_SOURCE_OBSERVATION_V1"],observedAt:"time",origin:["https://bq-connect.replit.app"],
++  revision:"revision",algorithm:["HMAC-SHA256"],
++  authority:{kind:["unknown","json-app-storage","json-local","postgresql","other"],runtimeBindingChecked:"boolean",
++    datasetHmac:"hmac",generationHmac:"hmac",bucketHmac:"hmac",stableReadChecked:"boolean",consistency:["unverified","observational","frozen"]},
++  custody:{sessionPresent:"boolean",backupPresent:"boolean",activeAndPendingFactorsChecked:"boolean",
++    originalSessionContinuityChecked:"boolean",keySetHmac:"hmac"},
++  inventory:{accounts:"count",employees:"count",posts:"count",comments:"count",relationships:"count",
++    unmappedDataFiles:"count",documents:Object.fromEntries(documentNames.map(name=>[name,{present:"boolean",count:"count",originalBytesHmac:"hmac",semanticHmac:"hmac",membershipHmac:"hmac"}])),
++    media:{objectCount:"count",byteCount:"count",missingReferences:"count",unreadableObjects:"count",referenceClosureChecked:"boolean",manifestHmac:"hmac"}},
++  writers:{inventoryComplete:"boolean",processCount:"count",httpWriters:"count",backgroundWriters:"count",
++    externalWriters:"count",pendingOperations:"count",inventoryHmac:"hmac"},
++  recovery:{independentBackupAvailable:"boolean",backupGenerationHmac:"hmac",restoreReconciled:"boolean",
++    restoreGenerationHmac:"hmac",mediaComplete:"boolean"}
++};
++function inspect(value,shape){
++  if(Array.isArray(shape)){if(!shape.includes(value))fail("source_evidence_enum");return;}
++  if(typeof shape==="object"){
++    if(!value||typeof value!=="object"||Array.isArray(value))fail("source_evidence_shape");
++    if(Object.keys(value).sort().join("\0")!==Object.keys(shape).sort().join("\0"))fail("source_evidence_fields");
++    for(const key of Object.keys(shape))inspect(value[key],shape[key]);return;
++  }
++  if(shape==="boolean"&&typeof value==="boolean")return;
++  if(shape==="count"&&(value===null||(Number.isSafeInteger(value)&&value>=0)))return;
++  if(shape==="hmac"&&(value===null||(typeof value==="string"&&/^[a-f0-9]{64}$/.test(value))))return;
++  if(shape==="revision"&&typeof value==="string"&&/^[a-zA-Z0-9_-]{7,80}$/.test(value))return;
++  if(shape==="time"&&typeof value==="string"&&/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value)&&new Date(value).toISOString()===value)return;
++  fail("source_evidence_type");
++}
++function canonical(value){
++  if(value&&typeof value==="object")return "{"+Object.keys(value).sort().map(k=>JSON.stringify(k)+":"+canonical(value[k])).join(",")+"}";
++  return JSON.stringify(value);
++}
++function template(shape=schema){
++  if(Array.isArray(shape))return shape[0];
++  if(typeof shape==="object")return Object.fromEntries(Object.entries(shape).map(([k,v])=>[k,template(v)]));
++  if(shape==="boolean")return false;
++  if(shape==="time")return "1970-01-01T00:00:00.000Z";
++  if(shape==="revision")return "UNCONFIRMED";
++  return null;
++}
++function verify(envelope,{publicKey,expectedRevision,now=Date.now(),maxAgeMs=60*60*1000}={}){
++  if(!envelope||Object.keys(envelope).sort().join(",")!=="payload,signature")fail("source_evidence_envelope");
++  inspect(envelope.payload,schema);
++  if(!publicKey||!expectedRevision||expectedRevision==="UNCONFIRMED")fail("source_evidence_trust_required");
++  if(typeof publicKey==="string"&&publicKey.includes("PRIVATE KEY"))fail("source_evidence_public_key_only");
++  const key=typeof publicKey==="string"?crypto.createPublicKey(publicKey):publicKey;
++  if(key?.type!=="public"||key.asymmetricKeyType!=="ed25519")fail("source_evidence_public_key_only");
++  if(envelope.payload.revision!==expectedRevision)fail("source_evidence_revision_mismatch");
++  const age=now-Date.parse(envelope.payload.observedAt);
++  if(!Number.isFinite(age)||age< -60000||age>maxAgeMs)fail("source_evidence_expired");
++  if(typeof envelope.signature!=="string"||!/^[A-Za-z0-9+/]{86}==$/.test(envelope.signature))fail("source_evidence_signature");
++  if(!crypto.verify(null,Buffer.from(canonical(envelope.payload)),key,Buffer.from(envelope.signature,"base64")))fail("source_evidence_signature");
++  const p=envelope.payload,a=p.authority,i=p.inventory,k=p.custody,w=p.writers,r=p.recovery;
++  const source=Boolean(a.kind==="json-app-storage"&&a.runtimeBindingChecked&&a.stableReadChecked&&
++    a.datasetHmac&&a.generationHmac&&a.bucketHmac&&a.consistency!=="unverified");
++  const inventory=Boolean(source&&["accounts","employees","posts","comments","relationships"].every(n=>i[n]!==null)&&
++    i.unmappedDataFiles===0&&Object.values(i.documents).every(d=>d.present&&d.count!==null&&d.originalBytesHmac&&d.semanticHmac&&d.membershipHmac)&&
++    i.media.objectCount!==null&&i.media.byteCount!==null&&i.media.missingReferences===0&&i.media.unreadableObjects===0&&i.media.referenceClosureChecked&&i.media.manifestHmac);
++  return {format:"BQ_SOURCE_EVIDENCE_CHECK_V1",signatureVerified:true,operatorClaims:{source,inventory,
++    keyCustody:Boolean(source&&k.sessionPresent&&k.backupPresent&&k.activeAndPendingFactorsChecked&&k.originalSessionContinuityChecked&&k.keySetHmac),
++    writerInventory:Boolean(w.inventoryComplete&&w.processCount!==null&&w.httpWriters!==null&&w.backgroundWriters!==null&&w.externalWriters!==null&&w.pendingOperations!==null&&w.inventoryHmac),
++    backupRestore:Boolean(source&&r.independentBackupAvailable&&r.restoreReconciled&&r.mediaComplete&&
++      r.backupGenerationHmac===a.generationHmac&&r.restoreGenerationHmac===a.generationHmac)},
++    migrationAuthorized:false,note:"Signature authenticates the protected operator observation, not independent inspection or release approval. Observational equality is not a writer freeze."};
++}
++module.exports={schema,template,canonical,verify,documentNames};
++if(require.main===module){
++  try{
++    if(process.argv[2]==="template"&&process.argv.length===3)console.log(JSON.stringify({payload:template(),signature:null},null,2));
++    else if(process.argv[2]==="check"&&process.argv.length===6){
++      const fs=require("node:fs"),read=p=>{if(fs.statSync(p).size>128*1024)fail("source_evidence_size");return fs.readFileSync(p,"utf8");};
++      console.log(JSON.stringify(verify(JSON.parse(read(process.argv[3])),{publicKey:read(process.argv[4]),expectedRevision:process.argv[5]})));
++    }else fail("usage_template_or_check_evidence_public_key_confirmed_revision");
++  }catch(e){console.error(JSON.stringify({error:e.code?.startsWith("source_")?e.code:"source_evidence_rejected",migrationAuthorized:false}));process.exitCode=1;}
++}
+diff --git a/reports/LIVE_SOURCE_DISCOVERY.md b/reports/LIVE_SOURCE_DISCOVERY.md
+new file mode 100644
+index 0000000..793e364
+--- /dev/null
++++ b/reports/LIVE_SOURCE_DISCOVERY.md
+@@ -0,0 +1,206 @@
++# BQ Connect — live-source discovery handoff
++
++Observed 2026-11-04. No previous development suite or architecture audit was rerun.
++
++## LIVE SOURCE — BLOCKED
++
++Authorized deployment metadata confirms the public Reserved VM at
++https://bq-connect.replit.app, with a successful build. Latest recorded successful
++build: `ac733296-a2e8-453a-8758-1346ca453389`, GCE, created
++2026-11-03 09:36:41 UTC, updated 09:41:36 UTC.
++
++The metadata APIs expose status, timing and machine sizing, **not** the serving
++process's source commit, environment, mounted JSON, bucket resolution, authority
++manifest or generation. Latest successful build history alone does not establish
++which generation the serving process has loaded. The GitHub managed branch is
++at `aa56f7b`; that does not mean this code is published.
++
++No production account/post/media files, raw logs, archives or signing keys were
++downloaded. The workspace bucket metadata reader was deliberately not used:
++workspace `defaultBucketID`, a seeded marker or an old vault index cannot prove
++the running VM's authority. No authenticated account/session was created.
++
++## EMPLOYEE INVENTORY — BLOCKED
++
++Live counts and membership fingerprints remain **unknown**, not zero. No
++synthetic development count has been substituted. No actual source manifest has
++been manufactured from the candidate's 28-path schema.
++
++Prepared exact aggregate-only evidence format:
++`deploy/managed/live-source-contract.cjs`.
++Generate the empty handoff template with:
++
++```sh
++node deploy/managed/live-source-contract.cjs template
++```
++
++It requires all 28 declared document paths, aggregate entity counts, original-byte,
++semantic and membership HMACs, unmapped-data-file count, complete media reference
++closure and unreadable/missing counts. Unknowns stay null. Extra record fields,
++raw account payloads, unknown paths and unkeyed digest algorithm declarations
++are rejected. An unmapped source file blocks completeness; it must not be omitted
++just because the candidate has only 28 codecs.
++
++### Minimum protected operator action
++
++The app owner must arrange **one read-only inspection of the actually serving
++published VM**, tied to its confirmed serving revision, in a protected execution
++environment. The available Agent APIs do not provide that filesystem/process
++access. If no deployment-specific read-only access is available to the owner,
++request a Replit/platform-assisted inspection; do not use workspace SSH as a
++substitute or republish to install a diagnostic endpoint.
++
++The operator must inspect locally and return **only** the aggregate template:
++
++1. Bind serving VM/process → actual code artifact → selected data directory and
++   resolved App Storage bucket → original authority/generation. Return keyed
++   fingerprints, never raw files or identifiers. If no generation exists, leave
++   it null and explicitly keep discovery blocked; do not create a marker.
++2. Verify local/remote binding and do repeated read-only manifests to detect
++   changes during observation. Equality is observational evidence, **not** a
++   global transaction boundary or a writer freeze.
++3. Count accounts, employees, posts, comments and relationships using the actual
++   deployed schema. Produce domain-separated keyed membership/semantic/original
++   byte HMACs, preserving opaque ID type/case/leading zeros and unknown fields.
++   Read/stream referenced media only inside that protected environment; return
++   totals and a keyed manifest, not object names, URLs or bytes. Make no durable
++   copy or deletion of the production bucket.
++4. Inspect key custody and writer/recovery evidence as below. Never require
++   `start.js`, authentication, restore or storage startup modules in the
++   diagnostic process; they may create keys, write state or execute requests.
++
++Keep a separate audit HMAC key in the protected environment; never reuse/export
++application keys. Include the entity domain, schema version and source context
++in every HMAC input. Existing `scripts/migration/rel001/membership-evidence.cjs`
++defines the reviewed keyed membership semantics; use only after confirming the
++deployed record shapes, not as a reason to export those records here.
++
++An owner-approved protected operator may sign the canonical aggregate payload
++with Ed25519. Establish its **public** verification key and serving revision
++independently; do not trust a key delivered with its own self-signed report.
++Then, in the isolated candidate:
++
++```sh
++node deploy/managed/live-source-contract.cjs check \
++  aggregate-evidence.json trusted-operator-public.pem CONFIRMED_SERVING_REVISION
++```
++
++The checker verifies the signature, strict privacy envelope, revision and
++one-hour freshness. It labels claims as operator claims, not independent proof,
++and **always returns `migrationAuthorized:false`**. Signing establishes
++provenance; it does not authorize a freeze, source export, import or release.
++
++## KEY CUSTODY — BLOCKED
++
++The configuration presence API reports SESSION_SECRET present; managed adapter
++session/backup env keys absent; DATABASE_URL present and platform-managed.
++This is current configuration/shared-scope presence, not the November 3
++process's actual environment or proof that any production SQL resource is used.
++
++It establishes neither original `data/session.key` / `data/backup.key` custody
++nor active/pending 2FA decryption continuity. The operator must check the keys
++actually used by the running artifact, verify original session-signature and
++active/pending factor domains in protected memory, and return only booleans and
++a keyed key-set fingerprint. No new keys, password resets, login attempts,
++token values or source key bytes are permitted.
++
++## ACTIVE WRITERS / PENDING OPERATIONS — BLOCKED
++
++Actual process/worker/queue inventories are not exposed by deployment metadata.
++The protected operator must account for HTTP/auth/account/session writers,
++post/comment/reaction/profile/media mutations, direct/admin/import scripts,
++scheduled maintenance/delivery, storage sync, snapshot/shutdown handlers,
++restore/import requests and other deployments/processes sharing the same bucket.
++Return process/writer/pending-operation counts and a keyed inventory.
++
++The workspace has sync, automatic snapshots, shutdown snapshots and recovery
++request code; these are **unverified candidate checks**, not an observed list of
++active production writers. Do not consume requests, flush queues, drain workers,
++change scheduling, restart or freeze the app during this read-only inspection.
++
++## BACKUP/RESTORE — BLOCKED
++
++No independent backup of the verified current authority or restoration was
++established. An index entry/existing archive is not proof of complete recoverable
++JSON, media, keys and accepted writes. Earlier synthetic restoration results
++do not qualify this deployment.
++
++The operator can read-only attest what existing independent backup custody and
++restore evidence already exists. Establishing a new protected independent copy
++and rehearsal needs separate authorization, destination, source-generation/media
++closure and key-custody evidence. The present no-copy/no-production-change
++instructions do not authorize doing that here.
++
++## PRODUCTION DATABASE PROVISIONING PATH
++
++Official current documentation specifies:
++
++- **Helium:** production is created through Publishing when development has data.
++- **Legacy Neon UI:** Production database settings → Create production database;
++  the optional “Set up your production database with your current development
++  data” copies development rows.
++- Publishing applies reviewed schema diffs; normal schema updates are not a
++  development-row copy. Initial creation must be distinguished from updates.
++
++The primary documentation does **not** establish a separate, no-republish,
++schema-only initial-provision command for this Helium project. It does not
++document the legacy no-copy checkbox as a guaranteed Helium control. A generated
++search summary was broader than the primary page; the primary page controls.
++
++Therefore: the supported route is the **Replit Publishing database flow**, but
++the exact no-copy/no-app-rollout initial provisioning capability remains
++**unverified and not executable under this assignment's no-republish rule**.
++The owner must obtain platform confirmation for this project and inspect its
++actual Publishing → Database settings without clicking Publish/Create/Copy.
++If schema-only initial provisioning cannot be positively confirmed, STOP.
++Do not clear development fixtures, clone the database, run custom production
++DDL, provision external Neon or publish simply to make a resource appear.
++
++Sources checked:
++- https://docs.replit.com/features/data-and-storage/development-and-production
++- https://docs.replit.com/features/publishing/overview
++- https://docs.replit.com/features/workspace-tools/ssh
++
++The SSH documentation describes development workspace/IDE connections; it does
++not establish that workspace SSH reaches the published Reserved VM.
++
++## MIGRATION READINESS / SAFE IMPLEMENTATION
++
++**NO-GO.** Actual authority, generation, inventory, keys, writers and recovery
++are unverified. Original frozen-generation adoption and the production delivery
++worker remain blocked. No real-data import, production resource creation,
++bucket copy/delete, live application change or republish occurred.
++
++The new evidence checker and its dedicated test file are isolated on
++`development/live-source-discovery-2026-11-04`, based on `aa56f7b`.
++**18 new evidence-boundary tests passed.** They use invented in-memory data and
++signing keys; they are not repeated database tests or live-source certification.
++The original application, deployment configuration and existing development
++fixtures were not changed. No push was requested/performed.
++
++The lossless procedure cannot become an executable real-data runbook until the
++actual source is attested. Its exact remaining gates are:
++
++1. Review the protected source manifest, classify every unmapped file/unknown
++   record and reconcile JSON/media closure against the actual deployed schema.
++2. Obtain separate backup/export/restore approval; prove independent byte and
++   key recovery for that generation in a protected environment.
++3. Approve no-fixture managed production creation and validate the actual
++   schema/TLS/principal-capability contracts through the supported platform flow.
++4. Implement/review the bound protected real-data adoption path and production
++   delivery worker. Existing REL-001 CLI is synthetic-only, not a live importer.
++5. After separate cutover approval, freeze/drain **all attested writers**,
++   capture the final immutable generation, import losslessly, reverse/reconcile
++   every original byte/semantic/membership/media proof and confirm session/factor
++   continuity before authority activation or publishing.
++6. Retain frozen JSON non-authoritatively; rollback must retain every newer
++   accepted SQL write, never revert to older JSON.
++
++## EXACT NEXT ACTION
++
++Have the app owner arrange the protected, read-only **serving-VM source
++attestation** described above, returning only signed aggregates/HMACs and its
++independently approved public verification key. Confirm the serving revision
++first; the latest build-list entry is not sufficient. If platform access cannot
++provide this inspection without a rollout, leave production untouched and
++obtain that capability through Replit/platform assistance.
+diff --git a/scripts/managed/live-source-contract-test.cjs b/scripts/managed/live-source-contract-test.cjs
+new file mode 100644
+index 0000000..77afde7
+--- /dev/null
++++ b/scripts/managed/live-source-contract-test.cjs
+@@ -0,0 +1,33 @@
++// New evidence-boundary tests only. No previous development suite is repeated.
++const assert=require("node:assert/strict"),crypto=require("node:crypto"),C=require("../../deploy/managed/live-source-contract.cjs");
++const {publicKey,privateKey}=crypto.generateKeyPairSync("ed25519"),now=Date.now();
++const clone=x=>JSON.parse(JSON.stringify(x)),hash=s=>crypto.createHmac("sha256","invented-test-audit-key-only").update(s).digest("hex");
++function fill(shape){
++  if(Array.isArray(shape))return shape[0];
++  if(typeof shape==="object")return Object.fromEntries(Object.entries(shape).map(([k,v])=>[k,fill(v)]));
++  return shape==="boolean"?true:shape==="count"?0:shape==="hmac"?hash("invented"):shape==="time"?new Date(now).toISOString():"invented-serving-revision";
++}
++const complete=fill(C.schema);complete.authority.kind="json-app-storage";complete.authority.consistency="observational";
++const sign=p=>({payload:p,signature:crypto.sign(null,Buffer.from(C.canonical(p)),privateKey).toString("base64")});
++const check=(p,options={})=>C.verify(sign(p),{publicKey,expectedRevision:complete.revision,now,...options});
++let pass=0;
++function test(name,fn){fn();pass++;console.log("PASS "+name);}
++test("Complete invented signed observation validates without authorizing migration",()=>{const r=check(complete);assert.equal(r.signatureVerified,true);assert.ok(Object.values(r.operatorClaims).every(Boolean));assert.equal(r.migrationAuthorized,false);});
++test("Unknown template does not become verified zero inventory",()=>{const p=C.template();p.revision=complete.revision;p.observedAt=complete.observedAt;assert.ok(Object.values(check(p).operatorClaims).every(x=>x===false));assert.equal(p.inventory.accounts,null);});
++test("Envelope cannot export employee fields",()=>assert.throws(()=>C.verify({...sign(complete),employee:"invented"},{}),/source_evidence_envelope/));
++test("Nested account records are refused",()=>{const p=clone(complete);p.inventory.records=[];assert.throws(()=>check(p),/source_evidence_fields/);});
++test("Untrusted signing key is refused",()=>assert.throws(()=>check(complete,{publicKey:crypto.generateKeyPairSync("ed25519").publicKey}),/source_evidence_signature/));
++test("Missing independent trust anchor is refused",()=>assert.throws(()=>check(complete,{publicKey:null}),/source_evidence_trust_required/));
++test("Private signing keys are not accepted as public trust inputs",()=>assert.throws(()=>check(complete,{publicKey:privateKey.export({type:"pkcs8",format:"pem"})}),/source_evidence_public_key_only/));
++test("Serving revision must be confirmed independently",()=>assert.throws(()=>check(complete,{expectedRevision:"other-revision"}),/source_evidence_revision_mismatch/));
++test("Stale evidence is refused",()=>assert.throws(()=>check(complete,{now:now+3600001}),/source_evidence_expired/));
++test("Future evidence is refused",()=>assert.throws(()=>check(complete,{now:now-60001}),/source_evidence_expired/));
++test("Different origin is refused",()=>{const p=clone(complete);p.origin="https://invented.invalid";assert.throws(()=>check(p),/source_evidence_enum/);});
++test("All 28 source paths are required",()=>{assert.equal(C.documentNames.length,28);const p=clone(complete);delete p.inventory.documents[C.documentNames[0]];assert.throws(()=>check(p),/source_evidence_fields/);});
++test("Unkeyed record digests are not a declared algorithm",()=>{const p=clone(complete);p.algorithm="SHA-256";assert.throws(()=>check(p),/source_evidence_enum/);});
++test("Unsafe counts are refused",()=>{const p=clone(complete);p.inventory.accounts=Number.MAX_SAFE_INTEGER+1;assert.throws(()=>check(p),/source_evidence_type/);});
++test("Missing generation cannot be invented from counts",()=>{const p=clone(complete);p.authority.generationHmac=null;assert.equal(check(p).operatorClaims.source,false);});
++test("Unmapped files or missing media block inventory completion",()=>{const p=clone(complete);p.inventory.unmappedDataFiles=1;assert.equal(check(p).operatorClaims.inventory,false);p.inventory.unmappedDataFiles=0;p.inventory.media.missingReferences=1;assert.equal(check(p).operatorClaims.inventory,false);});
++test("Backup restoration must reconcile the source generation",()=>{const p=clone(complete);p.recovery.restoreGenerationHmac=hash("different");assert.equal(check(p).operatorClaims.backupRestore,false);});
++test("Pending operations and observational stability do not authorize freeze or migration",()=>{const p=clone(complete);p.writers.pendingOperations=7;assert.equal(check(p).migrationAuthorized,false);assert.match(check(p).note,/not a writer freeze/);});
++console.log(JSON.stringify({suite:"new-source-evidence-boundary",pass,fail:0,liveSourceRead:false,productionTouched:false}));
