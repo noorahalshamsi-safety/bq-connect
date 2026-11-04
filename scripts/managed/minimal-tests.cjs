@@ -23,9 +23,13 @@ const source=S.prepare(raw,options),results=[];
 let child;
 async function test(name,fn){try{await fn();results.push({name,status:"PASS"});console.log("PASS "+name);}catch(e){results.push({name,status:"FAIL",code:e.code||e.message});throw e;}}
 async function boot(){
+  const firstLog=logs.length;
   child=spawn(process.execPath,[path.join(__dirname,"minimal-worker.cjs"),root],{cwd:proof.app,env:{...proof.childEnv,PORT:String(port)},stdio:["ignore","pipe","pipe"]});
   child.stdout.on("data",d=>logs.push(d.toString()));child.stderr.on("data",d=>logs.push(d.toString()));
-  for(let i=0;i<180;i++){if(child.exitCode!==null)throw Error("minimal_worker_exit");try{if((await fetch(`http://127.0.0.1:${port}/health/ready`)).status===200)return;}catch{}await sleep(100);}
+  for(let i=0;i<180;i++){if(child.exitCode!==null)throw Error("minimal_worker_exit");try{
+    if(logs.slice(firstLog).some(x=>x.includes("MINIMAL_STORAGE_HTTPS_PASSTHROUGH_OK"))&&
+      (await fetch(`http://127.0.0.1:${port}/health/ready`)).status===200)return;
+  }catch{}await sleep(100);}
   throw Error("minimal_worker_not_ready");
 }
 async function stop(){if(child&&child.exitCode===null){const done=new Promise(r=>child.once("exit",r));child.kill("SIGTERM");await Promise.race([done,sleep(3000)]);if(child.exitCode===null){child.kill("SIGKILL");await done;}}}
@@ -61,7 +65,10 @@ async function run(){
     await test("Historical social content starts empty; account security and bans remain",async()=>{for(const t of ["posts","comments","groups","notifications","profiles","person_follows","push_subscriptions"]){assert.equal((await c.query(`SELECT count(*)::int n FROM dev.${t}`)).rows[0].n,0);}const d=await repo.load(c);assert.deepEqual(d.get("accounts.json").value["105"].unknownSecurityExtension,{preserve:"invented-opaque"});assert.deepEqual(d.get("conduct.json").value.bans,{"104":true});assert.equal(d.get("conduct.json").value.warnings.length,1);});
     c.release();c=null;
     fs.writeFileSync(path.join(root,"provision-receipt.json"),JSON.stringify({dataset:proof.dataset,seal:proof.seal,state:"committed"}),{mode:0o600});
-    await test("Original SQL login/directory application boots from the imported minimal dataset",boot);
+    await test("Original SQL application boots and preserves non-SMS provider HTTPS transport",async()=>{
+      await boot();const end=Date.now()+3000;while(Date.now()<end&&!logs.some(x=>x.includes("MINIMAL_STORAGE_HTTPS_PASSTHROUGH_OK")))await sleep(50);
+      assert.ok(logs.some(x=>x.includes("MINIMAL_STORAGE_HTTPS_PASSTHROUGH_OK")));
+    });
     await test("Password verification succeeds; wrong passwords and bans are refused",async()=>{assert.equal((await request("/api/login",{badge:"101",password:fixture.credentials.password},"")).json.needTotp,true);assert.equal((await request("/api/login",{badge:"101",password:"InventedWrongPassword!"},"")).status,401);assert.equal((await request("/api/login",{badge:"104",password:fixture.credentials.password},"")).status,403);});
     await test("Legacy KDF and leading-zero identity still authenticate",async()=>{const r=await request("/api/login",{badge:"00106",password:fixture.credentials.password},"");assert.equal(r.status,200);assert.equal(r.json.needTotp,true);});
     await test("Existing session, system administrator and moderator permissions remain compatible",async()=>{assert.equal((await request("/api/session")).status,200);assert.equal((await request("/api/social",{action:"admin-summary"},"9001")).status,200);assert.equal((await request("/api/social",{action:"admin-summary"},"102")).status,200);assert.equal((await request("/api/social",{action:"admin-summary"},"103")).status,403);});

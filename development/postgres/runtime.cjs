@@ -220,7 +220,12 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
   const realHttps=https.request;
   https.request=(url,options,callback)=>{
     const host=typeof url==="string"?new URL(url).hostname:url.hostname;
-    if(!(minimalRelease?/^(api\.twilio\.com|api\.taqnyat\.sa|el\.cloud\.unifonic\.com)$/:/^(api\.twilio\.com|api\.taqnyat\.sa)$/).test(host||""))throw Error("external_transport_not_available");
+    if(!(minimalRelease?/^(api\.twilio\.com|api\.taqnyat\.sa|el\.cloud\.unifonic\.com)$/:/^(api\.twilio\.com|api\.taqnyat\.sa)$/).test(host||"")){
+      // Production App Storage and other SDK HTTPS must retain their real
+      // transport. Only the known SMS requests belong in the durable outbox.
+      if(minimalRelease)return realHttps(url,options,callback);
+      throw Error("external_transport_not_available");
+    }
     if(typeof options==="function"){callback=options;options={};}
     const chunks=[],request=new Writable({write(chunk,encoding,done){chunks.push(Buffer.from(chunk));done();}});
     request.setTimeout=()=>request;

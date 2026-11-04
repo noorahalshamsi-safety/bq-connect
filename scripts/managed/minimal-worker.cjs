@@ -1,6 +1,14 @@
 // Invented-data test child. Never used by the production command.
 const fs=require("node:fs"),path=require("node:path"),{Repository}=require("../../development/postgres/repository.cjs");
 const proof=require("../../development/postgres/isolation.cjs").verify(process.argv[2]),repo=new Repository(proof);
+const https=require("node:https"),nativeHttps=https.request,{Writable,Readable}=require("node:stream");
+https.request=(url,options,callback)=>{
+  const host=typeof url==="string"?new URL(url).hostname:url.hostname;
+  if(host!=="storage-probe.example.invalid")return nativeHttps(url,options,callback);
+  if(typeof options==="function")callback=options;
+  const req=new Writable({write(chunk,encoding,done){done();}});
+  req.on("finish",()=>{const res=Readable.from(["invented-storage-response"]);res.statusCode=200;callback(res);});return req;
+};
 require("../../development/postgres/runtime.cjs").serve(proof,repo,{minimalRelease:true,deliverMail:async(to,subject,text)=>{
   const r=await repo.pool.query("SELECT count(*)::int AS n FROM dev.outbox WHERE topic='mail' AND delivered_at IS NULL");
   if(!r.rows[0].n)throw Error("test_delivery_before_commit");
@@ -10,5 +18,11 @@ require("../../development/postgres/runtime.cjs").serve(proof,repo,{minimalRelea
   const r=await repo.pool.query("SELECT count(*)::int AS n FROM dev.outbox WHERE topic='sms' AND delivered_at IS NULL");
   if(!r.rows[0].n)throw Error("test_sms_before_commit");
   fs.appendFileSync(path.join(proof.root,"invented-sms.jsonl"),JSON.stringify(payload)+"\n",{mode:0o600});
-}}).then(app=>{for(const sig of ["SIGTERM","SIGINT"])process.on(sig,()=>app.close().finally(()=>process.exit(0)));})
+}}).then(async app=>{
+  await new Promise((resolve,reject)=>{const req=https.request({hostname:"storage-probe.example.invalid",path:"/"},res=>{
+    res.resume();res.on("end",()=>res.statusCode===200?resolve():reject(Error("storage_probe_failed")));
+  });req.on("error",reject);req.end();});
+  console.log("MINIMAL_STORAGE_HTTPS_PASSTHROUGH_OK");
+  for(const sig of ["SIGTERM","SIGINT"])process.on(sig,()=>app.close().finally(()=>process.exit(0)));
+})
 .catch(()=>{console.error("minimal invented worker startup failed");process.exit(1);});
