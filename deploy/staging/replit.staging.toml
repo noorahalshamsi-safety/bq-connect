@@ -1,0 +1,28 @@
+# .replit for the SEPARATE BQ Connect staging Repl only; see deploy/staging/README.md.
+# Copy this over .replit in the staging Repl before running anything there.
+# Never apply it to the production Repl. Replace the bucket placeholder with the
+# Bucket ID created in the staging Repl's own App Storage tool.
+modules = ["nodejs-22"]
+run = "node deploy/staging/preflight.cjs"
+entrypoint = "deploy/staging/start-staging.cjs"
+hidden = [".config", "node_modules", "package-lock.json"]
+
+[env]
+PORT = "4173"
+HOST = "0.0.0.0"
+
+[[ports]]
+localPort = 4173
+externalPort = 80
+
+[deployment]
+deploymentTarget = "vm"
+build = ["npm", "ci", "--omit=dev"]
+run = ["node", "deploy/staging/start-staging.cjs"]
+
+[objectStorage]
+defaultBucketID = "REPLACE-WITH-STAGING-BUCKET-ID"
+
+[nix]
+channel = "stable-25_05"
+packages = ["postgresql_16"]
