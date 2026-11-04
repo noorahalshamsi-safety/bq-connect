@@ -6,6 +6,8 @@ Scope: invented fixture data only. No production storage, real employee data, re
 
 **Verdict: Production remains NO-GO.** No mandatory blocker in the 18-item register is closed by this work. Synthetic tests are not presented as evidence for any approval-gated gate.
 
+Sections 1–15 describe the development continuation. Section 16 records the finalization, push-safety checks and the full regression re-run done before publishing the branch.
+
 Every claim below is labelled with one of three evidence levels:
 
 - **EXECUTED**: actually run here, with the observed result.
@@ -22,8 +24,8 @@ Every claim below is labelled with one of three evidence levels:
 | New clone `Documents\bq-connect` | Cloned from `origin` (`github.com/noorahalshamsi-safety/bq-connect`), branch `handoff/replit-rel001-2026-11-04` | EXECUTED |
 | Handoff commit | `git rev-parse 44b91cb` = `44b91cbfae69bd793246c6fe462f53659ec50c13`, matching the handoff exactly | EXECUTED |
 | `main` used as base | No | EXECUTED |
-| Push / merge | None performed. All commits are local only. | EXECUTED |
-| Line endings | `core.autocrlf=input`. `.sh` files are forced to LF through `.gitattributes`. `git ls-files --eol` shows `i/lf w/lf` for every changed file. | EXECUTED |
+| Push / merge | No merge. The handoff branch is pushed only after the section 16 checks; `main` is not touched. | EXECUTED |
+| Line endings | `core.autocrlf=input`. The pre-existing `.gitattributes` (unchanged by this work) forces `.sh` files to LF. `git ls-files --eol` shows `i/lf w/lf` for every changed file. | EXECUTED |
 
 ## 2. Environment status
 
@@ -62,7 +64,7 @@ All baseline runs were EXECUTED on PostgreSQL 16.15 and Node 22.23.4.
 |---|---|---|
 | `c6d62f6` | Root lockfile installable outside Replit: 14 `package-firewall.replit.internal` URLs changed to `registry.npmjs.org`, integrity unchanged | `package-lock.json` |
 | `f274863` | REL-016: removed the unused `zod` devDependency from the preview, rewrote lockfile URLs (317). Clean install audits 0 vulnerabilities, and a clean build's output is byte-identical. | `artifacts/mockup-sandbox/package.json`, `package-lock.json` |
-| `083becf` | WSL user-space setup and sequential synthetic suite runner | `development/local/wsl-tools.sh`, `development/local/run-suites.sh`, `.gitattributes` |
+| `083becf` | WSL user-space setup and sequential synthetic suite runner | `development/local/wsl-tools.sh`, `development/local/run-suites.sh` |
 | `904617a` | REL-012: translate each piece separately; keep URLs, e-mail and emoji verbatim; bound generation length; retry and fall back on degenerate output; invented-corpus regression; Phase 2G G08 updated to the precise verbatim expectation | `translate.js`, `scripts/translation/regression.cjs`, `development/local/fetch-models.cjs`, `development/local/translation-experiment.cjs`, `scripts/postgres/phase2g/tests.cjs` |
 | `bb91400` | REL-012: no silent truncation. The engine refuses input over 3000 characters. The client translates a word-bounded prefix of long articles (articles allow 4000) and shows a partial-translation note in Arabic and English. | `translate.js`, `public/js/posting.js`, `public/js/secure.js`, `scripts/translation/regression.cjs` |
 | `654f265` | REL-010/REL-015: route, action and op inventory; forwarded-IP trust test; coverage for the four previously unexercised entries | `scripts/security/route-inventory.cjs`, `scripts/security/forwarded-ip.cjs`, `scripts/security/coverage-gaps.cjs` |
@@ -210,7 +212,7 @@ Regression re-runs after all changes (EXECUTED):
 
 ## 15. Next actions
 
-1. Repository owner: review the seven local commits on `handoff/replit-rel001-2026-11-04` and authorize push or PR separately. Nothing has been pushed.
+1. Repository owner: review the handoff branch commits (section 16). Any merge to `main` or production release needs separate approval.
 2. Preview maintainer: install `typescript` in the preview graph or confirm that the typecheck can be skipped, then close REL-016.
 3. Security and data owners: decide the REL-008 media policy and the REL-010 retention matrix. Set `TRUST_PROXY` to the exact hosted hop count, and decide whether the loopback auto-trust should remain.
 4. Multilingual reviewer: score the invented corpus output from `scripts/translation/regression.cjs` in both directions. Decide the external translate-link policy.
@@ -231,3 +233,95 @@ node scripts/security/forwarded-ip.cjs
 node scripts/security/coverage-gaps.cjs
 node scripts/security/route-inventory.cjs
 ```
+
+## 16. Finalization and push-safety verification (2026-11-04)
+
+### What each part of the repository is for
+
+| Area | Entry point | Status |
+|---|---|---|
+| Local synthetic development | `node development/postgres/launch.cjs` (see `development/postgres/README.md`, `replit.md`) | Invented fixtures only; refuses deployment activation |
+| PostgreSQL migration tooling | `scripts/migration/rel001/` with `reports/REL001_OPERATOR_RUNBOOK.md` | Synthetic lab evidence only; protected inventory and real import NOT authorized |
+| Original legacy production | `start.js` (`npm start`) with App Storage synchronization | Unchanged by this work; do not use it for local testing |
+| Release blockers | `reports/POSTGRESQL_PHASE2G_BLOCKERS.json` (authoritative) and section 11 above | 15 mandatory items open (6 P0 + 9 P1); REL-016–018 optional |
+
+### Repository state before push (EXECUTED)
+
+- The working branch is `handoff/replit-rel001-2026-11-04`. The remote branch was still at the handoff baseline `44b91cb` when fetched: local was 0 behind and 8 ahead, a strict fast-forward. Remote `main` was at `d64050c` and is not part of this push.
+- Outgoing commits:
+  - `c6d62f6` lockfile URLs
+  - `f274863` preview zod removal
+  - `083becf` WSL setup
+  - `904617a` translation fixes
+  - `bb91400` no silent truncation
+  - `654f265` security inventory and tests
+  - `aa28f06` post-edit fix
+  - `a20e189` report
+  - `7799f3c` ignore `.env` files
+  - the documentation commit containing this section
+- Working tree clean; no untracked files. The only ignored local content is `generated-artifacts/`: the synthetic PostgreSQL cluster, fixture credentials, public model cache and local logs. None of it is tracked.
+
+### Push-safety checks (EXECUTED)
+
+| Check | Result |
+|---|---|
+| Redacted secret scan of every added line in `44b91cb..HEAD` (private keys, GitHub/AWS/Google/Slack/npm tokens, JWTs, bearer values, assigned passwords/secrets, database URLs with passwords, the fixture password, Saudi national-ID and mobile patterns, long hex/base64 blobs) | 0 secret findings. The one rule hit is this report's own mention of the private-registry hostname. |
+| Banned paths in outgoing files (`data/`, `backups/`, `models/`, `node_modules/`, `generated-artifacts/`, `.env*`, `*.bqb`, `*.key`, `*.pem`, model weights, databases, credential bundles) | none; no outgoing file exceeds 1 MiB |
+| Tracked sensitive paths in the whole tree | none |
+| Private Replit registry URLs in lockfiles | 0 in both lockfiles, and none left anywhere else in the tree |
+| Lockfile integrity | Root: 14 `resolved` URLs changed, 0 `integrity` values changed. Preview: 316 URLs changed and `zod` removed; 0 `integrity` values changed. The only other change is `zod` dropped from the root `devDependencies`. |
+| `start.js` and production deployment files | not modified by any outgoing commit |
+
+### Final regression matrix (EXECUTED on `a20e189`; later commits change only `.gitignore` and this report)
+
+Environment: Node v22.23.4, npm 10.9.9, PostgreSQL 16.15, WSL2 Ubuntu 24.04.4.
+
+| Suite | Result |
+|---|---|
+| REL-001 migration tests | 24/24 PASS |
+| REL-001 boundary tests | 7/7 PASS |
+| HTTP compatibility (`scripts/postgres/e2e.cjs`) | 56/56 PASS |
+| REL-001 compatibility e2e / parity | 56/56, 9/9 PASS |
+| Hardening | 27/27 PASS |
+| Native profile parity (`phase2c-parity`) | 9/9 PASS |
+| Background reliability (`phase2c-background`) | both modes ready, 0 refusals |
+| Phase 2D reliability | 11/11 PASS |
+| Phase 2F / Phase 2G | 16/16, 11/11 PASS |
+| Architecture validation | 20/20 PASS |
+| Translation regression | unit 4/4, ar→en 6/6, en→ar 6/6 (RSS ~590 MiB, max warm 0.8 s) |
+| Security coverage gaps / forwarded-IP | 4/4, 9/9 PASS |
+| Root `npm audit` | 6 moderate, 0 high, 0 critical (uuid chain under `@replit/object-storage`; REL-006 OPEN) |
+| Preview `npm audit` / build | 0 vulnerabilities; build succeeded |
+| Not re-run in this pass | persistence harness (unchanged code paths; last result 43 PASS / 1 FAIL T18 / 9 BLOCKED, the documented baseline), Phase 2C two-model engine probe (historically BLOCKED by its 768 MiB guard), Phase 2E |
+
+No assertion was weakened and no fence was removed to obtain these results.
+
+### Clean-clone installation and startup (EXECUTED)
+
+- `git clone --branch handoff/replit-rel001-2026-11-04` into an empty WSL folder gave HEAD `a20e189`.
+- Root `npm ci`: 146 packages, and preview `npm ci`: 248 packages, both from `https://registry.npmjs.org/`. No private-registry reference remains in the lockfiles or installed trees.
+- Started `node development/postgres/launch.cjs` with a minimal environment (`PATH`, `HOME`, `LANG` only; no credentials or Replit variables):
+  - It printed "Synthetic PostgreSQL development only; no production storage is connected."
+  - `/health/ready` returned 200 on port 5000 and on the 4173 alias.
+  - An unauthenticated `/api/session` returned 401.
+  - It created only the ignored `generated-artifacts/pg-development/` root (fixture credential file mode 600) and left no tracked changes.
+  - The launcher was then stopped.
+
+### Remaining local environment limitations
+
+- No packaged headless browser runner. Browser rows were run in Cursor's built-in browser with DOM-dispatched interactions; no real device or PWA install.
+- Translation is disabled in the ordinary dev preview, so the partial-translation note is not browser-tested.
+- The preview graph has no `typescript`, so the preview typecheck cannot run.
+- WSL clears `/tmp` when idle, so logs go to `~/bqlogs`. `/mnt/c` cannot host the PostgreSQL data directory, so tests run in a WSL-native mirror.
+- No hosted PostgreSQL, object storage, mail/SMS/push provider or key custody is available, by design.
+
+### Changes since the previous version of this report
+
+- `7799f3c`: `.gitignore` now excludes `.env` and `.env.*` (no such file is tracked or needed).
+- Corrected section 1 and section 4: `.gitattributes` predates this work.
+- Added this section. No historical report or test expectation was changed.
+
+### Verdicts
+
+- **Development readiness: READY** for continued local synthetic development and review from a clean clone, without Replit's private registry.
+- **Production readiness: NO-GO.** All 15 mandatory blockers (REL-001 to REL-015) remain open, as listed in section 11.
