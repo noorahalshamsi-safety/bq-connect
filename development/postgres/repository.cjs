@@ -12,6 +12,10 @@ function codecFileTables(file){
   }
   return fileTables.get(file);
 }
+const controlDdl={
+  requestColumns:"ALTER TABLE dev.requests ADD COLUMN created_at timestamptz NOT NULL DEFAULT clock_timestamp(), ADD COLUMN expires_at timestamptz NOT NULL DEFAULT (clock_timestamp()+interval '5 minutes'), ADD COLUMN policy text NOT NULL DEFAULT 'encrypted'",
+  faultPoints:["ALTER TABLE dev.test_faults DROP CONSTRAINT IF EXISTS test_faults_point_check",
+    "ALTER TABLE dev.test_faults ADD CONSTRAINT test_faults_point_check CHECK(point IN('before_commit','during_commit','unknown_commit','after_commit_drop','handler_timeout'))"]};
 function receipt(proof,state,exclusive=false) {
   const fd=fs.openSync(path.join(proof.root,"provision-receipt.json"),exclusive?"wx":"w",0o600);
   try{fs.writeFileSync(fd,JSON.stringify({dataset:proof.dataset,seal:proof.seal,state}));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
@@ -49,13 +53,12 @@ class Repository {
       await c.query("BEGIN");await c.query("SELECT pg_advisory_xact_lock(1793705963)");await this.verify(c);
       const columns=await c.query("SELECT column_name FROM information_schema.columns WHERE table_schema='dev' AND table_name='requests'");
       if(!columns.rows.some(r=>r.column_name==="expires_at")){
-        await c.query("ALTER TABLE dev.requests ADD COLUMN created_at timestamptz NOT NULL DEFAULT clock_timestamp(), ADD COLUMN expires_at timestamptz NOT NULL DEFAULT (clock_timestamp()+interval '5 minutes'), ADD COLUMN policy text NOT NULL DEFAULT 'encrypted'");
+        await c.query(controlDdl.requestColumns);
         // Old rows cannot be classified safely: preserve dedupe tombstones but
         // retire plaintext response material, including credentials/tokens.
         await c.query("UPDATE dev.requests SET body=''::bytea,headers='{}'::jsonb,policy='retired'");
       }
-      await c.query("ALTER TABLE dev.test_faults DROP CONSTRAINT IF EXISTS test_faults_point_check");
-      await c.query("ALTER TABLE dev.test_faults ADD CONSTRAINT test_faults_point_check CHECK(point IN('before_commit','during_commit','unknown_commit','after_commit_drop','handler_timeout'))");
+      for(const sql of controlDdl.faultPoints)await c.query(sql);
       for(const r of (await c.query("SELECT * FROM dev.runtime_state")).rows)if(!r.value?.sealed)
         await c.query("UPDATE dev.runtime_state SET value=$2::jsonb WHERE name=$1",[r.name,JSON.stringify(this.vault.json(r.value,`state:${r.name}`))]);
       for(const r of (await c.query("SELECT id,payload FROM dev.outbox")).rows)if(!r.payload?.sealed&&!r.payload?.redacted)
@@ -214,4 +217,4 @@ class Repository {
     }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
   }
 }
-module.exports={Repository,hash};
+module.exports={Repository,hash,controlDdl};

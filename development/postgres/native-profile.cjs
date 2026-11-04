@@ -1,14 +1,16 @@
 // Narrow development read slice. Original auth/session/rate-limit handlers run
 // unchanged, under the same advisory lock. No native writer is introduced.
 const dependencies=["accounts.json","employees.json","security.json","moderators.json","conduct.json"];
+const indexes=[
+  "CREATE INDEX IF NOT EXISTS native_profile_badge ON dev.profiles(entry_key)",
+  "CREATE INDEX IF NOT EXISTS native_follow_value ON dev.person_follows((attrs #>> '{}'))",
+  "CREATE INDEX IF NOT EXISTS native_follow_badge ON dev.follows(entry_key)",
+  "CREATE INDEX IF NOT EXISTS native_follow_complex ON dev.person_follows(id) WHERE jsonb_typeof(attrs)='array'"];
 async function prepare(repo){
   const c=await repo.pool.connect();
   try{
     await c.query("BEGIN");await c.query("SELECT pg_advisory_xact_lock(1793705963)");await repo.verify(c);
-    await c.query("CREATE INDEX IF NOT EXISTS native_profile_badge ON dev.profiles(entry_key)");
-    await c.query("CREATE INDEX IF NOT EXISTS native_follow_value ON dev.person_follows((attrs #>> '{}'))");
-    await c.query("CREATE INDEX IF NOT EXISTS native_follow_badge ON dev.follows(entry_key)");
-    await c.query("CREATE INDEX IF NOT EXISTS native_follow_complex ON dev.person_follows(id) WHERE jsonb_typeof(attrs)='array'");
+    for(const sql of indexes)await c.query(sql);
     await c.query("COMMIT");
   }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
 }
@@ -54,4 +56,4 @@ async function person(context,body,viewer,original){
     mine:badge===actor,followed:row.followed,followers:Number(row.followers),following:Number(row.following)
   }});
 }
-module.exports={dependencies,prepare,eligible,safe,person};
+module.exports={dependencies,indexes,prepare,eligible,safe,person};
