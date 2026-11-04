@@ -1,0 +1,4 @@
+{
+  "about": "Reviewed staging approvals. Each entry authorizes listed operations for one exact staging binding (see deploy/staging/README.md). Empty means every staging operation is refused.",
+  "approvals": []
+}
