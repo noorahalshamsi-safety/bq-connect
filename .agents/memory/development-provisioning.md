@@ -17,3 +17,15 @@ in invented-data tests.
 recovery/adoption tools and tests. Treat fresh provision, normal restart and
 operator-authorized recovery as separate decisions; never infer one from empty
 tables or a generic activation flag.
+
+Synthetic migration tooling is authorized only for staging, reconciliation and
+reverse reconstruction. A successful reverse export does not authorize returning
+data to legacy production or activating a new authority.
+
+**Why:** The user explicitly separated development migration rehearsal from
+protected discovery, real key custody, old-writer freeze, cutover and separately
+authorized rollback.
+
+**How to apply:** Keep protected adoption blocked behind explicit source and
+destination identities, frozen-generation/backup/custody evidence and operator
+approvals; never add a generic production-mode or force-adoption switch.

@@ -238,3 +238,31 @@ mtime_ms = 1793768126571
 storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/d8dfd5c0-5541-4e34-a63c-532681bc8459/995eef7f-8165-497d-aecc-ee558967c7c4"
 storage_version_token = "1793768162440929"
 content_type = "text/csv"
+
+[[outputs]]
+id = "tPhVcV_md4q7kCPC7JYPJ"
+uri = "file://generated-artifacts/rel001-evidence/rel001-migration-review.html"
+type = "html"
+title = "REL-001 migration tooling review"
+description = "12-section implementation report, 28-path coverage, 31 migration scenarios, 65 compatibility checks, and operator runbook. Production remains NO-GO."
+logical_id = "ba77e67b-51bf-4ed0-a753-c40492257717"
+content_hash = "sha256:0d30655028e58f344cb7b64492e955b14adb69b26d2d9b9f88deeb1078fde50e"
+size = 34384
+mtime_ms = 1793771212963
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/ba77e67b-51bf-4ed0-a753-c40492257717/1bd954f0-e28a-4958-aa45-a578fa62b476"
+storage_version_token = "1793771283573167"
+content_type = "text/html"
+
+[[outputs]]
+id = "l9LLX2QtGXyUyIMuiIAbd"
+uri = "file://generated-artifacts/rel001-evidence/rel001-coverage.csv"
+type = "table"
+title = "28-path migration coverage"
+description = "Per-path SQL mapping, semantic round-trip status and separate source/reconstructed byte fingerprints. No fixture credential values."
+logical_id = "a09f2880-eb2a-4873-949b-6e8140d7d2f1"
+content_hash = "sha256:fdfc86d662c22101d676b93fb1f8e3b1c112571dc6bdd1c442867c3400fbadfe"
+size = 8006
+mtime_ms = 1793771212963
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/a09f2880-eb2a-4873-949b-6e8140d7d2f1/0c182f2e-ca75-49df-8736-c94363b46fa0"
+storage_version_token = "1793771284845716"
+content_type = "text/csv"
