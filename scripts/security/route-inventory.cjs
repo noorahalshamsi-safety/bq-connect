@@ -20,6 +20,10 @@ const entries=[];
 for(const r of routes)if(r.method!=="(inherited)"||!entries.some(e=>e.path===r.path))entries.push({kind:"route",method:r.method,path:r.path,name:r.path,line:r.line});
 const ideaActions=lines.join("\n").match(/action && !\[([^\]]+)\]\.includes\(action\)/)?.[1].match(/"([^"]+)"/g).map(s=>s.slice(1,-1))||[];
 for(const a of ideaActions)entries.push({kind:"idea-action",method:"POST",path:`/api/ideas/<id>/${a}`,name:a});
+lines.forEach((line,i)=>{
+  const m=line.match(/req\.method === "(\w+)" && !route\.action/);
+  if(m)entries.push({kind:"idea-item",method:m[1],path:"/api/ideas/<id>",name:m[1],line:i+1});
+});
 const seen=new Set();
 lines.forEach((line,i)=>{
   for(const m of line.matchAll(/\b(action|op) === "([\w-]+)"/g)){
@@ -39,6 +43,7 @@ const esc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
 function patterns(e){
   if(e.kind==="route")return[new RegExp(`["'\`]${esc(e.path.replace(/\*$/,""))}`)];
   if(e.kind==="idea-action")return[new RegExp(`/${esc(e.name)}["'\`]`)];
+  if(e.kind==="idea-item")return[new RegExp(`method\\s*:\\s*["'\`]${e.method}["'\`]`)];
   return[new RegExp(`^(?=.*(?:social\\(|\\baction\\b|\\bop\\b)).*["'\`]${esc(e.name)}["'\`]`,"m")];
 }
 for(const e of entries){
@@ -47,7 +52,7 @@ for(const e of entries){
 }
 
 const by=k=>entries.filter(e=>e.kind===k);
-const summary=Object.fromEntries(["route","idea-action","action","op"].map(k=>[k,{total:by(k).length,referenced:by(k).filter(e=>e.referencedBy.length).length}]));
+const summary=Object.fromEntries(["route","idea-item","idea-action","action","op"].map(k=>[k,{total:by(k).length,referenced:by(k).filter(e=>e.referencedBy.length).length}]));
 const out=path.join(root,"generated-artifacts/security");
 fs.mkdirSync(out,{recursive:true});
 fs.writeFileSync(path.join(out,"route-inventory.json"),JSON.stringify({generated:new Date().toISOString(),meaning:"referenced = literal sent by a synthetic suite; role/object denial matrix not established by this inventory",suites:suites.length,summary,entries},null,2));

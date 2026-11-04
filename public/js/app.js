@@ -4186,7 +4186,9 @@ function editIdea(idea) {
     return;
   }
   editingId = idea.id;
-  titleInput.value = idea.title || "";
+  const untitled = COMPOSE_COPY[idea.type] && !COMPOSE_COPY[idea.type].title;
+  // The API fills an empty title with the start of the text for display; saving it back would freeze the old text.
+  titleInput.value = untitled && idea.title === String(idea.text || "").slice(0, 80) ? "" : idea.title || "";
   const pinned = geoPoint(idea.place);
   setPlaceValue(pinned ? "" : idea.place || "");
   problemInput.value = idea.problem || "";
