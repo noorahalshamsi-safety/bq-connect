@@ -55,7 +55,7 @@ async function requireCurrent(client){
   if(done.size!==migrations.length)throw Error("schema_migration_pending");
   return migrations.at(-1).version;
 }
-module.exports={migrations,migrate,requireCurrent};
+module.exports={migrations,migrate,requireCurrent,check};
 
 if(require.main===module)(async()=>{
   const proof=require("./gate.cjs").verify({operation:"staging-migrate"});

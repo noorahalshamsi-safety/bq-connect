@@ -37,8 +37,13 @@ class Repository {
   // isolation fence. With it, `proof` must be the frozen result of the staging
   // gate and the binding supplies the bq_app credential, bucket store and the
   // provision receipt read from that bucket.
-  constructor(proof,staging) {
-    if(staging) {
+  constructor(proof,staging,managed) {
+    if(managed){
+      const config=require("../../deploy/managed/config.cjs");config.assertProof(proof);
+      if(staging||managed.proof!==proof||!managed.store||managed.receipt?.dataset!==proof.dataset)throw Error("managed_binding_incomplete");
+      this.proof=proof;this.managed=managed;this.vault=vault(proof);
+      this.pool=new Pool(config.poolOptions(proof));
+    }else if(staging) {
       if(!proof?.verifiedStaging||!Object.isFrozen(proof)||staging.proof!==proof)throw Error("staging_identity_required");
       if(!staging.password||!staging.store||staging.receipt?.dataset!==proof.dataset)throw Error("staging_binding_incomplete");
       this.proof=proof;this.staging=staging;
@@ -64,16 +69,18 @@ class Repository {
     });
   }
   async verify(client) {
-    const provision=this.staging?this.staging.receipt:JSON.parse(fs.readFileSync(path.join(this.proof.root,"provision-receipt.json"),"utf8"));
+    const remote=this.staging||this.managed;
+    const provision=remote?remote.receipt:JSON.parse(fs.readFileSync(path.join(this.proof.root,"provision-receipt.json"),"utf8"));
     if(provision.dataset!==this.proof.dataset||provision.seal!==this.proof.seal||provision.state!=="committed")throw Error("synthetic_provision_not_committed");
     const r=await client.query("SELECT * FROM dev.authority WHERE singleton FOR SHARE");
     const a=r.rows[0];
-    if(!a||a.dataset_id!==this.proof.dataset||a.seal!==this.proof.seal||a.mode!=="synthetic"||String(a.epoch)!=="1")throw Error("synthetic_authority_refused");
+    const mode=this.managed&&this.proof.profile==="production"?"production":"synthetic";
+    if(!a||a.dataset_id!==this.proof.dataset||a.seal!==this.proof.seal||a.mode!==mode||String(a.epoch)!=="1")throw Error("synthetic_authority_refused");
     return a;
   }
   async hardenControls() {
     // Additive dev-only control migration, never a node-schema replacement.
-    if(this.staging)throw Error("runtime_ddl_forbidden");
+    if(this.staging||this.managed)throw Error("runtime_ddl_forbidden");
     const c=await this.pool.connect();
     try {
       await c.query("BEGIN");await c.query("SELECT pg_advisory_xact_lock(1793705963)");await this.verify(c);
@@ -93,7 +100,7 @@ class Repository {
     }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
   }
   async initialize(fixtures) {
-    if(this.staging)throw Error("runtime_provisioning_forbidden");
+    if(this.staging||this.managed)throw Error("runtime_provisioning_forbidden");
     const c=await this.pool.connect();
     try {
       const exists=await c.query("SELECT to_regclass('dev.authority') AS found");
@@ -197,7 +204,8 @@ class Repository {
         await intent.query("COMMIT");
       }catch(e){await intent.query("ROLLBACK").catch(()=>{});throw e;}finally{intent.release();}
       // The bucket copy is the durable one; the local file is only a cache.
-      if(this.staging&&(await this.staging.store.put(row.id,row.bytes)).key!==key)throw Error("media_key_mismatch");
+      const remote=this.staging||this.managed;
+      if(remote&&(await remote.store.put(row.id,row.bytes)).key!==key)throw Error("media_key_mismatch");
       const fd=fs.openSync(dest,"wx",0o600);try{fs.writeFileSync(fd,row.bytes);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
       const directory=fs.openSync(this.proof.objects,"r");
       try{fs.fsyncSync(directory);}finally{fs.closeSync(directory);}
@@ -226,9 +234,10 @@ class Repository {
   // Staging only: fill cache gaps (another instance's upload, a lost cache file)
   // with verified bucket bytes before the synchronous legacy media readers run.
   async ensureMedia(rows) {
-    if(!this.staging)return;
+    const remote=this.staging||this.managed;
+    if(!remote)return;
     const missing=rows.filter(r=>{const file=path.join(this.proof.objects,r.id);return !fs.existsSync(file)||fs.statSync(file).size!==Number(r.size);});
-    if(missing.length)await this.staging.store.restore(missing,this.proof.objects);
+    if(missing.length)await remote.store.restore(missing,this.proof.objects);
   }
   async drainFixtureOutbox() {
     // Synthetic delivery receipts, never real SMTP/SMS/push/provider traffic.
