@@ -15,8 +15,8 @@ Use Replit-managed PostgreSQL for BQ Connect, not an external Neon account.
 
 **How to apply:** Adapt connection, schema publishing and security requirements to supported managed capabilities. Document unmet controls and obtain security approval rather than substituting an external provider or claiming least privilege from owner credentials.
 
-Do not infer published source authority from workspace bucket settings, configured secret presence or latest-build history. Source inspection must stay protected; only aggregates and keyed fingerprints may return here.
+Do not infer published source authority from workspace bucket settings, configured secret presence or latest-build history. An explicit owner designation is different: the current minimal migration uses the configured App Storage by the owner's instruction (see `minimal-migration-scope.md`).
 
-**Why:** The user forbids employee data/key exports into development, and the available deployment metadata does not expose running JSON/storage bindings or prove which generation is loaded.
+**Why:** Deployment metadata alone did not prove serving JSON/storage bindings, but the owner subsequently selected the configured source for the simplified account-only migration. The prohibition on record/key exports into Development remains.
 
-**How to apply:** Require read-only attestation tied to the actually serving production process. Workspace SSH is not evidence of production access. Unknown counts/generations stay unknown; diagnostic provenance never authorizes migration or publication.
+**How to apply:** Honor that explicit source designation; allow read-only memory-only inspection returning aggregates/fingerprints, not records or keys. Do not equate matching reads with a write freeze or workspace SSH with production access. Source inspection never authorizes live migration or publication.

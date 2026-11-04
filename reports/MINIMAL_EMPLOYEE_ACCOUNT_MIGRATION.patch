@@ -1,0 +1,1060 @@
+diff --git a/deploy/managed/config.cjs b/deploy/managed/config.cjs
+index 3ee73fa..b44e0cf 100644
+--- a/deploy/managed/config.cjs
++++ b/deploy/managed/config.cjs
+@@ -43,7 +43,7 @@ function verify({env=process.env,manifest,paths={},approvalRoot=__dirname}={}){
+       typeof a.approvedBy==="string"&&a.approvedBy.length&&Number.isFinite(Date.parse(a.expires))&&Date.parse(a.expires)>Date.now()))fail("managed_production_approval_missing");
+   }
+   const seal=sha(canonical([manifest.dataset,manifest.keys.session,manifest.keys.backup]));
+-  const proof=Object.freeze({verifiedManaged:true,profile,dataset:manifest.dataset,seal,sessionKey,backupKey,bucket:manifest.bucket,
++  const proof=Object.freeze({verifiedManaged:true,profile,dataset:manifest.dataset,seal,sessionKey,backupKey,bucket:manifest.bucket,manifestFingerprint:sha(canonical(manifest)),
+     schemaFingerprint:manifest.schemaFingerprint,releaseFingerprint:manifest.releaseFingerprint,
+     permissionsFingerprint:manifest.permissionsFingerprint,endpointFingerprint:e.identity,
+     root:paths.root,app:paths.app,objects:paths.objects});
+diff --git a/deploy/managed/minimal-bootstrap.cjs b/deploy/managed/minimal-bootstrap.cjs
+new file mode 100644
+index 0000000..07a793d
+--- /dev/null
++++ b/deploy/managed/minimal-bootstrap.cjs
+@@ -0,0 +1,36 @@
++// FUTURE operator-approved publish command. The public listener never exposes
++// login before the complete destination/custody/adoption gate succeeds.
++const http=require("node:http"),{start}=require("./minimal-runtime.cjs");
++async function launch({port=Number(process.env.PORT)||5000,startRuntime=start,retryMs=15000,maintenanceOnly=false}={}){
++  let backend=null,running=null,stopping=false,timer,internal;
++  const server=http.createServer((req,res)=>{
++    if(!backend){
++      // Replit's publishing probe needs GET / => 200. This is liveness only:
++      // no app/login is served, and /health/ready and every API remain 503.
++      const live=req.url==="/health/live"||(req.url==="/"&&["GET","HEAD"].includes(req.method));
++      res.writeHead(live?200:503,{"Content-Type":"application/json","Cache-Control":"no-store","Retry-After":"15"});
++      res.end(JSON.stringify({live:true,ready:false,error:"migration_not_activated"}));return;
++    }
++    const upstream=http.request({hostname:"127.0.0.1",port:backend,path:req.url,method:req.method,headers:req.headers},response=>{
++      res.writeHead(response.statusCode,response.headers);response.pipe(res);
++    });
++    upstream.on("error",()=>{if(!res.headersSent)res.writeHead(503,{"Content-Type":"application/json"});res.end('{"error":"sql_runtime_unavailable"}');});
++    req.pipe(upstream);
++  });
++  await new Promise((resolve,reject)=>{server.once("error",reject);server.listen(port,"0.0.0.0",resolve);});
++  async function attempt(){
++    if(stopping)return;
++    // The app binds loopback only; the maintenance/public listener stays open
++    // throughout all failed approval/database/storage checks.
++    const reservation=http.createServer();await new Promise(r=>reservation.listen(0,"127.0.0.1",r));
++    internal=reservation.address().port;await new Promise(r=>reservation.close(r));
++    process.env.PORT=String(internal);process.env.HOST="127.0.0.1";
++    try{running=await startRuntime();if(stopping){await running.close();return;}backend=internal;}
++    catch{if(!stopping){timer=setTimeout(attempt,retryMs);timer.unref();}}
++  }
++  const initial=maintenanceOnly?undefined:setTimeout(attempt,50);initial?.unref();
++  return {server,close:async()=>{stopping=true;clearTimeout(initial);clearTimeout(timer);await new Promise(r=>server.close(r));if(running)await running.close();}};
++}
++module.exports={launch};
++if(require.main===module)launch().then(app=>{for(const signal of ["SIGINT","SIGTERM"])process.on(signal,()=>app.close().finally(()=>process.exit(0)));})
++  .catch(()=>{console.error("minimal_maintenance_listener_failed");process.exitCode=1;});
+diff --git a/deploy/managed/minimal-import-runner.cjs b/deploy/managed/minimal-import-runner.cjs
+new file mode 100644
+index 0000000..53ad586
+--- /dev/null
++++ b/deploy/managed/minimal-import-runner.cjs
+@@ -0,0 +1,21 @@
++// Future, separately approved PUBLISHED run command. Never used by normal
++// startup. It always stays in maintenance, including after a successful import.
++const fs=require("node:fs"),{launch}=require("./minimal-bootstrap.cjs"),{execute}=require("../../migration/minimal/execute.cjs");
++function requested(env){return env.REPLIT_DEPLOYMENT==="1"&&env.BQ_MINIMAL_OPERATION==="owner-approved-import-once";}
++async function run({env=process.env,port,executeImport=execute}={}){
++  const app=await launch({port,maintenanceOnly:true});
++  if(requested(env)){
++    try{
++      const manifest=JSON.parse(fs.readFileSync(env.BQ_MANAGED_MANIFEST_FILE,"utf8"));
++      const result=await executeImport({env,manifest});
++      console.log(JSON.stringify({mode:"maintenance",imported:true,...result}));
++    }catch(e){
++      console.error(JSON.stringify({mode:"maintenance",imported:false,error:/^(minimal_|managed_)/.test(e.code||"")?e.code:"minimal_execution_failed",
++        sourceWritten:false,...(e.counts?{observedCounts:e.counts}: {})}));
++    }
++  }else console.log(JSON.stringify({mode:"maintenance",imported:false,executionRequested:false}));
++  return app;
++}
++module.exports={run,requested};
++if(require.main===module)run().then(app=>{for(const sig of ["SIGTERM","SIGINT"])process.on(sig,()=>app.close().finally(()=>process.exit(0)));})
++  .catch(()=>{console.error("minimal_maintenance_listener_failed");process.exitCode=1;});
+diff --git a/deploy/managed/minimal-runtime.cjs b/deploy/managed/minimal-runtime.cjs
+new file mode 100644
+index 0000000..5325eb9
+--- /dev/null
++++ b/deploy/managed/minimal-runtime.cjs
+@@ -0,0 +1,42 @@
++// Startup is verification only. The explicit, separately approved DATA importer
++// is never called here; missing/empty/foreign state holds readiness closed.
++const fs=require("node:fs"),os=require("node:os"),path=require("node:path");
++const cfg=require("./config.cjs"),schema=require("./schema.cjs"),I=require("../../migration/minimal/import.cjs");
++const {Repository}=require("../../development/postgres/repository.cjs"),{ImmutableStore}=require("../staging/object-store.cjs");
++async function start({env=process.env,manifest,storeClient}={}){
++  if(!manifest)manifest=JSON.parse(fs.readFileSync(env.BQ_MANAGED_MANIFEST_FILE,"utf8"));
++  if(env.REPLIT_DEPLOYMENT!=="1"||manifest.environment!=="production")cfg.fail("minimal_production_runtime_only");
++  if(manifest.minimal?.policy!=="employees-accounts-only-v1"||manifest.minimal.employees!==6311||manifest.minimal.accounts!==8||
++    cfg.sha(manifest.bucket)===manifest.minimal.sourceBucketFingerprint)cfg.fail("minimal_runtime_policy_required");
++  const root=fs.mkdtempSync(path.join(os.tmpdir(),"bq-minimal-"));fs.chmodSync(root,0o700);
++  const app=path.join(root,"app"),objects=path.join(root,"objects");fs.mkdirSync(app,{mode:0o700});fs.mkdirSync(objects,{mode:0o700});
++  let repo;
++  try{
++  const proof=cfg.verify({env,manifest,paths:{root,app,objects}});
++  if(!storeClient){const {Client}=await import("@replit/object-storage");storeClient=new Client({bucketId:manifest.bucket});}
++  const store=new ImmutableStore(storeClient,{dataset:proof.dataset,managedProof:proof});
++  const receipt=await store.readControl("provision-receipt.json");
++  const intent=await store.readControl("provision-intent.json");
++  const binding=cfg.sha(cfg.canonical({dataset:proof.dataset,seal:proof.seal,source:manifest.minimal.sourceFingerprint,endpoint:proof.endpointFingerprint}));
++  if(!receipt||receipt.minimalSource!==manifest.minimal.sourceFingerprint||receipt.binding!==binding||
++    intent?.binding!==binding||intent.dataset!==proof.dataset||intent.seal!==proof.seal)cfg.fail("minimal_independent_receipt_required");
++  repo=new Repository(proof,null,{proof,store,receipt});
++    const c=await repo.pool.connect();let media;
++    try{
++      await c.query("BEGIN");await cfg.verifyDatabase(c,proof);await schema.requireSchema(c,manifest);await repo.verify(c);
++      const marker=await I.readMarker(c,proof);
++      if(!marker||marker.sourceFingerprint!==manifest.minimal.sourceFingerprint||marker.dataset!==proof.dataset||marker.seal!==proof.seal||
++        marker.counts.employees!==6311||marker.counts.accounts!==8||marker.originalKeys.session!==manifest.keys.session||
++        marker.originalKeys.backup!==manifest.keys.backup||marker.sourceBucketFingerprint!==manifest.minimal.sourceBucketFingerprint||
++        marker.membership.accounts!==manifest.minimal.membership?.accounts||marker.membership.employees!==manifest.minimal.membership?.employees)
++        cfg.fail("minimal_sql_adoption_marker_required");
++      media=(await c.query("SELECT id,object_key,sha256 FROM dev.media WHERE state IN('ready','retained')")).rows;
++      await c.query("COMMIT");
++    }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
++    await store.restore(media,objects);
++    process.env.BQ_STORAGE_SYNC="0";process.env.BQ_TRANSLATE="0";
++    const running=await require("../../development/postgres/runtime.cjs").serve(proof,repo,{nativeEnabled:true,minimalRelease:true});
++    return {...running,close:async()=>{try{await running.close();}finally{fs.rmSync(root,{recursive:true,force:true});}}};
++  }catch(e){await repo?.pool.end().catch(()=>{});fs.rmSync(root,{recursive:true,force:true});throw e;}
++}
++module.exports={start};
+diff --git a/deploy/staging/object-store.cjs b/deploy/staging/object-store.cjs
+index 12b4074..44b9b59 100644
+--- a/deploy/staging/object-store.cjs
++++ b/deploy/staging/object-store.cjs
+@@ -9,13 +9,20 @@ const KEY=new RegExp(`^staging-synthetic-${UUID}/immutable/${UUID}/[0-9a-f]{64}$
+ const CONTROL=new Set(["provision-intent.json","provision-receipt.json"]);
+ const fault=(code,cause)=>Object.assign(Error(code),cause?{cause}:{});
+ class ImmutableStore {
+-  constructor(client,{dataset,timeoutMs=15000}={}) {
+-    if(!new RegExp(`^staging-synthetic-${UUID}$`).test(dataset||""))throw fault("synthetic_dataset_required");
++  constructor(client,{dataset,timeoutMs=15000,managedProof}={}) {
++    let production=false;
++    if(managedProof){
++      require("../managed/config.cjs").assertProof(managedProof);
++      production=managedProof.profile==="production"&&managedProof.dataset===dataset&&new RegExp(`^managed-production-${UUID}$`).test(dataset||"");
++      if(!production)throw fault("managed_media_identity_required");
++    }
++    if(!production&&!new RegExp(`^staging-synthetic-${UUID}$`).test(dataset||""))throw fault("synthetic_dataset_required");
+     this.client=client;this.dataset=dataset;this.timeoutMs=timeoutMs;
++    this.keyPattern=production?new RegExp(`^managed-production-${UUID}/immutable/${UUID}/[0-9a-f]{64}$`):KEY;
+   }
+   key(id,sha){
+     const key=`${this.dataset}/immutable/${id}/${sha}`;
+-    if(!KEY.test(key))throw fault("object_key_invalid");
++    if(!this.keyPattern.test(key))throw fault("object_key_invalid");
+     return key;
+   }
+   async call(method,...args){
+@@ -28,7 +35,7 @@ class ImmutableStore {
+     }finally{clearTimeout(timer);}
+   }
+   async read(key,sha){
+-    if(!KEY.test(key)||!key.startsWith(`${this.dataset}/immutable/`)||!key.endsWith(`/${sha}`))throw fault("object_key_invalid");
++    if(!this.keyPattern.test(key)||!key.startsWith(`${this.dataset}/immutable/`)||!key.endsWith(`/${sha}`))throw fault("object_key_invalid");
+     let value;
+     try{value=await this.call("downloadAsBytes",key);}
+     catch(e){
+diff --git a/development/postgres/minimal-delivery.cjs b/development/postgres/minimal-delivery.cjs
+new file mode 100644
+index 0000000..87dd222
+--- /dev/null
++++ b/development/postgres/minimal-delivery.cjs
+@@ -0,0 +1,20 @@
++// Narrow production SMS delivery boundary; no redirects or response-body logs.
++const allowed=new Set(["api.twilio.com","api.taqnyat.sa","el.cloud.unifonic.com"]);
++function validate(p){
++  if(!p||!allowed.has(p.host)||typeof p.path!=="string"||!p.path.startsWith("/")||/[\r\n]/.test(p.path)||
++    p.method!=="POST"||typeof p.body!=="string"||Buffer.byteLength(p.body)>65536||!p.headers||typeof p.headers!=="object")
++    throw Error("sms_delivery_binding_invalid");
++}
++function sendSms(p,request){
++  validate(p);
++  return new Promise((resolve,reject)=>{
++    const req=request({hostname:p.host,servername:p.host,port:443,path:p.path,method:"POST",headers:p.headers,
++      rejectUnauthorized:true,minVersion:"TLSv1.2"},res=>{
++      const status=res.statusCode||500;res.resume();
++      res.on("end",()=>status>=200&&status<300?resolve():reject(Error("sms_delivery_failed")));
++    });
++    req.setTimeout(15000,()=>req.destroy(Error("sms_delivery_failed")));
++    req.on("error",()=>reject(Error("sms_delivery_failed")));req.end(p.body);
++  });
++}
++module.exports={validate,sendSms};
+diff --git a/development/postgres/runtime.cjs b/development/postgres/runtime.cjs
+index d2ccd0b..0cd02fd 100644
+--- a/development/postgres/runtime.cjs
++++ b/development/postgres/runtime.cjs
+@@ -16,7 +16,7 @@ async function start(root) {
+ }
+ // Shared by development and staging. Performs no DDL; callers own schema state.
+ // `faults` honours dev.test_faults injection points and is development-only.
+-async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false}={}) {
++async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,minimalRelease=false,deliverMail,deliverSms}={}) {
+   let poisoned=false,stopping=false,ingress=0,pending=0;
+   const jobTimers=new Set();
+   const timings=[];
+@@ -87,7 +87,7 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false}=
+         fs.writeFileSync(path.join(proof.root,"request-timings.json"),JSON.stringify(timings),{mode:0o600});
+       }
+     }
+-    if(commit)repo.drainFixtureOutbox().catch(()=>{}); // Provider delivery is fixture-only.
++    if(commit&&!minimalRelease)repo.drainFixtureOutbox().catch(()=>{}); // Never synthetic acknowledgements in a real release.
+   }
+   const enqueue=(topic,payload)=>{
+     if(!context)throw Error("outbox_transaction_required");
+@@ -143,6 +143,13 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false}=
+       const durable="if (process.env.REPLIT_DEPLOYMENT) safety.requireDurableBackend();";
+       if(!source.includes(durable))throw Error("durable_backend_contract_changed");
+       source='const setInterval=global.__bqDevInterval;\n'+source.replace(durable,"global.__bqRequireTransaction();").replaceAll('.replace(/^0+/, "")',"");
++      if(minimalRelease){
++        // Keep original session/recovery/TOTP keys and signatures. Only old
++        // unfinished login/reset challenge tickets are excluded at cutover.
++        const marker="`ticket:${stage}:";
++        if(source.split(marker).length!==3)throw Error("minimal_ticket_epoch_contract_changed");
++        source=source.replaceAll(marker,"`ticket:"+proof.dataset+":${stage}:");
++      }
+       source+='\nmodule.exports.__maps={failures,mailLog,usedTickets};\nmodule.exports.__refresh=()=>{for(const k of Object.keys(accounts))delete accounts[k];Object.assign(accounts,safety.readAccounts(ACCOUNTS));loadedStamp=accountsStamp();securityCache={stamp:"",value:null};};\n';
+     }
+     if(file==="server.js"){
+@@ -178,16 +185,20 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false}=
+     read:(body,viewer,res)=>{context.response=res;return nativeProfile.person(context,body,viewer,app.__profileReads);}
+   };
+   auth=require(path.join(proof.app,"auth.js"));
+-  auth.sendMail=(to,subject,text)=>enqueue("mail",{to,subject,text});
++  const realMail=auth.sendMail.bind(auth);
++  auth.sendMail=(to,subject,text)=>{
++    if(minimalRelease&&!deliverMail&&!auth.mailConfigured())return Promise.reject(Error("smtp_unconfigured"));
++    return enqueue("mail",{to,subject,text});
++  };
+   const push=require(path.join(proof.app,"push.js"));
+   const originalPublic=push.publicKey;
+-  push.publicKey=()=>{if(!context.files.get("push-keys.json")?.value?.privateJwk)throw Error("vapid_key_missing");return originalPublic();};
+-  push.send=(badge,message)=>enqueue("push",{badge,message});
++  push.publicKey=()=>{if(!context.files.get("push-keys.json")?.value?.privateJwk){if(minimalRelease)return "";throw Error("vapid_key_missing");}return originalPublic();};
++  push.send=minimalRelease?async()=>false:(badge,message)=>enqueue("push",{badge,message});
+   const backup=require(path.join(proof.app,"backup.js"));
+   const backupStatus=()=>JSON.parse(context.buffers.get("backup-status.json"));
+   backup.status=()=>{const saved=backupStatus();return{vault:null,lastAt:saved.lastAt||"",size:saved.lastSize||0,files:saved.files||0,kept:saved.kept||0,failed:false,keyReady:true};};
+   backup.createBackup=async()=>{
+-    const bundle={kind:"SYNTHETIC_PG_BACKUP",dataset:proof.dataset,files:Object.fromEntries([...context.buffers].map(([f,b])=>[f,JSON.parse(b)])),media:{}};
++    const bundle={kind:minimalRelease?"BQ_MINIMAL_SQL_BACKUP":"SYNTHETIC_PG_BACKUP",dataset:proof.dataset,files:Object.fromEntries([...context.buffers].map(([f,b])=>[f,JSON.parse(b)])),media:{}};
+     for(const [legacy,row]of context.media)bundle.media[legacy]=(row.bytes||virtual.original.readFileSync(row.object)).toString("base64");
+     const iv=crypto.randomBytes(12),cipher=crypto.createCipheriv("aes-256-gcm",Buffer.from(proof.backupKey,"hex"),iv);
+     const bytes=Buffer.concat([iv,cipher.update(JSON.stringify(bundle)),cipher.final(),cipher.getAuthTag()]);
+@@ -209,16 +220,36 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false}=
+   const realHttps=https.request;
+   https.request=(url,options,callback)=>{
+     const host=typeof url==="string"?new URL(url).hostname:url.hostname;
+-    if(!/^(api\.twilio\.com|api\.taqnyat\.sa)$/.test(host||""))throw Error("external_transport_not_available_in_synthetic_development");
++    if(!(minimalRelease?/^(api\.twilio\.com|api\.taqnyat\.sa|el\.cloud\.unifonic\.com)$/:/^(api\.twilio\.com|api\.taqnyat\.sa)$/).test(host||"")){
++      // Production App Storage and other SDK HTTPS must retain their real
++      // transport. Only the known SMS requests belong in the durable outbox.
++      if(minimalRelease)return realHttps(url,options,callback);
++      throw Error("external_transport_not_available");
++    }
+     if(typeof options==="function"){callback=options;options={};}
+     const chunks=[],request=new Writable({write(chunk,encoding,done){chunks.push(Buffer.from(chunk));done();}});
+     request.setTimeout=()=>request;
+-    request.on("finish",()=>{enqueue("sms",{host,body:Buffer.concat(chunks).toString()});const response=Readable.from([Buffer.from('{"synthetic":true}')]);response.statusCode=201;callback(response);});
++    request.on("finish",()=>{
++      const payload={host,body:Buffer.concat(chunks).toString()};
++      if(minimalRelease){
++        const target=typeof url==="string"?new URL(url):url;
++        payload.path=target.pathname!==undefined?target.pathname+(target.search||""):target.path;
++        payload.method=options.method||target.method||"POST";payload.headers=options.headers||target.headers||{};
++        require("./minimal-delivery.cjs").validate(payload);
++      }
++      enqueue("sms",payload);
++      const response=Readable.from([Buffer.from(minimalRelease?'{"queued":true}':'{"synthetic":true}')]);
++      response.statusCode=minimalRelease?202:201;callback(response);
++    });
+     return request;
+   };
+   async function handle(listener,req,res) {
+     if(req.url==="/health/live"){res.writeHead(200,{"Content-Type":"application/json"});res.end('{"live":true}');return;}
+     await ready;
++    if(minimalRelease&&["/api/push"].includes((req.url||"").split("?")[0])){
++      res.writeHead(503,{"Content-Type":"application/json","Cache-Control":"no-store"});
++      res.end('{"error":"not_enabled_in_existing_accounts_release"}');return;
++    }
+     if(poisoned){res.writeHead(503,{"Content-Type":"application/json"});res.end('{"error":"worker_restarting"}');return;}
+     if(!["GET","HEAD"].includes(req.method)&&!originAllowed(req)){res.writeHead(403,{"Content-Type":"application/json"});res.end('{"error":"origin_forbidden"}');return;}
+     if(staticRequest(req))return listener(req,res);
+@@ -324,7 +355,25 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false}=
+   };
+   app=require(path.join(proof.app,"server.js"));
+   http.createServer=realCreate;
+-  const outboxTimer=setInterval(()=>{if(!poisoned&&!stopping)repo.drainFixtureOutbox().catch(()=>{});},1000);outboxTimer.unref();
++  // Production mail is queued in the request transaction and delivered only by
++  // a later committed job. SMTP is at-least-once; unknown acknowledgement can
++  // cause a duplicate message, never a fabricated provider-success receipt.
++  const deliver=()=>job(async()=>{
++    const c=context.client;
++    await c.query("UPDATE dev.requests SET body=''::bytea,headers='{}'::jsonb,policy='expired' WHERE expires_at<clock_timestamp() AND policy='encrypted'");
++    const rows=(await c.query("SELECT id,topic,payload FROM dev.outbox WHERE topic IN('mail','sms') AND delivered_at IS NULL AND (fixture_receipt IS NULL OR (fixture_receipt->>'retryAfter')::timestamptz<=clock_timestamp()) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1")).rows;
++    for(const row of rows){
++      const payload=repo.vault.decode(row.payload,`outbox:${row.id}`);let sent=false;
++      try{
++        if(row.topic==="mail")await (deliverMail||realMail)(payload.to,payload.subject,payload.text);
++        else await (deliverSms||((p)=>require("./minimal-delivery.cjs").sendSms(p,realHttps)))(payload);
++        sent=true;
++      }catch{}
++      const receipt={transport:row.topic==="mail"?"smtp-outbox-v1":"sms-outbox-v1",event:row.id,...(!sent?{retryAfter:new Date(Date.now()+60000).toISOString()}:{}),semantics:"provider-accepted-at-least-once"};
++      await c.query("UPDATE dev.outbox SET attempts=attempts+1,delivered_at=CASE WHEN $2 THEN clock_timestamp() ELSE NULL END,fixture_receipt=$3::jsonb WHERE id=$1",[row.id,sent,JSON.stringify(receipt)]);
++    }
++  },"minimal-mail-outbox");
++  const outboxTimer=setInterval(()=>{if(!poisoned&&!stopping)(minimalRelease?deliver():repo.drainFixtureOutbox()).catch(()=>{});},1000);outboxTimer.unref();
+   await ready;
+   return {repo,proof,server:app.__server,close:async()=>{stopping=true;clearInterval(outboxTimer);for(const timer of jobTimers)clearInterval(timer);await new Promise(r=>app.__server.close(r));await queue;await repo.pool.end();virtual.restore();https.request=realHttps;}};
+ }
+diff --git a/migration/minimal/README.md b/migration/minimal/README.md
+new file mode 100644
+index 0000000..d84c0a8
+--- /dev/null
++++ b/migration/minimal/README.md
+@@ -0,0 +1,167 @@
++# Minimal employee/account release
++
++This path is independent of REL-001. It does not inspect Vault, archives or
++historical media. Its only live operation during preparation was a designated,
++read-only, memory-only source inspection. No real records were written to a
++development database or workspace data files.
++
++## Source and retained dependencies
++
++The owner-designated **currently configured App Storage** must contain exactly
++**6,311 employees, eight account entries and eight registered credentials**.
++The Workspace three-account JSON is never an input. Any count change stops
++execution and reports aggregate counts; no filtering to force the expected
++number is permitted.
++
++Read only these `data/` files:
++
++* `employees.json`, `accounts.json`: preserve complete records, original ID
++  types and credential/security extensions, hashes, salts, KDFs, versions,
++  sessions, active TOTP, pending TOTP and recovery material.
++* `session.key`, `backup.key`: require the existing effective keys. Never
++  generate replacements or put their values in reports, source control or
++  plaintext SQL. Production Secrets must contain those same original keys.
++* `security.json`, `moderators.json`: original role grants, official identity
++  definitions and authentication policies. Official accounts need not have
++  invented employee-directory rows.
++* `conduct.json`: retain these eight accounts' warnings, bans and reset
++  restrictions plus security-policy settings, not other users' history.
++* `sms.json`, `smtp.json`: existing verification/delivery configuration.
++  Preserve any existing deployment-side provider/verification secrets too.
++
++Posts, stories, highlights, comments, reactions, groups, memberships, follows,
++messages, notifications, profiles, historical push subscriptions and media
++start empty. The original bucket and its history remain untouched.
++Automatic experimental backup scheduling stays disabled; this is not an
++investigation or migration of historical backup archives.
++
++## Safety and runtime behavior
++
++* A real-source capsule cannot be imported into Development or a local test
++  database. Synthetic tests use a disposable local PostgreSQL instance, not
++  the managed Development database.
++* Production requires the existing managed production identity/TLS/schema/
++  role/approval gates, original-key fingerprints, a separately approved
++  minimal-import binding, source membership fingerprints and freeze evidence.
++  Both approval files are deliberately unapproved in this handoff.
++* No startup schema DDL, automatic source adoption, local JSON fallback,
++  reset/truncate option or arbitrary destination URL exists here.
++* One transaction, advisory locks and independent direct-SQL employee/account
++  membership digests guard the import. All decoded files are reconciled
++  against the minimal projection, including full credential records.
++* A nonempty destination is refused, including Development fixture copies.
++  Never erase those rows to make this importer pass.
++* Same-source replay checks the committed marker and never rewrites subsequent
++  SQL account changes. Source drift, foreign bindings or missing/ambiguous
++  provisioning metadata fail closed.
++* A separate NEW, approved target bucket holds immutable intent/receipt
++  markers and future media. It cannot be the original source bucket.
++  Unknown intent acknowledgement with no SQL marker needs operator recovery;
++  it is not permission to reseed or delete control metadata.
++* A fresh source read immediately before commit must still match the approved
++  source. Two matching reads are observational stability, **not a write freeze**.
++* Original session/recovery/TOTP domains remain unchanged. Unfinished
++  pre-cutover login/reset challenge tickets are excluded by a dataset-scoped
++  ticket domain, because the old process's used-ticket ledger is not in App
++  Storage. Users can restart an unfinished challenge; authenticated sessions
++  and original factor secrets are not reset.
++* Email and SMS use encrypted durable outboxes and real SMTP/strict-TLS HTTPS
++  transports after commit. Failures remain pending, with backoff, not fake
++  delivery receipts. Provider acknowledgement is at-least-once; uncertain
++  acknowledgement can cause duplicate delivery. Actual provider credentials
++  and real deliveries have not been certified by these mock-provider tests.
++* No replacement VAPID keys are generated. Push enrollment explicitly remains
++  unconfigured in this limited release; login, registration, email/2FA and
++  directory routes use the original application handlers.
++
++## Supported lifecycle — blocked before any real change
++
++Use **Replit-managed PostgreSQL for the existing BQ Connect application**.
++Do not substitute an external database or publish a new employee-facing app.
++
++Official documentation distinguishes current managed production provisioning
++from the **legacy Neon** publishing switches. Do not assume the legacy
++“copy development data” switch exists for current managed PostgreSQL.
++Current managed Production is provisioned through Publishing; the workspace
++has no verified, approved standalone/no-copy provisioning path.
++
++The existing managed Development database has synthetic data. **Do not
++blindly Publish it or let those fixtures be copied to Production.** The owner
++and platform must first verify a supported schema-only/empty-destination
++path and approve the exact resource/publish action. Do not reset Development
++or delete Production rows as an unapproved workaround.
++
++References:
++* https://docs.replit.com/features/data-and-storage/development-and-production
++* https://docs.replit.com/build/troubleshooting
++
++The maintenance listener returns `GET /` and `/health/live` HTTP 200 for
++Replit's publishing liveness check, with `ready:false`. `/health/ready`,
++login and all application APIs stay 503. Liveness is not successful adoption.
++
++## Exact remaining execution sequence
++
++1. **Approve provisioning, not import.** Confirm the existing BQ Connect app
++   identity and supported no-fixture-copy lifecycle. Obtain approval before
++   any production resource change or Republish. Provision only the approved,
++   empty schema destination and a distinct new target/control-media bucket.
++   A future maintenance-only run command is:
++   `node deploy/managed/minimal-import-runner.cjs`
++   with `BQ_MINIMAL_OPERATION` unset. It does not import or serve login.
++2. **Verify the actual destination.** Bind the actual production app, endpoint,
++   strict TLS identity, permissions, 117-table schema, empty application/control
++   tables and new bucket in the existing managed production manifest. No
++   synthetic rows or foreign authority may be present. Use protected operator
++   access; do not export connection strings into chat or Development.
++3. **Preserve key custody.** Through protected Production Secrets transfer the
++   original source session/backup keys to `BQ_MANAGED_SESSION_KEY` and
++   `BQ_MANAGED_BACKUP_KEY`; retain existing provider/verification settings.
++   Configure a separate stable 64-hex `BQ_MINIMAL_AUDIT_KEY` for keyed membership/
++   source bindings. That audit key is not a replacement authentication key.
++4. **Freeze and bind the actual source.** Stop/drain all original App Storage
++   writers, keeping the source intact. In a protected read-only preparation
++   process, run `node scripts/managed/minimal-bindings.cjs <designated-config>`.
++   It returns only counts, fingerprints and nonsecret bucket identity; no
++   records/key values. Merge its `keys`/`minimal` fields into the production
++   manifest; replace `freezeEvidence:null` with verified freeze evidence equal
++   to `release.frozenGeneration`. Complete the existing release evidence only
++   for this minimal scope, not discarded history. Recheck exactly 6,311/8.
++5. **Approve that exact execution.** Review the frozen-source fingerprint,
++   memberships, original-key continuity, empty target, cutover/recovery plan
++   and full manifest. Bind `managed-production-activate` in
++   `deploy/managed/production-approvals.json` and the separate operation
++   `minimal-employee-account-import` in `migration/minimal/approvals.json`,
++   with approved identities and expiry. The latter binding is
++   SHA-256(canonical({manifest, source:manifest.minimal.sourceFingerprint})).
++   Do not fabricate approvals, generic “force” flags or evidence.
++6. **Import once while remaining in maintenance.** Only after that approval,
++   run `node migration/minimal/execute.cjs` in a protected published process,
++   or use the dedicated published run command
++   `node deploy/managed/minimal-import-runner.cjs` with the explicit production
++   setting `BQ_MINIMAL_OPERATION=owner-approved-import-once`.
++   `BQ_MANAGED_MANIFEST_FILE` must reference that exact approved manifest.
++   The runner remains in maintenance after success/failure and never retries
++   a live import automatically. Verify committed counts, memberships,
++   source stability and the independent target receipt. No DDL is executed.
++7. **Approve/activate the existing application.** Remove the one-time import
++   operation; after the exact activation approval change the published run
++   command to `node deploy/managed/minimal-bootstrap.cjs`. Missing/mismatched
++   gates keep maintenance, never expose fixtures/JSON fallback. Perform the
++   owner's original-password/TOTP, role and directory canaries and monitor
++   readiness/provider delivery. Real passwords must never enter this agent's
++   context. After accepted SQL writes, do not roll back to the stale source
++   JSON; keep SQL authoritative and use the approved forward-recovery plan.
++
++Nothing in this runbook grants permission to execute those production steps.
++
++## Focused verification
++
++```sh
++node scripts/managed/minimal-tests.cjs
++node scripts/managed/minimal-cutover-tests.cjs
++node scripts/managed/config-test.cjs
++node scripts/staging/object-store-test.cjs
++```
++
++These are synthetic tests. The preexisting broad 236-check suite, Vault,
++full-history and historical-media audits were not repeated.
+diff --git a/migration/minimal/approvals.json b/migration/minimal/approvals.json
+new file mode 100644
+index 0000000..08ac789
+--- /dev/null
++++ b/migration/minimal/approvals.json
+@@ -0,0 +1,3 @@
++{
++  "approvals": []
++}
+diff --git a/migration/minimal/execute.cjs b/migration/minimal/execute.cjs
+new file mode 100644
+index 0000000..f88c070
+--- /dev/null
++++ b/migration/minimal/execute.cjs
+@@ -0,0 +1,42 @@
++// Explicit future protected PRODUCTION execution only. No schema DDL. Never
++// called by startup, no arbitrary URL/force/reset option and no output records.
++const fs=require("node:fs"),{Pool}=require("pg"),cfg=require("../../deploy/managed/config.cjs"),S=require("./source.cjs"),I=require("./import.cjs");
++const {ImmutableStore}=require("../../deploy/staging/object-store.cjs");
++async function execute({env=process.env,manifest,sourceClient,mediaClient}={}){
++  if(env.REPLIT_DEPLOYMENT!=="1")cfg.fail("minimal_published_execution_required");
++  const proof=cfg.verify({env,manifest});if(proof.profile!=="production")cfg.fail("minimal_production_destination_required");
++  if(!/^[a-f0-9]{64}$/.test(env.BQ_MINIMAL_AUDIT_KEY||""))cfg.fail("minimal_protected_audit_key_required");
++  if(!manifest.minimal?.sourceBucket||cfg.sha(manifest.minimal.sourceBucket)!==manifest.minimal.sourceBucketFingerprint||
++    manifest.minimal.sourceBucket===manifest.bucket)cfg.fail("minimal_distinct_bucket_binding_required");
++  if(!sourceClient||!mediaClient){const {Client}=await import("@replit/object-storage");
++    sourceClient=new Client({bucketId:manifest.minimal.sourceBucket});mediaClient=new Client({bucketId:manifest.bucket});}
++  const source=await S.read({client:sourceClient,bucketFingerprint:cfg.sha(manifest.minimal.sourceBucket),auditKey:Buffer.from(env.BQ_MINIMAL_AUDIT_KEY,"hex")});
++  const permit=I.authorize(proof,manifest,source),store=new ImmutableStore(mediaClient,{dataset:proof.dataset,managedProof:proof});
++  const pool=new Pool(cfg.poolOptions(proof));pool.on("error",()=>{});
++  let c;
++  try{
++    c=await pool.connect();
++    await cfg.verifyDatabase(c,proof);
++    await c.query("SELECT pg_advisory_lock($1)",[I.lock]);
++    const binding=cfg.sha(cfg.canonical({dataset:proof.dataset,seal:proof.seal,source:source.fingerprint,endpoint:proof.endpointFingerprint}));
++    const intent=await store.readControl("provision-intent.json"),existing=await I.readMarker(c,proof);
++    if(intent){if(intent.binding!==binding||intent.dataset!==proof.dataset||intent.seal!==proof.seal||!existing)cfg.fail("minimal_prior_intent_requires_operator_recovery");}
++    else{
++      if(existing||(await c.query("SELECT EXISTS(SELECT 1 FROM dev.authority) AS occupied")).rows[0].occupied)cfg.fail("minimal_independent_intent_missing");
++      await store.createControl("provision-intent.json",{kind:"BQ_MINIMAL_INTENT_V1",binding,dataset:proof.dataset,seal:proof.seal});
++    }
++    const result=await I.apply({client:c,source,proof,permit,contract:manifest,verifySourceUnchanged:async()=>{
++      const current=await S.read({client:sourceClient,bucketFingerprint:source.bucketFingerprint,auditKey:Buffer.from(env.BQ_MINIMAL_AUDIT_KEY,"hex")});
++      if(current.fingerprint!==source.fingerprint)cfg.fail("minimal_source_changed_before_commit");
++    }});
++    let receipt=await store.readControl("provision-receipt.json");
++    if(!receipt){receipt={dataset:proof.dataset,seal:proof.seal,state:"committed",minimalSource:source.fingerprint,binding};await store.createControl("provision-receipt.json",receipt);}
++    if(receipt.dataset!==proof.dataset||receipt.seal!==proof.seal||receipt.state!=="committed"||receipt.minimalSource!==source.fingerprint||receipt.binding!==binding)
++      cfg.fail("minimal_independent_receipt_mismatch");
++    return {employees:result.counts.employees,accounts:result.counts.accounts,replayed:result.replayed,sourceUnchanged:true};
++  }finally{if(c){await c.query("SELECT pg_advisory_unlock($1)",[I.lock]).catch(()=>{});c.release();}await pool.end();}
++}
++module.exports={execute};
++if(require.main===module)(async()=>{const manifest=JSON.parse(fs.readFileSync(process.env.BQ_MANAGED_MANIFEST_FILE,"utf8"));
++  console.log(JSON.stringify(await execute({manifest})));})().catch(e=>{console.error(JSON.stringify({error:/^minimal_|^managed_/.test(e.code||"")?e.code:"minimal_execution_failed",
++    sourceWritten:false,...(e.counts?{observedCounts:e.counts,expectedCounts:{employees:6311,accounts:8,registered:8}}:{})}));process.exitCode=1;});
+diff --git a/migration/minimal/import.cjs b/migration/minimal/import.cjs
+new file mode 100644
+index 0000000..4a5b2fa
+--- /dev/null
++++ b/migration/minimal/import.cjs
+@@ -0,0 +1,90 @@
++// DATA ONLY. Managed schema must already exist through Replit Publish.
++const fs=require("node:fs"),path=require("node:path"),S=require("./source.cjs");
++const cfg=require("../../deploy/managed/config.cjs"),schema=require("../../deploy/managed/schema.cjs");
++const codec=require("../../development/postgres/codec.cjs"),{saveFile}=require("../../development/postgres/repository.cjs");
++const {vault}=require("../../development/postgres/sealed.cjs");
++const permits=new WeakSet(),markerName="minimal:import:v1",lock=1793808169;
++function policy(manifest,source){
++  const m=manifest?.minimal,p=S.access(source);
++  if(!m||m.policy!=="employees-accounts-only-v1"||m.sourceBucketFingerprint!==source.bucketFingerprint||
++    m.sourceFingerprint!==source.fingerprint||m.employees!==6311||m.accounts!==8||
++    m.membership?.accounts!==source.membership.accounts||m.membership?.employees!==source.membership.employees||
++    cfg.sha(p.sessionKey)!==manifest.keys?.session||cfg.sha(p.backupKey)!==manifest.keys?.backup||
++    cfg.sha(manifest.bucket)===source.bucketFingerprint||!/^[a-f0-9]{64}$/.test(m.freezeEvidence||"")||
++    m.freezeEvidence!==manifest.release?.frozenGeneration)cfg.fail("minimal_policy_or_custody_mismatch");
++}
++function authorize(proof,manifest,source,{approvalRoot=__dirname}={}){
++  cfg.assertProof(proof);if(proof.profile!=="production"||source.synthetic)cfg.fail("minimal_production_source_required");
++  if(proof.manifestFingerprint!==cfg.sha(cfg.canonical(manifest)))cfg.fail("minimal_verified_manifest_required");
++  policy(manifest,source);
++  const binding=cfg.sha(cfg.canonical({manifest,source:source.fingerprint}));
++  const a=JSON.parse(fs.readFileSync(path.join(approvalRoot,"approvals.json"),"utf8")).approvals;
++  if(!a.some(r=>r.operation==="minimal-employee-account-import"&&r.binding===binding&&typeof r.approvedBy==="string"&&r.approvedBy.length&&
++    Number.isFinite(Date.parse(r.expires))&&Date.parse(r.expires)>Date.now()))cfg.fail("minimal_execution_approval_required");
++  const permit=Object.freeze({proof,source});permits.add(permit);return permit;
++}
++function assertTarget(proof,source,permit){
++  S.access(source);
++  if(proof?.verifiedSynthetic){
++    if(process.env.REPLIT_DEPLOYMENT||!source.synthetic)cfg.fail("minimal_real_source_in_development_forbidden");
++    const checked=require("../../development/postgres/isolation.cjs").verify(proof.root);
++    if(checked.dataset!==proof.dataset||checked.seal!==proof.seal)cfg.fail("minimal_synthetic_identity_invalid");
++  }else{
++    cfg.assertProof(proof);
++    if(proof.profile!=="production"||source.synthetic||!permits.has(permit)||permit.proof!==proof||permit.source!==source)
++      cfg.fail("minimal_execution_approval_required");
++  }
++  const p=S.access(source);if(p.sessionKey!==proof.sessionKey||p.backupKey!==proof.backupKey)cfg.fail("minimal_original_key_continuity_required");
++}
++async function readMarker(c,proof){
++  const r=await c.query("SELECT value FROM dev.runtime_state WHERE name=$1",[markerName]);
++  return r.rowCount?vault(proof).decode(r.rows[0].value,`state:${markerName}`):null;
++}
++async function apply({client:c,source,proof,permit,contract,verifySourceUnchanged,failBeforeCommit=false}){
++  assertTarget(proof,source,permit);const p=S.access(source);
++  await c.query("BEGIN");
++  try{
++    await c.query("SELECT pg_advisory_xact_lock($1)",[lock]);
++    if(contract)await schema.requireSchema(c,contract);else if(!source.synthetic)cfg.fail("minimal_schema_contract_required");
++    const old=await readMarker(c,proof);
++    if(old){
++      const a=(await c.query("SELECT * FROM dev.authority WHERE singleton FOR SHARE")).rows[0];
++      if(old.sourceFingerprint!==source.fingerprint||old.dataset!==proof.dataset||old.seal!==proof.seal||
++        !a||a.dataset_id!==proof.dataset||a.seal!==proof.seal||String(a.epoch)!=="1"||a.mode!==(source.synthetic?"synthetic":"production"))
++        cfg.fail("minimal_previous_import_binding_mismatch");
++      await c.query("COMMIT");return {...old,replayed:true};
++    }
++    // Refuse fixtures, orphan nodes, operational rows or prior authority. Never
++    // truncate/reset a destination, even if its files/authority rows were lost.
++    for(const table of ["authority","files","runtime_state","outbox","requests","media","media_links","backups","test_faults",...codec.tables.keys()]){
++      if((await c.query(`SELECT EXISTS(SELECT 1 FROM dev.${table}) AS occupied`)).rows[0].occupied)cfg.fail("minimal_destination_not_empty");
++    }
++    await c.query("INSERT INTO dev.authority VALUES(true,$1,$2,1,$3)",[proof.dataset,proof.seal,source.synthetic?"synthetic":"production"]);
++    for(const [name,value]of Object.entries(p.files))await saveFile(c,name,value,null);
++    // Independent membership reconciliation uses SQL keys/attributes, not the
++    // same encoder/decoder pair used for projection.
++    const accounts=(await c.query("SELECT entry_key FROM dev.accounts ORDER BY entry_key")).rows.map(r=>r.entry_key).sort();
++    const employees=(await c.query("SELECT attrs->'badge' AS badge FROM dev.employees")).rows.map(r=>cfg.canonical([typeof r.badge,r.badge])).sort();
++    if(S.hmac(p.auditKey,"accounts-membership",accounts)!==source.membership.accounts||
++      S.hmac(p.auditKey,"employees-membership",employees)!==source.membership.employees)cfg.fail("minimal_membership_reconciliation_failed");
++    // Full credential/dependency/unknown-field reconstruction is compared to
++    // original source values, including nested sessions, factors and versions.
++    const restored=new Map();
++    for(const table of codec.tables.keys())for(const row of(await c.query(`SELECT * FROM dev.${table}`)).rows){
++      if(!restored.has(row.file_name))restored.set(row.file_name,[]);
++      restored.get(row.file_name).push({...row,table});
++    }
++    for(const [name,value]of Object.entries(p.files)){
++      if(cfg.canonical(codec.decode(name,restored.get(name)||[]))!==cfg.canonical(value))cfg.fail("minimal_semantic_reconciliation_failed");
++    }
++    if(!source.synthetic&&!verifySourceUnchanged)cfg.fail("minimal_source_recheck_required");
++    if(verifySourceUnchanged)await verifySourceUnchanged();
++    const receipt={kind:"BQ_MINIMAL_IMPORT_V1",dataset:proof.dataset,seal:proof.seal,sourceFingerprint:source.fingerprint,
++      sourceBucketFingerprint:source.bucketFingerprint,counts:source.counts,membership:source.membership,
++      originalKeys:{session:cfg.sha(p.sessionKey),backup:cfg.sha(p.backupKey)},socialHistory:"empty-by-owner-approval"};
++    await c.query("INSERT INTO dev.runtime_state(name,value) VALUES($1,$2::jsonb)",[markerName,JSON.stringify(vault(proof).json(receipt,`state:${markerName}`))]);
++    if(failBeforeCommit){if(!source.synthetic)cfg.fail("minimal_fault_injection_forbidden");cfg.fail("minimal_injected_rollback");}
++    await c.query("COMMIT");return {...receipt,replayed:false};
++  }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}
++}
++module.exports={apply,authorize,policy,readMarker,markerName,lock};
+diff --git a/migration/minimal/source.cjs b/migration/minimal/source.cjs
+new file mode 100644
+index 0000000..a58f9b9
+--- /dev/null
++++ b/migration/minimal/source.cjs
+@@ -0,0 +1,88 @@
++// Source bytes stay in process memory. No source writes, filesystem cache or app
++// module imports. The public capsule intentionally contains no records or keys.
++const crypto=require("node:crypto"),codec=require("../../development/postgres/codec.cjs");
++const {canonical,sha,fail}=require("../../deploy/managed/config.cjs");
++const held=new WeakMap(),required=["accounts.json","employees.json","session.key","backup.key"];
++const supporting=["security.json","moderators.json","conduct.json","sms.json","smtp.json"];
++const clone=v=>JSON.parse(JSON.stringify(v)),obj=v=>v&&typeof v==="object"&&!Array.isArray(v);
++const hmac=(key,domain,value)=>crypto.createHmac("sha256",key).update(canonical([domain,value])).digest("hex");
++function freeze(value){if(value&&typeof value==="object"){Object.values(value).forEach(freeze);Object.freeze(value);}return value;}
++function factor(secret,value){
++  try{const p=value.split(".").map(x=>Buffer.from(x,"base64url"));if(p.length!==3)throw Error();
++    const d=crypto.createDecipheriv("aes-256-gcm",crypto.createHmac("sha256",secret).update("totp-vault").digest(),p[0]);d.setAuthTag(p[2]);
++    if(Buffer.concat([d.update(p[1]),d.final()]).length!==20)throw Error();
++  }catch{fail("minimal_factor_domain_invalid");}
++}
++function prepare(raw,{bucketFingerprint,expected={employees:6311,accounts:8},auditKey=crypto.randomBytes(32),synthetic=false}={}){
++  if(!/^[a-f0-9]{64}$/.test(bucketFingerprint||"")||!Buffer.isBuffer(auditKey)||auditKey.length<32)fail("minimal_source_binding_required");
++  if(!synthetic&&(expected.employees!==6311||expected.accounts!==8))fail("minimal_live_count_override_forbidden");
++  const parse=name=>{try{return raw[name]===null?{}:JSON.parse(raw[name]);}catch{fail("minimal_source_json_invalid");}};
++  const accounts=parse("accounts.json"),employees=parse("employees.json");
++  if(!obj(accounts)||!Array.isArray(employees))fail("minimal_source_shape_invalid");
++  const counts={employees:employees.length,accounts:Object.keys(accounts).length,registered:Object.values(accounts).filter(a=>a?.hash).length};
++  if(counts.employees!==expected.employees||counts.accounts!==expected.accounts||counts.registered!==expected.accounts)
++    throw Object.assign(Error("minimal_source_counts_changed"),{code:"minimal_source_counts_changed",counts});
++  const sessionKey=raw["session.key"]?.trim(),backupKey=raw["backup.key"]?.trim();
++  if(!/^[a-f0-9]{96}$/.test(sessionKey||"")||!/^[a-f0-9]{64}$/.test(backupKey||""))fail("minimal_original_keys_missing_or_invalid");
++  const files=Object.fromEntries(Object.entries(codec.specs).map(([name,s])=>[name,s.kind==="array"?[]:s.kind==="value"?null:{}]));
++  for(const name of supporting)files[name]=parse(name);
++  files["accounts.json"]=clone(accounts);files["employees.json"]=clone(employees);
++  const ids=new Set(),security=files["security.json"],official=new Set([security.adminAccount?.badge,security.announcer?.badge].filter(Boolean).map(String));
++  for(const e of employees){
++    if(!obj(e)||!["string","number"].includes(typeof e.badge)||(typeof e.badge==="number"&&!Number.isSafeInteger(e.badge))||
++      !String(e.badge)||ids.has(String(e.badge)))fail("minimal_employee_identity_invalid");
++    ids.add(String(e.badge));
++  }
++  let activeFactors=0,pendingFactors=0,officialAccounts=0;
++  for(const [id,a]of Object.entries(accounts)){
++    if(!/^\d{1,16}$/.test(id)||!obj(a)||(!ids.has(id)&&!official.has(id)))fail("minimal_account_relationship_invalid");
++    if(!ids.has(id))officialAccounts++;
++    if(!/^[a-f0-9]{128}$/.test(a.hash||"")||!/^[a-f0-9]{32}$/.test(a.salt||"")||
++      (a.kdf!==undefined&&![1,2].includes(a.kdf))||!Number.isSafeInteger(a.ver)||a.ver<1)fail("minimal_credential_format_unsupported");
++    if(a.totp?.on){factor(sessionKey,a.totp.key);activeFactors++;}
++    if(a.totpSetup?.key){factor(sessionKey,a.totpSetup.key);pendingFactors++;}
++    if(a.pending&&(!/^[a-f0-9]{128}$/.test(a.pending.hash||"")||!/^[a-f0-9]{32}$/.test(a.pending.salt||"")||
++      (a.pending.kdf!==undefined&&![1,2].includes(a.pending.kdf))))fail("minimal_pending_credentials_invalid");
++  }
++  // Only conduct restrictions for the retained accounts are login dependencies.
++  const conduct=files["conduct.json"],retained=new Set(Object.keys(accounts));
++  files["conduct.json"]={...conduct,warnings:(conduct.warnings||[]).filter(r=>retained.has(String(r.badge))),
++    bans:Object.fromEntries(Object.entries(conduct.bans||{}).filter(([id])=>retained.has(id))),
++    resets:Object.fromEntries(Object.entries(conduct.resets||{}).filter(([id])=>retained.has(id)))};
++  files["backup.json"]={enabled:false};
++  const membership={accounts:hmac(auditKey,"accounts-membership",Object.keys(accounts).sort()),
++    employees:hmac(auditKey,"employees-membership",employees.map(e=>canonical([typeof e.badge,e.badge])).sort())};
++  const fingerprint=hmac(auditKey,"minimal-source-v1",{bucketFingerprint,files,keys:{sessionKey,backupKey}});
++  const capsule=Object.freeze({kind:"BQ_MINIMAL_SOURCE_V1",bucketFingerprint,synthetic,counts:Object.freeze(counts),
++    activeFactors,pendingFactors,officialAccounts,emailLinkedAccounts:Object.entries(accounts).filter(([id,a])=>a.email||
++      (String(security.announcer?.badge)===id&&security.announcer?.email)).length,
++    storedSmtpConfigured:Boolean(files["smtp.json"].user&&files["smtp.json"].pass),fingerprint,membership:Object.freeze(membership)});
++  held.set(capsule,{files:freeze(files),sessionKey,backupKey,auditKey:Buffer.from(auditKey),rawFingerprint:hmac(auditKey,"source-read-v1",raw)});
++  return capsule;
++}
++function access(source){if(!held.has(source))fail("minimal_verified_source_required");return held.get(source);}
++async function read({client,bucketFingerprint,auditKey,synthetic=false,expected}){
++  const raw={};
++  for(const name of [...required,...supporting]){
++    const present=await client.exists("data/"+name);if(!present.ok)fail("minimal_source_read_failed");
++    if(!present.value){if(required.includes(name))fail("minimal_source_required_file_missing");raw[name]=null;continue;}
++    const r=await client.downloadAsText("data/"+name);if(!r.ok||typeof r.value!=="string"||Buffer.byteLength(r.value)>20*1024*1024)fail("minimal_source_read_failed");
++    raw[name]=r.value;
++    // Stop before reading keys/settings if the owner-designated counts changed.
++    if(name==="employees.json"){
++      let a,e;try{a=JSON.parse(raw["accounts.json"]);e=JSON.parse(raw[name]);}catch{fail("minimal_source_json_invalid");}
++      const counts={employees:Array.isArray(e)?e.length:null,accounts:obj(a)?Object.keys(a).length:null,registered:obj(a)?Object.values(a).filter(v=>v?.hash).length:null};
++      const wanted=expected||{employees:6311,accounts:8};
++      if(counts.employees!==wanted.employees||counts.accounts!==wanted.accounts||counts.registered!==wanted.accounts)
++        throw Object.assign(Error("minimal_source_counts_changed"),{code:"minimal_source_counts_changed",counts});
++    }
++  }
++  const source=prepare(raw,{bucketFingerprint,auditKey,synthetic,expected});
++  // A second read detects live drift; it is NOT an atomic snapshot or freeze.
++  for(const [name,value]of Object.entries(raw)){
++    const r=await client.exists("data/"+name);if(!r.ok||Boolean(r.value)!==(value!==null))fail("minimal_source_changed_during_read");
++    if(value!==null){const check=await client.downloadAsText("data/"+name);if(!check.ok||check.value!==value)fail("minimal_source_changed_during_read");}
++  }
++  return source;
++}
++module.exports={read,prepare,access,hmac,required,supporting,clone};
+diff --git a/scripts/managed/minimal-bindings.cjs b/scripts/managed/minimal-bindings.cjs
+new file mode 100644
+index 0000000..831d9bd
+--- /dev/null
++++ b/scripts/managed/minimal-bindings.cjs
+@@ -0,0 +1,18 @@
++// Read-only future approval preparation. Output contains only counts and
++// fingerprints, never employee/account records or original secret values.
++const fs=require("node:fs"),cfg=require("../../deploy/managed/config.cjs"),S=require("../../migration/minimal/source.cjs");
++async function bindings({configFile,client,auditHex}){
++  if(!/^[a-f0-9]{64}$/.test(auditHex||""))cfg.fail("minimal_protected_audit_key_required");
++  const text=fs.readFileSync(configFile,"utf8"),section=text.match(/(?:^|\n)\[objectStorage\]\s*\n([\s\S]*?)(?=\n\[|$)/)?.[1];
++  const bucket=section?.match(/(?:^|\n)\s*defaultBucketID\s*=\s*"([^"]+)"/)?.[1];if(!bucket)cfg.fail("minimal_designated_bucket_missing");
++  if(!client){const {Client}=await import("@replit/object-storage");client=new Client({bucketId:bucket});}
++  const source=await S.read({client,bucketFingerprint:cfg.sha(bucket),auditKey:Buffer.from(auditHex,"hex")}),p=S.access(source);
++  return {keys:{session:cfg.sha(p.sessionKey),backup:cfg.sha(p.backupKey)},minimal:{policy:"employees-accounts-only-v1",sourceBucket:bucket,
++    sourceBucketFingerprint:source.bucketFingerprint,sourceFingerprint:source.fingerprint,membership:source.membership,
++    employees:source.counts.employees,accounts:source.counts.accounts,freezeEvidence:null},
++    observations:{counts:source.counts,activeFactors:source.activeFactors,pendingFactors:source.pendingFactors,officialAccounts:source.officialAccounts,
++      emailLinkedAccounts:source.emailLinkedAccounts,storedSmtpConfigured:source.storedSmtpConfigured,readStable:true,sourceFrozen:false,executionAuthorized:false}};
++}
++module.exports={bindings};
++if(require.main===module)bindings({configFile:process.argv[2],auditHex:process.env.BQ_MINIMAL_AUDIT_KEY})
++  .then(r=>console.log(JSON.stringify(r))).catch(e=>{console.error(JSON.stringify({error:e.code||"minimal_bindings_failed",sourceWritten:false,...(e.counts?{observedCounts:e.counts}:{})}));process.exitCode=1;});
+diff --git a/scripts/managed/minimal-cutover-tests.cjs b/scripts/managed/minimal-cutover-tests.cjs
+new file mode 100644
+index 0000000..014fa4c
+--- /dev/null
++++ b/scripts/managed/minimal-cutover-tests.cjs
+@@ -0,0 +1,115 @@
++// Isolated synthetic control/provider tests; no database connections or live SDK.
++const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),crypto=require("node:crypto"),assert=require("node:assert/strict"),http=require("node:http"),{EventEmitter}=require("node:events");
++const cfg=require("../../deploy/managed/config.cjs"),S=require("../../migration/minimal/source.cjs"),I=require("../../migration/minimal/import.cjs");
++const delivery=require("../../development/postgres/minimal-delivery.cjs"),{launch}=require("../../deploy/managed/minimal-bootstrap.cjs");
++const {ImmutableStore}=require("../../deploy/staging/object-store.cjs"),{FileStorage}=require("../forensics/file-storage.cjs");
++const root=fs.mkdtempSync(path.join(os.tmpdir(),"bq-forensics-minimal-guards-")),results=[],sleep=ms=>new Promise(r=>setTimeout(r,ms));
++// Tests intentionally close and rebind the same public port. Do not reuse an
++// undici keep-alive socket belonging to the previous synthetic listener.
++const freshFetch=(url,options={})=>fetch(url,{...options,headers:{...options.headers,Connection:"close"}});
++const key="f".repeat(96),backup="e".repeat(64),h="a".repeat(64),auditKey=Buffer.alloc(32,17);
++const raw={"accounts.json":JSON.stringify(Object.fromEntries(Array.from({length:8},(_,i)=>[String(i+1),{hash:"b".repeat(128),salt:"c".repeat(32),ver:1,kdf:2}]))),
++  "employees.json":JSON.stringify(Array.from({length:6311},(_,i)=>({badge:String(i+1),name:"Invented Fixture Only"}))),"session.key":key,"backup.key":backup};
++for(const n of S.supporting)raw[n]="{}";
++const source=S.prepare(raw,{bucketFingerprint:cfg.sha("invented-source"),auditKey});
++const env={REPL_ID:"invented-app",REPLIT_DEPLOYMENT:"1",DATABASE_URL:"postgresql://invented:invented@db.invalid/bq?sslmode=require",BQ_MANAGED_SESSION_KEY:key,BQ_MANAGED_BACKUP_KEY:backup};
++const manifest={kind:"BQ_REPLIT_MANAGED_V1",environment:"production",dataset:"managed-production-"+crypto.randomUUID(),appFingerprint:cfg.sha(env.REPL_ID),
++  endpointFingerprint:cfg.endpoint(env,"production").identity,developmentEndpointFingerprint:cfg.sha("invented-development"),
++  schemaFingerprint:h,releaseFingerprint:h,permissionsFingerprint:h,keys:{session:cfg.sha(key),backup:cfg.sha(backup)},
++  bucket:"invented-target",productionBucketFingerprint:cfg.sha("invented-target"),mockStorage:false,
++  permissionApproval:"reviewed-managed-runtime-capabilities",approval:"invented-only",
++  release:Object.fromEntries(["source","backup","reconciliation","custody","rollback","frozenGeneration"].map(k=>[k,h])),
++  minimal:{policy:"employees-accounts-only-v1",sourceBucket:"invented-source",sourceBucketFingerprint:source.bucketFingerprint,
++    sourceFingerprint:source.fingerprint,membership:source.membership,employees:6311,accounts:8,freezeEvidence:h}};
++fs.writeFileSync(path.join(root,"production-approvals.json"),JSON.stringify({approvals:[{id:manifest.approval,operation:"managed-production-activate",
++  binding:cfg.sha(cfg.canonical(manifest)),approvedBy:"invented fixture",expires:new Date(Date.now()+600000).toISOString()}]}));
++fs.writeFileSync(path.join(root,"approvals.json"),'{"approvals":[]}');
++const proof=cfg.verify({env,manifest,approvalRoot:root});
++async function test(name,fn){await fn();results.push({name,status:"PASS"});console.log("PASS "+name);}
++let bootstrap;
++(async()=>{
++  try{
++    await test("Production import needs its separate exact execution approval",()=>assert.throws(()=>I.authorize(proof,manifest,source,{approvalRoot:root}),/minimal_execution_approval_required/));
++    await test("A valid activation proof cannot authorize a different manifest",()=>assert.throws(()=>I.authorize(proof,{...manifest,approval:"other"},source,{approvalRoot:root}),/minimal_verified_manifest_required/));
++    await test("Freeze evidence must describe the same approved generation",()=>assert.throws(()=>I.policy({...manifest,minimal:{...manifest.minimal,freezeEvidence:"b".repeat(64)}},source),/minimal_policy_or_custody_mismatch/));
++    await test("Source bucket cannot become the destination write bucket",()=>assert.throws(()=>I.policy({...manifest,bucket:"invented-source"},source),/minimal_policy_or_custody_mismatch/));
++    await test("A forged import permit is rejected before the first SQL query",()=>assert.rejects(I.apply({client:{query:()=>{throw Error("SQL must not run");}},source,proof,permit:{}}),/minimal_execution_approval_required/));
++    await test("Exact synthetic production approval issues a permit without connecting",()=>{
++      fs.writeFileSync(path.join(root,"approvals.json"),JSON.stringify({approvals:[{operation:"minimal-employee-account-import",
++        binding:cfg.sha(cfg.canonical({manifest,source:source.fingerprint})),approvedBy:"invented fixture",expires:new Date(Date.now()+600000).toISOString()}]}));
++      assert.ok(Object.isFrozen(I.authorize(proof,manifest,source,{approvalRoot:root})));
++    });
++    await test("Production media keys require issued proof and remain checksum-verified",async()=>{
++      const store=new ImmutableStore(new FileStorage(path.join(root,"mock-media")),{dataset:proof.dataset,managedProof:proof});
++      const bytes=Buffer.from("invented new media only"),id=crypto.randomUUID(),r=await store.put(id,bytes);
++      assert.deepEqual(await store.read(r.key,r.sha),bytes);
++      await assert.rejects(store.read(r.key.replace(proof.dataset,"managed-production-"+crypto.randomUUID()),r.sha),/object_key_invalid/);
++    });
++    await test("A forged media proof never opens the production namespace",()=>assert.throws(()=>new ImmutableStore({},{dataset:proof.dataset,managedProof:{...proof}}),/managed_verified_proof_required/));
++    await test("Source reader detects changes and exposes no write method",async()=>{
++      const times={};const client={exists:async()=>({ok:true,value:true}),downloadAsText:async name=>{const n=name.slice(5);times[n]=(times[n]||0)+1;return {ok:true,value:times[n]>1&&n==="accounts.json"?raw[n]+" ":raw[n]};}};
++      await assert.rejects(S.read({client,bucketFingerprint:source.bucketFingerprint,auditKey}),/minimal_source_changed_during_read/);
++    });
++    await test("Unsupported SMS destinations fail before any transport",()=>assert.throws(()=>delivery.validate({host:"invented.invalid",path:"/v1",method:"POST",body:"",headers:{}}),/sms_delivery_binding_invalid/));
++    function transport(status){return (opts,callback)=>{assert.equal(opts.rejectUnauthorized,true);assert.equal(opts.minVersion,"TLSv1.2");const req=new EventEmitter();req.setTimeout=()=>req;req.end=()=>{const res=new EventEmitter();res.statusCode=status;res.resume=()=>{};callback(res);queueMicrotask(()=>res.emit("end"));};return req;};}
++    const sms={host:"api.taqnyat.sa",path:"/v1/messages",method:"POST",headers:{"Content-Type":"application/json"},body:"{\"invented\":true}"};
++    await test("SMS provider success uses strict TLS transport without reading bodies",()=>delivery.sendSms(sms,transport(201)));
++    await test("Provider rejection is not marked successful",()=>assert.rejects(delivery.sendSms(sms,transport(503)),/sms_delivery_failed/));
++    let enabled=false,attempts=0;
++    const originalPort=process.env.PORT,originalHost=process.env.HOST;
++    bootstrap=await launch({port:5131,retryMs:100,startRuntime:async()=>{
++      attempts++;if(!enabled)throw Error("invented unapproved destination");
++      const server=http.createServer((req,res)=>{let body="";req.on("data",b=>body+=b);req.on("end",()=>{res.writeHead(200,{"Content-Type":"application/json"});res.end(JSON.stringify({fixture:true,body,key:req.headers["idempotency-key"]}));});});
++      await new Promise(r=>server.listen(Number(process.env.PORT),"127.0.0.1",r));return {close:()=>new Promise(r=>server.close(r))};
++    }});
++    await test("Maintenance keeps login closed and liveness open before approval",async()=>{
++      const rootResponse=await freshFetch("http://127.0.0.1:5131/");assert.equal(rootResponse.status,200);assert.equal((await rootResponse.json()).ready,false);
++      assert.equal((await freshFetch("http://127.0.0.1:5131/health/live")).status,200);
++      for(let i=0;i<5;i++){assert.equal((await freshFetch("http://127.0.0.1:5131/api/login")).status,503);await sleep(75);}assert.ok(attempts>1);
++    });
++    await test("Only verified runtime startup switches the maintenance listener",async()=>{
++      enabled=true;const end=Date.now()+3000;let r;
++      do{await sleep(50);r=await freshFetch("http://127.0.0.1:5131/health/ready");}while(r.status!==200&&Date.now()<end);
++      assert.equal(r.status,200);assert.equal((await r.json()).fixture,true);
++    });
++    await test("Cutover proxy preserves POST bytes and idempotency identity",async()=>{
++      const r=await freshFetch("http://127.0.0.1:5131/api/invented",{method:"POST",headers:{"Idempotency-Key":"invented-retry-key"},body:"invented-exact-body"});
++      const data=await r.json();assert.equal(data.body,"invented-exact-body");assert.equal(data.key,"invented-retry-key");
++    });
++    await bootstrap.close();bootstrap=null;
++    await test("Published migration runner cannot import through a workspace/development flag",async()=>{
++      const runner=require("../../deploy/managed/minimal-import-runner.cjs");
++      assert.equal(runner.requested({REPLIT_DEPLOYMENT:"1"}),false);
++      assert.equal(runner.requested({REPLIT_DEPLOYMENT:"0",BQ_MINIMAL_OPERATION:"owner-approved-import-once"}),false);
++      bootstrap=await runner.run({env:{REPLIT_DEPLOYMENT:"0",BQ_MINIMAL_OPERATION:"owner-approved-import-once"},port:5131,
++        executeImport:async()=>{throw Error("must not execute");}});
++      assert.equal((await freshFetch("http://127.0.0.1:5131/")).status,200);
++      assert.equal((await freshFetch("http://127.0.0.1:5131/health/ready")).status,503);await bootstrap.close();bootstrap=null;
++    });
++    await test("One-time runner stays in maintenance after import success or failure, without retry",async()=>{
++      const file=path.join(root,"invented-manifest.json");fs.writeFileSync(file,JSON.stringify(manifest));
++      for(const fail of [false,true]){
++        let calls=0;bootstrap=await require("../../deploy/managed/minimal-import-runner.cjs").run({
++          env:{REPLIT_DEPLOYMENT:"1",BQ_MINIMAL_OPERATION:"owner-approved-import-once",BQ_MANAGED_MANIFEST_FILE:file},port:5131,
++          executeImport:async()=>{calls++;if(fail)throw Object.assign(Error("invented"),{code:"minimal_invented_failure"});return {employees:6311,accounts:8,replayed:false};}});
++        await sleep(100);assert.equal(calls,1);assert.equal((await freshFetch("http://127.0.0.1:5131/api/login")).status,503);
++        assert.equal((await freshFetch("http://127.0.0.1:5131/health/ready")).status,503);await bootstrap.close();bootstrap=null;
++      }
++    });
++    await test("Approval binding preparation refuses missing protected audit key before source reads",()=>
++      assert.rejects(require("./minimal-bindings.cjs").bindings({configFile:"not-read",auditHex:""}),/minimal_protected_audit_key_required/));
++    await test("Approval preparation emits only fingerprints and aggregates, not records or keys",async()=>{
++      const file=path.join(root,"designated.replit");fs.writeFileSync(file,'[objectStorage]\ndefaultBucketID = "invented-source"\n');
++      const client={exists:async()=>({ok:true,value:true}),downloadAsText:async name=>({ok:true,value:raw[name.slice(5)]})};
++      const output=await require("./minimal-bindings.cjs").bindings({configFile:file,client,auditHex:auditKey.toString("hex")});
++      assert.equal(output.minimal.sourceFingerprint,source.fingerprint);assert.equal(output.observations.counts.employees,6311);
++      assert.equal(output.keys.session,cfg.sha(key));assert.equal(output.observations.executionAuthorized,false);
++      const text=JSON.stringify(output);assert.equal(text.includes(key),false);assert.equal(text.includes(backup),false);
++      assert.doesNotMatch(text,/"hash":|"salt":|"sessionKey":|"backupKey":|"employees":\[/);
++    });
++    if(originalPort===undefined)delete process.env.PORT;else process.env.PORT=originalPort;
++    if(originalHost===undefined)delete process.env.HOST;else process.env.HOST=originalHost;
++    console.log(JSON.stringify({suite:"minimal-cutover-guards",pass:results.length,fail:0,provider:"mock only",productionTouched:false}));
++  }catch(e){console.error(JSON.stringify({failed:e.code||e.message,assertion:e.message,results}));process.exitCode=1;}
++  finally{if(bootstrap)await bootstrap.close();fs.rmSync(root,{recursive:true,force:true});}
++})();
+diff --git a/scripts/managed/minimal-inspect.cjs b/scripts/managed/minimal-inspect.cjs
+new file mode 100644
+index 0000000..38877ce
+--- /dev/null
++++ b/scripts/managed/minimal-inspect.cjs
+@@ -0,0 +1,15 @@
++// Explicit live read-only diagnostics. No DB connections, local data directory,
++// original-key persistence, source writes, record values or raw SDK errors.
++const fs=require("node:fs"),S=require("../../migration/minimal/source.cjs"),{sha}=require("../../deploy/managed/config.cjs");
++(async()=>{
++  if(process.argv.length!==3)throw Error("minimal_explicit_config_required");
++  const bucket=fs.readFileSync(process.argv[2],"utf8").match(/defaultBucketID\s*=\s*"([^"]+)"/)?.[1];
++  if(!bucket)throw Error("minimal_designated_bucket_missing");
++  const {Client}=await import("@replit/object-storage");
++  const source=await S.read({client:new Client({bucketId:bucket}),bucketFingerprint:sha(bucket)});
++  console.log(JSON.stringify({scope:"owner-designated App Storage; memory-only; no data/key exports or destination writes",
++    counts:source.counts,activeFactors:source.activeFactors,pendingFactors:source.pendingFactors,officialAccounts:source.officialAccounts,
++    emailLinkedAccounts:source.emailLinkedAccounts,storedSmtpConfigured:source.storedSmtpConfigured,
++    originalKeyFormatsVerified:true,activeAndPendingFactorDomainsVerified:true,stableRead:true,cutoverAuthorized:false}));
++})().catch(e=>{console.error(JSON.stringify({error:/^minimal_[a-z_]+$/.test(e.code||e.message)?e.code||e.message:"minimal_source_inspection_failed",
++  ...(e.code==="minimal_source_counts_changed"?{counts:e.counts}:{}),cutoverAuthorized:false}));process.exitCode=1;});
+diff --git a/scripts/managed/minimal-tests.cjs b/scripts/managed/minimal-tests.cjs
+new file mode 100644
+index 0000000..c308025
+--- /dev/null
++++ b/scripts/managed/minimal-tests.cjs
+@@ -0,0 +1,114 @@
++const fs=require("node:fs"),os=require("node:os"),path=require("node:path"),crypto=require("node:crypto"),assert=require("node:assert/strict"),{spawn}=require("node:child_process");
++const {prepare}=require("../../development/postgres/isolation.cjs"),{Repository}=require("../../development/postgres/repository.cjs");
++const F=require("../../development/postgres/fixtures.cjs"),schema=require("../../deploy/managed/schema.cjs"),cfg=require("../../deploy/managed/config.cjs");
++const S=require("../../migration/minimal/source.cjs"),I=require("../../migration/minimal/import.cjs");
++const {execute}=require("../../migration/minimal/execute.cjs"),{ImmutableStore}=require("../../deploy/staging/object-store.cjs");
++const sleep=ms=>new Promise(r=>setTimeout(r,ms)),root=fs.mkdtempSync(path.join(os.tmpdir(),"bq-pg-dev-"));
++const proof=prepare(root),repo=new Repository(proof),fixture=F.create(proof.sessionKey),auditKey=crypto.randomBytes(32),port=5134,logs=[];
++const raw={},files=fixture.files;
++files["accounts.json"]["105"]=S.clone(files["accounts.json"]["101"]);
++files["accounts.json"]["105"].totp.on=false;
++files["accounts.json"]["105"].totpSetup={key:files["accounts.json"]["101"].totp.key,exp:new Date(Date.now()+600000).toISOString()};
++files["accounts.json"]["105"].unknownSecurityExtension={preserve:"invented-opaque"};
++files["accounts.json"]["105"].email="";
++files["accounts.json"]["9002"].email="";files["accounts.json"]["9002"].totp.on=false;
++files["security.json"].announcer.email="";
++files["smtp.json"]={host:"smtp.example.invalid",port:465,user:"fixture@example.invalid",pass:"invented-test-only"};
++files["sms.json"]={provider:"taqnyat",token:"invented-test-only",sender:"Synthetic",enabled:true};
++files["employees.json"].push(...Array.from({length:6303},(_,i)=>({badge:String(10000+i),name:"Synthetic Directory Employee",department:"Synthetic",position:"Synthetic",unknownEmployeeExtension:{preserve:i}})));
++files["conduct.json"]={warnings:[{badge:"101",at:new Date().toISOString(),reason:"invented restriction"},{badge:"107",at:new Date().toISOString()}],bans:{"104":true,"107":true},resets:{}};
++for(const name of [...S.required,...S.supporting])raw[name]=name==="session.key"?proof.sessionKey:name==="backup.key"?proof.backupKey:JSON.stringify(files[name]||{});
++const options={bucketFingerprint:cfg.sha("invented-source-bucket"),auditKey,synthetic:true};
++const source=S.prepare(raw,options),results=[];
++let child;
++async function test(name,fn){try{await fn();results.push({name,status:"PASS"});console.log("PASS "+name);}catch(e){results.push({name,status:"FAIL",code:e.code||e.message});throw e;}}
++async function boot(){
++  const firstLog=logs.length;
++  child=spawn(process.execPath,[path.join(__dirname,"minimal-worker.cjs"),root],{cwd:proof.app,env:{...proof.childEnv,PORT:String(port)},stdio:["ignore","pipe","pipe"]});
++  child.stdout.on("data",d=>logs.push(d.toString()));child.stderr.on("data",d=>logs.push(d.toString()));
++  for(let i=0;i<180;i++){if(child.exitCode!==null)throw Error("minimal_worker_exit");try{
++    if(logs.slice(firstLog).some(x=>x.includes("MINIMAL_STORAGE_HTTPS_PASSTHROUGH_OK"))&&
++      (await fetch(`http://127.0.0.1:${port}/health/ready`)).status===200)return;
++  }catch{}await sleep(100);}
++  throw Error("minimal_worker_not_ready");
++}
++async function stop(){if(child&&child.exitCode===null){const done=new Promise(r=>child.once("exit",r));child.kill("SIGTERM");await Promise.race([done,sleep(3000)]);if(child.exitCode===null){child.kill("SIGKILL");await done;}}}
++async function request(url,body={},badge="101",extra={}){
++  const token=fixture.credentials.tokens[badge],r=await fetch(`http://127.0.0.1:${port}${url}`,{method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":crypto.randomUUID(),...(token?{"x-session":token}:{}),...extra},body:JSON.stringify({...(token?{token}:{}),...body}),signal:AbortSignal.timeout(30000)});
++  let json;try{json=await r.json();}catch{json={};}return {status:r.status,json};
++}
++// Run in one sequential owner so clients/temporary fixture state are cleaned up
++// even on the first failed assertion. No real DATABASE_URL is used.
++async function run(){
++  let c;
++  try{
++    c=await repo.pool.connect();
++    for(const sql of schema.statements)await c.query(sql);
++    for(const m of schema.migrations)await c.query("INSERT INTO dev.schema_migrations(version,checksum) VALUES($1,$2)",[m.version,m.checksum]);
++    c.release();c=null;
++    await test("Owner-sized source: 6311 employees, eight accounts and official identity dependencies",()=>{assert.equal(source.counts.employees,6311);assert.equal(source.counts.accounts,8);assert.equal(source.officialAccounts,2);assert.equal(source.activeFactors,6);assert.equal(source.pendingFactors,1);assert.equal(source.emailLinkedAccounts,6);assert.equal(Object.keys(S.access(source).files["accounts.json"]).length,8);});
++    await test("Local three-account copy / count drift is refused",()=>{const r={...raw,"accounts.json":JSON.stringify(Object.fromEntries(Object.entries(files["accounts.json"]).slice(0,3)))};assert.throws(()=>S.prepare(r,options),/minimal_source_counts_changed/);});
++    await test("Wrong signing key refuses original active/pending factors",()=>assert.throws(()=>S.prepare({...raw,"session.key":"f".repeat(96)},options),/minimal_factor_domain_invalid/));
++    await test("Missing original keys cannot generate replacements",()=>assert.throws(()=>S.prepare({...raw,"backup.key":null},options),/minimal_original_keys_missing_or_invalid/));
++    await test("Unlinked account IDs are refused without coercion",()=>{const a=S.clone(files["accounts.json"]);a["999999"]=a["101"];delete a["101"];assert.throws(()=>S.prepare({...raw,"accounts.json":JSON.stringify(a)},options),/minimal_account_relationship_invalid/);});
++    await test("Unsupported KDF and duplicate employee identities fail closed",()=>{const a=S.clone(files["accounts.json"]);a["101"].kdf=99;assert.throws(()=>S.prepare({...raw,"accounts.json":JSON.stringify(a)},options),/minimal_credential_format_unsupported/);const e=S.clone(files["employees.json"]);e[1].badge=e[0].badge;assert.throws(()=>S.prepare({...raw,"employees.json":JSON.stringify(e)},options),/minimal_employee_identity_invalid/);});
++    await test("A real-source capsule cannot reach Development SQL",async()=>{const real=S.prepare(raw,{...options,synthetic:false});await assert.rejects(I.apply({client:{query:()=>{throw Error("query_must_not_run");}},source:real,proof}),/minimal_real_source_in_development_forbidden/);});
++    await test("Live execution outside a published process is refused",()=>assert.rejects(execute({env:{}}),/minimal_published_execution_required/));
++    await test("Unverified production media namespace is refused",()=>assert.throws(()=>new ImmutableStore({},{dataset:"managed-production-"+crypto.randomUUID()}),/synthetic_dataset_required/));
++    c=await repo.pool.connect();
++    await test("Transaction failure leaves no accounts/employees/authority",async()=>{await assert.rejects(I.apply({client:c,source,proof,failBeforeCommit:true}),/minimal_injected_rollback/);assert.equal((await c.query("SELECT count(*)::int n FROM dev.accounts")).rows[0].n,0);assert.equal((await c.query("SELECT count(*)::int n FROM dev.authority")).rows[0].n,0);});
++    await test("Wrong original target signing/backup keys are refused",()=>assert.rejects(I.apply({client:c,source,proof:{...proof,sessionKey:"e".repeat(96)}}),/minimal_original_key_continuity_required/));
++    await test("Pre-existing synthetic destination data is never reset",async()=>{await c.query("INSERT INTO dev.runtime_state VALUES('invented-foreign','{}'::jsonb)");await assert.rejects(I.apply({client:c,source,proof}),/minimal_destination_not_empty/);await c.query("DELETE FROM dev.runtime_state WHERE name='invented-foreign'");});
++    await test("Minimal import commits with independent SQL memberships and credentials reconciled",async()=>{const r=await I.apply({client:c,source,proof});assert.equal(r.counts.employees,6311);assert.equal(r.counts.accounts,8);assert.equal(r.replayed,false);});
++    await test("Replay never rewrites accepted SQL account changes",async()=>{await c.query("UPDATE dev.accounts SET attrs=attrs||'{\"testAfterImport\":\"preserve\"}'::jsonb WHERE entry_key='101'");const r=await I.apply({client:c,source,proof});assert.equal(r.replayed,true);assert.equal((await c.query("SELECT attrs->>'testAfterImport' n FROM dev.accounts WHERE entry_key='101'")).rows[0].n,"preserve");});
++    await test("Changed source cannot silently reimport even with the same counts",async()=>{const r=S.clone(files["accounts.json"]);r["101"].ver++;const changed=S.prepare({...raw,"accounts.json":JSON.stringify(r)},options);await assert.rejects(I.apply({client:c,source:changed,proof}),/minimal_previous_import_binding_mismatch/);});
++    await test("Historical social content starts empty; account security and bans remain",async()=>{for(const t of ["posts","comments","groups","notifications","profiles","person_follows","push_subscriptions"]){assert.equal((await c.query(`SELECT count(*)::int n FROM dev.${t}`)).rows[0].n,0);}const d=await repo.load(c);assert.deepEqual(d.get("accounts.json").value["105"].unknownSecurityExtension,{preserve:"invented-opaque"});assert.deepEqual(d.get("conduct.json").value.bans,{"104":true});assert.equal(d.get("conduct.json").value.warnings.length,1);});
++    c.release();c=null;
++    fs.writeFileSync(path.join(root,"provision-receipt.json"),JSON.stringify({dataset:proof.dataset,seal:proof.seal,state:"committed"}),{mode:0o600});
++    await test("Original SQL application boots and preserves non-SMS provider HTTPS transport",async()=>{
++      await boot();const end=Date.now()+3000;while(Date.now()<end&&!logs.some(x=>x.includes("MINIMAL_STORAGE_HTTPS_PASSTHROUGH_OK")))await sleep(50);
++      assert.ok(logs.some(x=>x.includes("MINIMAL_STORAGE_HTTPS_PASSTHROUGH_OK")));
++    });
++    await test("Password verification succeeds; wrong passwords and bans are refused",async()=>{assert.equal((await request("/api/login",{badge:"101",password:fixture.credentials.password},"")).json.needTotp,true);assert.equal((await request("/api/login",{badge:"101",password:"InventedWrongPassword!"},"")).status,401);assert.equal((await request("/api/login",{badge:"104",password:fixture.credentials.password},"")).status,403);});
++    await test("Legacy KDF and leading-zero identity still authenticate",async()=>{const r=await request("/api/login",{badge:"00106",password:fixture.credentials.password},"");assert.equal(r.status,200);assert.equal(r.json.needTotp,true);});
++    await test("Existing session, system administrator and moderator permissions remain compatible",async()=>{assert.equal((await request("/api/session")).status,200);assert.equal((await request("/api/social",{action:"admin-summary"},"9001")).status,200);assert.equal((await request("/api/social",{action:"admin-summary"},"102")).status,200);assert.equal((await request("/api/social",{action:"admin-summary"},"103")).status,403);});
++    await test("Employee-directory search uses preserved SQL directory records",async()=>{const r=await request("/api/social",{action:"search",q:"Synthetic"});assert.equal(r.status,200);assert.ok(JSON.stringify(r.json).includes("Synthetic"));});
++    await test("Original TOTP decrypts and produces a successful login",async()=>{const l=await request("/api/login",{badge:"102",password:fixture.credentials.password},"");const r=await request("/api/login-2fa",{ticket:l.json.ticket,code:F.code(fixture.credentials.totpKeys["102"])},"");assert.equal(r.status,200);assert.ok(r.json.token);});
++    await test("Old unfinished challenge tickets are excluded without changing sessions or recovery codes",async()=>{
++      const l=await request("/api/login",{badge:"103",password:fixture.credentials.password},"");
++      const parts=Buffer.from(l.json.ticket,"base64url").toString().split("."),payload=parts.slice(0,-1).join(".");
++      const old=Buffer.from(payload+"."+crypto.createHmac("sha256",proof.sessionKey).update(`ticket:2fa:${payload}`).digest("hex")).toString("base64url");
++      assert.equal((await request("/api/login-2fa",{ticket:old,code:fixture.credentials.recovery},"")).status,401);
++      const r=await request("/api/login-2fa",{ticket:l.json.ticket,code:fixture.credentials.recovery},"");
++      assert.equal(r.status,200);assert.ok(r.json.token);assert.equal((await request("/api/session")).status,200);
++    });
++    await test("Original pending TOTP setup and the email-verification login workflow remain usable",async()=>{
++      const l=await request("/api/login",{badge:"105",password:fixture.credentials.password},"");assert.equal(l.json.needSetup,true);
++      const enrolled=await request("/api/login-2fa",{op:"enroll",ticket:l.json.ticket,code:F.code(fixture.credentials.totpKeys["101"])},"");
++      assert.equal(enrolled.status,200);assert.equal(enrolled.json.needEmail,true);
++      const started=await request("/api/login-2fa",{op:"email",ticket:enrolled.json.ticket,email:"fixture-105@example.invalid"},"");
++      assert.equal(started.status,200);assert.equal(started.json.sent,true);
++      let code;const end=Date.now()+15000;
++      while(Date.now()<end&&!code){if(fs.existsSync(path.join(root,"invented-mail.jsonl")))for(const row of fs.readFileSync(path.join(root,"invented-mail.jsonl"),"utf8").trim().split("\n").map(JSON.parse)){
++        if(row.to==="fixture-105@example.invalid")code=row.text.match(/\b\d{6}\b/)?.[0]||code;
++      }if(!code)await sleep(200);}
++      assert.ok(code);const confirmed=await request("/api/login-2fa",{op:"email-confirm",ticket:enrolled.json.ticket,code},"");
++      assert.equal(confirmed.status,200);assert.ok(confirmed.json.token);
++    });
++    await test("New employee registration queues durable real-provider SMS, not a fixture delivery",async()=>{
++      const r=await request("/api/register",{badge:"107",code:fixture.credentials.check,mobile:fixture.credentials.mobile,password:"InventedNewAccount!2026"},"");
++      assert.equal(r.status,200,JSON.stringify(r.json));assert.equal(r.json.needOtp,true);
++      const end=Date.now()+10000;while(Date.now()<end&&!fs.existsSync(path.join(root,"invented-sms.jsonl")))await sleep(200);
++      assert.ok(fs.existsSync(path.join(root,"invented-sms.jsonl")));
++      const rows=await repo.pool.query("SELECT fixture_receipt FROM dev.outbox WHERE topic='sms' AND delivered_at IS NOT NULL");
++      assert.ok(rows.rows.some(x=>x.fixture_receipt.transport==="sms-outbox-v1"));
++    });
++    await test("Push is explicitly unconfigured, never replacement VAPID keys or fixture success",async()=>{const r=await request("/api/push");assert.equal(r.status,503);assert.equal(r.json.error,"not_enabled_in_existing_accounts_release");});
++    await test("Durable mail is delivered only after commit, using non-fixture receipts",async()=>{const end=Date.now()+10000;while(Date.now()<end&&!fs.existsSync(path.join(root,"invented-mail.jsonl")))await sleep(200);assert.ok(fs.existsSync(path.join(root,"invented-mail.jsonl")));const r=await repo.pool.query("SELECT fixture_receipt FROM dev.outbox WHERE topic='mail' AND delivered_at IS NOT NULL");assert.ok(r.rows.length);assert.ok(r.rows.every(x=>x.fixture_receipt.transport==="smtp-outbox-v1"));});
++    await test("A fresh worker preserves sessions, account membership and 6311 employees",async()=>{await stop();await boot();assert.equal((await request("/api/session")).status,200);assert.equal((await repo.pool.query("SELECT count(*)::int n FROM dev.accounts")).rows[0].n,8);assert.equal((await repo.pool.query("SELECT count(*)::int n FROM dev.employees")).rows[0].n,6311);});
++    console.log(JSON.stringify({suite:"minimal-employee-account-migration",pass:results.length,fail:0,source:"invented-only",managedDevelopmentTouched:false,productionTouched:false}));
++    if(process.argv.includes("--preview")){console.log("MINIMAL_PREVIEW_READY");await new Promise(r=>process.once("SIGTERM",r));}
++  }catch(e){console.error(JSON.stringify({failed:e.code||e.message,assertion:e.message,results,workerDiagnostics:logs.slice(-3)}));process.exitCode=1;}
++  finally{if(c)c.release();await stop();await repo.pool.end().catch(()=>{});try{proof.stop();}catch{}fs.rmSync(root,{recursive:true,force:true});}
++}
++run();
+diff --git a/scripts/managed/minimal-worker.cjs b/scripts/managed/minimal-worker.cjs
+new file mode 100644
+index 0000000..5ff076a
+--- /dev/null
++++ b/scripts/managed/minimal-worker.cjs
+@@ -0,0 +1,28 @@
++// Invented-data test child. Never used by the production command.
++const fs=require("node:fs"),path=require("node:path"),{Repository}=require("../../development/postgres/repository.cjs");
++const proof=require("../../development/postgres/isolation.cjs").verify(process.argv[2]),repo=new Repository(proof);
++const https=require("node:https"),nativeHttps=https.request,{Writable,Readable}=require("node:stream");
++https.request=(url,options,callback)=>{
++  const host=typeof url==="string"?new URL(url).hostname:url.hostname;
++  if(host!=="storage-probe.example.invalid")return nativeHttps(url,options,callback);
++  if(typeof options==="function")callback=options;
++  const req=new Writable({write(chunk,encoding,done){done();}});
++  req.on("finish",()=>{const res=Readable.from(["invented-storage-response"]);res.statusCode=200;callback(res);});return req;
++};
++require("../../development/postgres/runtime.cjs").serve(proof,repo,{minimalRelease:true,deliverMail:async(to,subject,text)=>{
++  const r=await repo.pool.query("SELECT count(*)::int AS n FROM dev.outbox WHERE topic='mail' AND delivered_at IS NULL");
++  if(!r.rows[0].n)throw Error("test_delivery_before_commit");
++  if(fs.existsSync(path.join(proof.root,"fail-mail")))throw Error("invented_mail_provider_outage");
++  fs.appendFileSync(path.join(proof.root,"invented-mail.jsonl"),JSON.stringify({to,subject,text})+"\n",{mode:0o600});
++},deliverSms:async payload=>{
++  const r=await repo.pool.query("SELECT count(*)::int AS n FROM dev.outbox WHERE topic='sms' AND delivered_at IS NULL");
++  if(!r.rows[0].n)throw Error("test_sms_before_commit");
++  fs.appendFileSync(path.join(proof.root,"invented-sms.jsonl"),JSON.stringify(payload)+"\n",{mode:0o600});
++}}).then(async app=>{
++  await new Promise((resolve,reject)=>{const req=https.request({hostname:"storage-probe.example.invalid",path:"/"},res=>{
++    res.resume();res.on("end",()=>res.statusCode===200?resolve():reject(Error("storage_probe_failed")));
++  });req.on("error",reject);req.end();});
++  console.log("MINIMAL_STORAGE_HTTPS_PASSTHROUGH_OK");
++  for(const sig of ["SIGTERM","SIGINT"])process.on(sig,()=>app.close().finally(()=>process.exit(0)));
++})
++.catch(()=>{console.error("minimal invented worker startup failed");process.exit(1);});

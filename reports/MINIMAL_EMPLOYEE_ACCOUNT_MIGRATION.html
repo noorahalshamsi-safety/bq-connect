@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BQ Connect — Minimal Migration Handoff</title>
+<style>
+body{font:16px/1.6 system-ui,sans-serif;color:#172033;background:#f4f6f9;margin:0}
+main{max-width:900px;margin:32px auto;background:white;padding:36px;border:1px solid #dde3ec;border-radius:12px}
+h1{font-size:28px;line-height:1.25}h2{font-size:21px;margin-top:32px}
+table{border-collapse:collapse;width:100%}th,td{text-align:left;vertical-align:top;border-bottom:1px solid #dde3ec;padding:12px 8px}
+th{width:35%}.notice{padding:16px;background:#fff6df;border-left:4px solid #ad7211}
+.pass{color:#176342;font-weight:700}.blocked{color:#8c5400;font-weight:700}
+code{font:13px/1.5 ui-monospace,monospace;overflow-wrap:anywhere}li{margin:10px 0}
+small{color:#536176}@media(max-width:600px){main{margin:0;padding:20px;border:0;border-radius:0}th{width:40%}}
+</style>
+<main>
+<small>Preparation report · 4 November 2026 · Existing BQ Connect application</small>
+<h1>Minimal employee/account migration</h1>
+<p class="notice"><strong>Implementation complete. Live execution remains blocked.</strong>
+No real migration, Production resource change, Republish, source overwrite or Development import of real records was performed.</p>
+<table>
+<tr><th>Minimal implementation</th><td class="pass">DONE — separate from REL-001 full-history migration</td></tr>
+<tr><th>Employee records ready</th><td><strong>6,311</strong>, observed in the owner-designated configured App Storage</td></tr>
+<tr><th>Registered accounts ready</th><td><strong>8</strong> account records with registered credentials; original enrollment/restriction states preserved</td></tr>
+<tr><th>Password / 2FA continuity</th><td><span class="pass">PASS within the tested scope.</span> Synthetic password, legacy KDF, sessions, roles, active TOTP, recovery and pending enrollment/email workflows pass. Actual source keys successfully validated active/pending factor encryption. A real owner-password canary has not been run.</td></tr>
+<tr><th>Production PostgreSQL readiness</th><td class="blocked">BLOCKED for execution — actual empty destination/no-fixture-copy provisioning, protected key custody, frozen-source bindings and exact owner approval remain outstanding.</td></tr>
+<tr><th>Tests</th><td><strong>83 passed, 0 failed</strong> in the completed verification. No live provider delivery or production import was tested.</td></tr>
+</table>
+<h2>What was retained</h2>
+<p>Complete employee/account records and ID types, hashes, salts, KDFs, versions,
+sessions, security extensions, original session/backup keys, active and pending TOTP
+and recovery material. Necessary role/official-identity definitions, moderator
+grants, these accounts' restriction records, SMTP and SMS configuration are included.</p>
+<p>Source observations: 6 active factor records, 1 pending factor record, 2 configured
+official identities, 6 email-linked accounts and stored SMTP configuration present.
+These observations do not certify live SMTP credentials or mean every account has
+finished enrollment. No account identifiers, records or key values are in this report.</p>
+<p>Historical social tables start empty. The source bucket and its history remain
+untouched. Push enrollment stays explicitly unconfigured; no replacement VAPID
+keys are generated.</p>
+<h2>Safety controls</h2>
+<ul>
+<li>Only the designated App Storage is authoritative; the local three-account copy is refused. Exactly 6,311 employees and 8 registered account entries are rechecked at execution. Changed counts stop the operation.</li>
+<li>Real-source imports into Development/local test destinations are refused. Nonempty targets, including copied synthetic fixtures, cannot be reset by this importer.</li>
+<li>One transaction, advisory locks, independent direct-SQL membership reconciliation and full decoded-record comparison guard the import. Replay never overwrites accepted SQL changes.</li>
+<li>Original key fingerprints, strict production identity/TLS/schema/permission gates, exact approvals and separate immutable intent/receipt markers in a new target bucket are required. No startup DDL or JSON fallback.</li>
+<li>Original authenticated sessions and factor secrets are retained. Old unfinished challenge tickets are excluded to avoid replay without the old process's consumed-ticket ledger.</li>
+<li>Email/SMS are queued durably and sent through real transports after commit. Provider acceptance is at-least-once, not guaranteed exactly-once delivery. Mock tests are not live provider certification.</li>
+</ul>
+<h2>Exact remaining steps</h2>
+<ol>
+<li><strong>Verify and approve empty-destination provisioning.</strong> Use the existing BQ Connect app and Replit-managed lifecycle. Confirm a supported path that does not copy Development fixtures; do not assume legacy Neon publishing switches apply. Do not blindly Publish or delete rows to work around this gate.</li>
+<li><strong>Bind the actual target.</strong> Verify production app/endpoint identity, strict TLS, permissions, the existing 117-table schema, empty application/control tables and a distinct new target/control-media bucket.</li>
+<li><strong>Preserve protected original keys.</strong> Transfer the original source session/backup keys through Production Secrets, retain provider/verification settings, and configure a separate stable audit-binding key. Never expose values to this agent or generate replacement authentication keys.</li>
+<li><strong>Freeze source writers and produce bindings.</strong> Run <code>scripts/managed/minimal-bindings.cjs</code> in a protected read-only preparation process, complete the minimal-scope manifest/evidence and recheck 6,311/8. Matching reads alone do not prove a freeze.</li>
+<li><strong>Obtain exact execution approval.</strong> Approve the full production manifest and separate minimal-import binding, source/key continuity, memberships and recovery plan. Approval files in this handoff remain empty.</li>
+<li><strong>Execute once while in maintenance.</strong> Use the protected production CLI or the dedicated <code>deploy/managed/minimal-import-runner.cjs</code> with the explicit approved one-time operation. It remains in maintenance after success or failure and does not retry live import automatically.</li>
+<li><strong>Approve activation and perform owner canaries.</strong> After validating committed counts/memberships and independent receipt, remove the import operation and use <code>deploy/managed/minimal-bootstrap.cjs</code>. Verify original-password/TOTP login, roles, directory and delivery. After accepted SQL writes, do not revert to stale JSON.</li>
+</ol>
+<p>Maintenance returns HTTP 200 at the root for Replit's publishing liveness probe,
+but <code>ready:false</code> and HTTP 503 for readiness/login/APIs. Liveness is not
+application adoption. None of these steps is authorized by this report.</p>
+<h2>Verification and code handoff</h2>
+<table>
+<tr><th>Minimal account migration/auth runtime</th><td>28 / 28 passed · disposable local PostgreSQL, invented owner-sized fixtures</td></tr>
+<tr><th>Cutover / approval / provider boundaries</th><td>19 / 19 passed · synthetic controls and mock providers</td></tr>
+<tr><th>Managed configuration regression</th><td>20 / 20 passed</td></tr>
+<tr><th>Immutable storage regression</th><td>16 / 16 passed · filesystem stand-in, not provider certification</td></tr>
+</table>
+<p>The existing broad 236-check suite and historical Vault/media audits were not
+repeated. Syntax/patch checks passed. Public landing UI was visually checked;
+signed-in workflows were HTTP-tested, not visually verified.</p>
+<p>Local code branch: <code>development/minimal-accounts-2026-11-04</code><br>
+Base: <code>aa56f7b</code> · Head: <code>cd5bd76</code><br>
+Patch: <code>reports/MINIMAL_EMPLOYEE_ACCOUNT_MIGRATION.patch</code><br>
+Detailed operator runbook: <code>migration/minimal/README.md</code> in that branch/patch.</p>
+<p>No GitHub push or change to active application workflows was performed.</p>
+<small>Official references:
+<a href="https://docs.replit.com/features/data-and-storage/development-and-production">Database lifecycle</a>
+· <a href="https://docs.replit.com/build/troubleshooting">Publishing health checks</a></small>
+</main>
+</html>

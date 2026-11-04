@@ -308,3 +308,17 @@ mtime_ms = 1793806893407
 storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/890a272b-020e-43b3-a7e6-e8e2203a8c5b/b87cc967-d49a-4b38-ae3a-ab470f2175d4"
 storage_version_token = "1793806895488861"
 content_type = "text/html"
+
+[[outputs]]
+id = "yjYYkUem9U2C4WKCmWvz0"
+uri = "file://reports/MINIMAL_EMPLOYEE_ACCOUNT_MIGRATION.html"
+type = "html"
+title = "BQ Connect — Minimal migration handoff"
+description = "83 passing checks, verified source counts, code handoff and exact production approval steps. No live migration or publishing performed."
+logical_id = "b7fbfc8d-dd55-4157-838c-aa8405fde858"
+content_hash = "sha256:567ae33700e1088119334c1a614c76a226c3a12c2550a80fc06ef3c10111b073"
+size = 8315
+mtime_ms = 1793811993438
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/b7fbfc8d-dd55-4157-838c-aa8405fde858/49729a28-f276-4345-a2e6-c416aa113716"
+storage_version_token = "1793812022646932"
+content_type = "text/html"
