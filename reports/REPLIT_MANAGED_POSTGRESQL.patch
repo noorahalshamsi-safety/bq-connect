@@ -1,0 +1,1213 @@
+diff --git a/deploy/managed/README.md b/deploy/managed/README.md
+new file mode 100644
+index 0000000..ee6b330
+--- /dev/null
++++ b/deploy/managed/README.md
+@@ -0,0 +1,90 @@
++# Replit-managed PostgreSQL candidate
++
++This is a separate adapter for Replit's managed lifecycle. It does not weaken the
++existing isolated-development or staging gates. Do not run the staging migrator
++against a managed production database.
++
++## Development
++
++`scripts/managed/live-test.cjs` explicitly installs the reviewed schema and
++invented fixtures into an **empty Replit development Helium database**. It refuses
++deployment mode, a non-Helium endpoint, existing user tables/schema or pre-existing
++external provision evidence. It stores invented keys/credentials and its receipt
++under ignored `generated-artifacts/managed-development/`, mode 0600/0700. It never
++loads employee exports or the original SESSION_SECRET. Re-running setup refuses
++to replace or regenerate anything. Never delete the evidence to bypass this.
++
++The runtime does not import/call setup. Its connections use the platform-provided
++DATABASE_URL, a bounded pool and internal development transport. Helium's
++documented no-TLS connection is allowed **only** in the development profile and
++only for the internal `helium` endpoint. A published process cannot load that
++profile. `REPLIT_ENVIRONMENT=production` alone does not mean published execution.
++
++Actual validation:
++
++```sh
++node scripts/managed/config-test.cjs
++node scripts/managed/live-test.cjs       # one-time explicit empty-development setup
++node scripts/managed/schema-test.cjs    # rollback-only catalog probes, after setup
++node scripts/managed/preview.cjs        # temporary invented-data preview, port 5134
++```
++
++The live test is intentionally not a resettable test database command. The
++preview reuses its original synthetic dataset/keys and filesystem storage mock;
++it creates no workflow or real App Storage bucket.
++
++## Schema lifecycle
++
++`schema.cjs` is the development schema source. It reuses all 28 document codecs,
++generated columns, checks, uniqueness, graph relationships and native indices.
++It has no custom role, grant, function or trigger requirement.
++
++Managed graph foreign keys are **immediate**, rather than initially deferred.
++This is a documented stronger constraint: saves insert parents before children.
++The actual managed application tests verify those writes and orphan refusal.
++The authority check adds an explicit `production` mode without allowing the
++development runtime to accept it; `synthetic` and `frozen` remain preserved.
++
++The original three version/checksum entries remain checked if present. Publish
++does not copy their data rows. An empty ledger therefore requires the exact
++reviewed structural fingerprint AND managed release fingerprint. The structural
++contract checks columns/types/nullability/defaults/generated expressions,
++constraints and valid indices; it ignores generated object names, not semantics.
++Unknown functions, triggers, relations and RLS policy changes are blocked.
++Actual provider-generated SQL still needs Publish review/validation; local or
++Helium introspection cannot prove that future diff will retain every feature.
++
++## Production is deliberately not enabled
++
++There is no committed production manifest or activation approval.
++`production-approvals.json` is empty. Production configuration requires:
++
++- Published deployment marker and independently bound app/endpoint identity.
++- No internal/localhost endpoint, and no development identity/bucket/mock.
++- Explicit full certificate/hostname verification through the system CA store,
++  TLS >= 1.2 and channel binding; URL sslmode cannot replace that verification.
++- Original protected key fingerprints, schema/release/permission fingerprints.
++- Bound source, frozen generation, independent backup, reconciliation, custody,
++  rollback and a non-expired reviewed activation approval.
++
++Even after those checks, **startup currently refuses production** with
++`managed_production_side_effects_not_certified`. The inherited bridge captures
++email/SMS/push into synthetic delivery sinks. Enabling real employee traffic
++before a reviewed durable production delivery worker exists would be unsafe.
++This blocker is code-enforced, not merely a runbook note.
++
++Observed development credentials own the schema and are superuser-capable.
++The adapter claims neither a bq_app role nor database-enforced least privilege.
++Publishing does not create staging's custom roles/grants. The strongest prepared
++equivalent is bounded/parameterized transactional application access, exact
++identity/schema checks, no DDL/reset/fallback and an explicit production security
++approval bound to the **actual** capability fingerprint. That approval is absent.
++
++## Release boundary
++
++Replit alone applies production schema through the approved Publish diff.
++No startup DDL, production migration script, build hook, data-copy or implicit
++seed is included here. Data-only protected adoption, live App Storage identity,
++original-key continuity, real delivery, independent recovery and provider PITR
++must be qualified before updating the existing BQ Connect URL. Never roll back
++to old JSON after accepting newer SQL writes.
+diff --git a/deploy/managed/config.cjs b/deploy/managed/config.cjs
+new file mode 100644
+index 0000000..3ee73fa
+--- /dev/null
++++ b/deploy/managed/config.cjs
+@@ -0,0 +1,75 @@
++// Runtime-only configuration. DATABASE_URL is consumed, never printed or persisted.
++const crypto=require("node:crypto"),fs=require("node:fs"),path=require("node:path");
++const sha=value=>crypto.createHash("sha256").update(value).digest("hex");
++const canonical=v=>JSON.stringify(v,(_,x)=>x&&typeof x==="object"&&!Array.isArray(x)?Object.fromEntries(Object.keys(x).sort().map(k=>[k,x[k]])):x);
++const issued=new WeakMap(),HEX=/^[0-9a-f]{64}$/;
++function fail(code){throw Object.assign(Error(code),{code});}
++function endpoint(env,profile){
++  if(!env.DATABASE_URL)fail("managed_connection_missing");
++  let url;try{url=new URL(env.DATABASE_URL);}catch{fail("managed_connection_invalid");}
++  if(!["postgres:","postgresql:"].includes(url.protocol)||!url.hostname||!url.pathname.slice(1))fail("managed_connection_invalid");
++  if(profile==="development"&&url.hostname!=="helium")fail("managed_development_endpoint_refused");
++  if(profile==="production"&&["helium","localhost","127.0.0.1","::1"].includes(url.hostname))fail("managed_production_endpoint_refused");
++  for(const key of url.searchParams.keys())if(!["sslmode","channel_binding"].includes(key))fail("managed_connection_option_unreviewed");
++  if(profile==="production"&&["disable","no-verify","allow","prefer"].includes(url.searchParams.get("sslmode")))fail("managed_tls_downgrade_refused");
++  url.searchParams.delete("sslmode");url.searchParams.delete("channel_binding");
++  return {url,identity:sha(canonical([env.REPL_ID,url.hostname,url.port||"5432",url.pathname,url.username]))};
++}
++function verify({env=process.env,manifest,paths={},approvalRoot=__dirname}={}){
++  if(!manifest||manifest.kind!=="BQ_REPLIT_MANAGED_V1")fail("managed_manifest_required");
++  const profile=manifest.environment;
++  if(!["development","production"].includes(profile))fail("managed_environment_invalid");
++  if(!env.REPL_ID||sha(env.REPL_ID)!==manifest.appFingerprint)fail("managed_app_identity_mismatch");
++  if(env.REPLIT_DEPLOYMENT&&!["0","1"].includes(env.REPLIT_DEPLOYMENT))fail("managed_deployment_marker_invalid");
++  if((env.REPLIT_DEPLOYMENT==="1")!==(profile==="production"))fail("managed_environment_mismatch");
++  const e=endpoint(env,profile);
++  if(e.identity!==manifest.endpointFingerprint)fail("managed_database_identity_mismatch");
++  const prefix=profile==="development"?"staging-synthetic":"managed-production";
++  if(!new RegExp(`^${prefix}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).test(manifest.dataset||""))fail("managed_dataset_identity_invalid");
++  for(const name of ["schemaFingerprint","releaseFingerprint","permissionsFingerprint"])if(!HEX.test(manifest[name]||""))fail("managed_contract_missing");
++  const sessionKey=env.BQ_MANAGED_SESSION_KEY,backupKey=env.BQ_MANAGED_BACKUP_KEY;
++  if(!/^[0-9a-f]{96}$/.test(sessionKey||"")||!/^[0-9a-f]{64}$/.test(backupKey||"")||
++    sha(sessionKey)!==manifest.keys?.session||sha(backupKey)!==manifest.keys?.backup)fail("managed_key_identity_mismatch");
++  if(!/^[a-zA-Z0-9_-]{3,128}$/.test(manifest.bucket||""))fail("managed_bucket_required");
++  if(profile==="development"&&(!manifest.mockStorage||!manifest.productionBucketFingerprint||
++    sha(manifest.bucket)===manifest.productionBucketFingerprint))fail("managed_development_storage_refused");
++  if(profile==="production"){
++    if(sha(manifest.bucket)!==manifest.productionBucketFingerprint)fail("managed_production_bucket_mismatch");
++    if(manifest.mockStorage||!HEX.test(manifest.developmentEndpointFingerprint||"")||
++      e.identity===manifest.developmentEndpointFingerprint||manifest.permissionApproval!=="reviewed-managed-runtime-capabilities")fail("managed_production_binding_incomplete");
++    for(const name of ["source","backup","reconciliation","custody","rollback","frozenGeneration"])if(!HEX.test(manifest.release?.[name]||""))fail("managed_cutover_evidence_missing");
++    const approvals=JSON.parse(fs.readFileSync(path.join(approvalRoot,"production-approvals.json"),"utf8")).approvals;
++    if(!approvals.some(a=>a.id===manifest.approval&&a.operation==="managed-production-activate"&&a.binding===sha(canonical(manifest))&&
++      typeof a.approvedBy==="string"&&a.approvedBy.length&&Number.isFinite(Date.parse(a.expires))&&Date.parse(a.expires)>Date.now()))fail("managed_production_approval_missing");
++  }
++  const seal=sha(canonical([manifest.dataset,manifest.keys.session,manifest.keys.backup]));
++  const proof=Object.freeze({verifiedManaged:true,profile,dataset:manifest.dataset,seal,sessionKey,backupKey,bucket:manifest.bucket,
++    schemaFingerprint:manifest.schemaFingerprint,releaseFingerprint:manifest.releaseFingerprint,
++    permissionsFingerprint:manifest.permissionsFingerprint,endpointFingerprint:e.identity,
++    root:paths.root,app:paths.app,objects:paths.objects});
++  // Explicit SSL overrides URL sslmode without allowing node-postgres to replace
++  // the verification object. Helium is internal/plaintext; published TLS is strict.
++  issued.set(proof,{connectionString:e.url.toString(),ssl:profile==="development"?false:
++    {rejectUnauthorized:true,servername:e.url.hostname,minVersion:"TLSv1.2"},enableChannelBinding:profile==="production",
++    max:Math.min(6,Math.max(1,Number(env.BQ_MANAGED_POOL_MAX)||4)),connectionTimeoutMillis:5000,idleTimeoutMillis:10000,
++    statement_timeout:20000,lock_timeout:12000,application_name:`bq-managed-${profile}`});
++  return proof;
++}
++function assertProof(proof){if(!issued.has(proof)||!Object.isFrozen(proof))fail("managed_verified_proof_required");}
++function poolOptions(proof){assertProof(proof);return {...issued.get(proof)};}
++async function permissions(client){
++  const row=(await client.query(`SELECT rolsuper,rolcreatedb,rolcreaterole,rolbypassrls,
++    has_database_privilege(current_user,current_database(),'CREATE') AS database_create,
++    has_schema_privilege(current_user,'dev','CREATE') AS schema_create,
++    EXISTS(SELECT 1 FROM pg_roles p WHERE p.rolname<>current_user AND (p.rolsuper OR p.rolcreaterole OR p.rolbypassrls) AND pg_has_role(current_user,p.oid,'MEMBER')) AS elevated_membership
++    FROM pg_roles WHERE rolname=current_user`)).rows[0];
++  return {capabilities:row,fingerprint:sha(canonical(row))};
++}
++async function verifyDatabase(client,proof){
++  assertProof(proof);
++  if(proof.profile==="production"&&(!client.connection.stream.encrypted||!client.connection.stream.authorized))fail("managed_verified_tls_required");
++  const p=await permissions(client);
++  if(p.fingerprint!==proof.permissionsFingerprint)fail("managed_permissions_changed");
++  return p;
++}
++module.exports={verify,poolOptions,assertProof,endpoint,permissions,verifyDatabase,sha,canonical,fail};
+diff --git a/deploy/managed/development.cjs b/deploy/managed/development.cjs
+new file mode 100644
+index 0000000..88b60cb
+--- /dev/null
++++ b/deploy/managed/development.cjs
+@@ -0,0 +1,49 @@
++// Explicit one-time DEVELOPMENT installation and invented-data setup.
++// Not imported by runtime. No production connection/DDL path is supported.
++const fs=require("node:fs"),path=require("node:path"),crypto=require("node:crypto");
++const {Client}=require("pg");
++const cfg=require("./config.cjs"),schema=require("./schema.cjs");
++const {saveFile}=require("../../development/postgres/repository.cjs");
++const {create}=require("../../development/postgres/fixtures.cjs");
++const {readSql}=require("../../scripts/migration/rel001/reconcile.cjs");
++function write(file,value){const fd=fs.openSync(file,"wx",0o600);try{fs.writeFileSync(fd,JSON.stringify(value));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}const d=fs.openSync(path.dirname(file),"r");try{fs.fsyncSync(d);}finally{fs.closeSync(d);}}
++async function prepare({root,env=process.env,productionBucketFingerprint}){
++  if(env.REPLIT_DEPLOYMENT==="1"||!env.REPL_ID)cfg.fail("managed_development_only");
++  if(!/^[0-9a-f]{64}$/.test(productionBucketFingerprint||""))cfg.fail("production_storage_identity_required");
++  const e=cfg.endpoint(env,"development");
++  if(fs.existsSync(root))cfg.fail("managed_development_evidence_exists");
++  fs.mkdirSync(root,{recursive:true,mode:0o700});fs.chmodSync(root,0o700);
++  // Intent is independent of SQL: an empty/lost schema cannot reseed this lab.
++  const dataset=`staging-synthetic-${crypto.randomUUID()}`,sessionKey=crypto.randomBytes(48).toString("hex"),backupKey=crypto.randomBytes(32).toString("hex");
++  write(path.join(root,"intent.json"),{dataset,endpointFingerprint:e.identity,created:new Date().toISOString()});
++  const keys={sessionKey,backupKey};write(path.join(root,"keys.json"),keys);
++  const fixture=create(sessionKey,{password:`Managed-${crypto.randomBytes(18).toString("hex")}-Aa1!`,recovery:crypto.randomBytes(6).toString("hex").toUpperCase()});
++  write(path.join(root,"credentials.json"),fixture.credentials);
++  const client=new Client({connectionString:e.url.toString(),ssl:false,connectionTimeoutMillis:5000,application_name:"bq-managed-development-setup"});
++  await client.connect();
++  let manifest;
++  try{
++    await client.query("BEGIN");await client.query("SELECT pg_advisory_xact_lock(1793804287)");
++    const tables=(await client.query("SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema')")).rows[0].n;
++    const existing=(await client.query("SELECT 1 FROM pg_namespace WHERE nspname='dev'")).rowCount;
++    if(tables||existing)cfg.fail("managed_development_database_not_empty");
++    for(const statement of schema.statements)await client.query(statement);
++    for(const m of schema.migrations)await client.query("INSERT INTO dev.schema_migrations(version,checksum) VALUES($1,$2)",[m.version,m.checksum]);
++    const keyPrints={session:cfg.sha(sessionKey),backup:cfg.sha(backupKey)};
++    const seal=cfg.sha(cfg.canonical([dataset,keyPrints.session,keyPrints.backup]));
++    for(const [file,value]of Object.entries(fixture.files))await saveFile(client,file,value,null);
++    if(cfg.canonical((await readSql(client)).values)!==cfg.canonical(fixture.files))cfg.fail("managed_fixture_semantic_mismatch");
++    await client.query("INSERT INTO dev.authority VALUES(true,$1,$2,1,'synthetic')",[dataset,seal]);
++    const shape=await schema.describe(client),p=await cfg.permissions(client);
++    manifest={kind:"BQ_REPLIT_MANAGED_V1",environment:"development",appFingerprint:cfg.sha(env.REPL_ID),
++      endpointFingerprint:e.identity,dataset,bucket:`invented-managed-${crypto.randomUUID()}`,productionBucketFingerprint,mockStorage:true,
++      keys:keyPrints,schemaFingerprint:shape.fingerprint,releaseFingerprint:schema.releaseFingerprint,permissionsFingerprint:p.fingerprint};
++    write(path.join(root,"manifest.json"),manifest);
++    await client.query("COMMIT");
++    write(path.join(root,"receipt.json"),{dataset,seal,state:"committed"});
++    return {manifest,keys,credentials:fixture.credentials,tables:shape.tables,capabilities:p.capabilities};
++  }catch(e){await client.query("ROLLBACK").catch(()=>{});throw e;}
++  finally{await client.end();}
++}
++module.exports={prepare};
++if(require.main===module)console.error("Use the explicit synthetic managed validation harness; never run setup from an application entrypoint.");
+diff --git a/deploy/managed/production-approvals.json b/deploy/managed/production-approvals.json
+new file mode 100644
+index 0000000..08ac789
+--- /dev/null
++++ b/deploy/managed/production-approvals.json
+@@ -0,0 +1,3 @@
++{
++  "approvals": []
++}
+diff --git a/deploy/managed/runtime.cjs b/deploy/managed/runtime.cjs
+new file mode 100644
+index 0000000..a83e20d
+--- /dev/null
++++ b/deploy/managed/runtime.cjs
+@@ -0,0 +1,45 @@
++// Replit-managed adapter. Startup verifies schema/identity; never seeds or DDLs.
++const fs=require("node:fs"),path=require("node:path"),os=require("node:os");
++const cfg=require("./config.cjs"),schema=require("./schema.cjs");
++const {ImmutableStore}=require("../staging/object-store.cjs");
++const {Repository}=require("../../development/postgres/repository.cjs");
++async function start({env=process.env,manifest,storeClient,workBase=os.tmpdir()}={}){
++  if(!manifest)manifest=JSON.parse(fs.readFileSync(env.BQ_MANAGED_MANIFEST_FILE,"utf8"));
++  const work=fs.mkdtempSync(path.join(workBase,"bq-managed-"));fs.chmodSync(work,0o700);
++  for(const dir of ["app","objects"])fs.mkdirSync(path.join(work,dir),{mode:0o700});
++  const proof=cfg.verify({env,manifest,paths:{root:work,app:path.join(work,"app"),objects:path.join(work,"objects")}});
++  // The inherited handler bridge uses fixture SMS/email/push sinks. It must not
++  // be activated for real employees until a real managed outbox worker is reviewed.
++  if(proof.profile==="production")cfg.fail("managed_production_side_effects_not_certified");
++  if(!storeClient)cfg.fail("managed_development_mock_storage_required");
++  const store=new ImmutableStore(storeClient,{dataset:proof.dataset});
++  const receipt=await store.readControl("provision-receipt.json");
++  if(!receipt)cfg.fail("managed_provision_receipt_missing");
++  const repo=new Repository(proof,null,{proof,store,receipt});
++  try{
++    const c=await repo.pool.connect();
++    let shape,permissions,rows;
++    try{
++      await c.query("BEGIN");
++      permissions=await cfg.verifyDatabase(c,proof);
++      shape=await schema.requireSchema(c,proof);
++      await repo.verify(c);
++      rows=(await c.query("SELECT id,object_key,sha256 FROM dev.media WHERE state IN('ready','retained')")).rows;
++      await c.query("COMMIT");
++    }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
++    await store.restore(rows,proof.objects);
++    process.env.BQ_STORAGE_SYNC="0";process.env.BQ_TRANSLATE="0";
++    const app=await require("../../development/postgres/runtime.cjs").serve(proof,repo,{nativeEnabled:true,faults:false});
++    console.log(JSON.stringify({managed:"ready",environment:proof.profile,schema:shape.version,tables:shape.tables,
++      transport:"internal-development-no-TLS",leastPrivilege:false,capabilities:permissions.capabilities}));
++    return app;
++  }catch(e){await repo.pool.end().catch(()=>{});throw e;}
++}
++module.exports={start};
++if(require.main===module)(async()=>{
++  // Development CLI uses the isolated filesystem stand-in, never a live bucket.
++  const {FileStorage}=require("../../scripts/forensics/file-storage.cjs");
++  const app=await start({storeClient:new FileStorage(process.env.BQ_MANAGED_MOCK_DIRECTORY)});
++  let closing=false;const stop=()=>{if(closing)return;closing=true;app.close().then(()=>process.exit(0),()=>process.exit(1));};
++  process.on("SIGINT",stop);process.on("SIGTERM",stop);
++})().catch(e=>{console.error(`managed activation refused: ${e.code||"managed_startup_failed"}`);process.exit(1);});
+diff --git a/deploy/managed/schema.cjs b/deploy/managed/schema.cjs
+new file mode 100644
+index 0000000..0a74e09
+--- /dev/null
++++ b/deploy/managed/schema.cjs
+@@ -0,0 +1,47 @@
++// Source of truth for DEVELOPMENT installation. Production schema is installed
++// only by Replit's reviewed Publish diff, never this module or runtime startup.
++const codec=require("../../development/postgres/codec.cjs");
++const {controlDdl}=require("../../development/postgres/repository.cjs");
++const {indexes}=require("../../development/postgres/native-profile.cjs");
++const {migrations,check}=require("../staging/migrate.cjs");
++const {sha,canonical,fail}=require("./config.cjs");
++const base=codec.ddl().replaceAll(" DEFERRABLE INITIALLY DEFERRED","")
++  .replace("mode IN('synthetic','frozen')","mode IN('synthetic','frozen','production')")
++  .replace("point IN('before_commit','after_commit_drop')","point IN('before_commit','during_commit','unknown_commit','after_commit_drop','handler_timeout')");
++const statements=[base,
++  "CREATE TABLE dev.schema_migrations(version text PRIMARY KEY,checksum text NOT NULL,applied_at timestamptz NOT NULL DEFAULT clock_timestamp())",
++  controlDdl.requestColumns,...indexes];
++const releaseFingerprint=sha(canonical({version:"managed-1",statements,legacy:migrations.map(({version,checksum})=>({version,checksum}))}));
++async function describe(client){
++  const columns=(await client.query(`SELECT c.relname AS table_name,a.attnum AS ordinal,a.attname AS name,
++    format_type(a.atttypid,a.atttypmod) AS type,a.attnotnull AS required,a.attgenerated AS generated,
++    pg_get_expr(d.adbin,d.adrelid) AS default_expr FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
++    JOIN pg_attribute a ON a.attrelid=c.oid LEFT JOIN pg_attrdef d ON d.adrelid=c.oid AND d.adnum=a.attnum
++    WHERE n.nspname='dev' AND c.relkind='r' AND a.attnum>0 AND NOT a.attisdropped ORDER BY c.relname,a.attnum`)).rows;
++  const constraints=(await client.query(`SELECT c.conrelid::regclass::text AS table_name,c.contype,c.condeferrable,c.condeferred,c.convalidated,
++    pg_get_constraintdef(c.oid,true) AS definition FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace
++    WHERE n.nspname='dev' ORDER BY 1,2,6`)).rows;
++  const indices=(await client.query(`SELECT c.relname AS table_name,i.indisvalid,i.indisready,pg_get_indexdef(i.indexrelid,0,true) AS definition
++    FROM pg_index i JOIN pg_class c ON c.oid=i.indrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='dev' ORDER BY 1,4`)).rows
++    .map(r=>({...r,definition:r.definition.replace(/ INDEX \S+ ON /," INDEX ON ")})).sort((a,b)=>canonical(a).localeCompare(canonical(b),"en"));
++  const unsupported=(await client.query(`SELECT
++    (SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='dev' AND NOT t.tgisinternal)::int AS triggers,
++    (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='dev')::int AS functions,
++    EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='dev' AND (c.relrowsecurity OR c.relforcerowsecurity)) AS unexpected_rls,
++    EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='dev' AND c.relkind NOT IN('r','i')) AS unexpected_relation`)).rows[0];
++  if(unsupported.triggers||unsupported.functions)fail("managed_unsupported_schema_object");
++  if(unsupported.unexpected_rls||unsupported.unexpected_relation)fail("managed_unreviewed_schema_policy");
++  if(!columns.length)fail("managed_schema_missing");
++  return {fingerprint:sha(canonical({columns,constraints,indices})),tables:new Set(columns.map(r=>r.table_name)).size};
++}
++async function requireSchema(client,manifest){
++  if(manifest.releaseFingerprint!==releaseFingerprint)fail("managed_release_checksum_mismatch");
++  const shape=await describe(client);
++  if(shape.fingerprint!==manifest.schemaFingerprint)fail("managed_schema_contract_mismatch");
++  const ledger=new Map((await client.query("SELECT version,checksum FROM dev.schema_migrations")).rows.map(r=>[r.version,r.checksum]));
++  // Publish copies schema, NOT ledger rows. An empty ledger is accepted only
++  // with the exact independently attested structural+release contract above.
++  if(ledger.size){check(ledger);if(ledger.size!==migrations.length)fail("schema_migration_pending");}
++  return {...shape,version:"managed-1",ledger:ledger.size?"checksummed":"structural-contract"};
++}
++module.exports={statements,releaseFingerprint,describe,requireSchema,migrations};
+diff --git a/deploy/staging/migrate.cjs b/deploy/staging/migrate.cjs
+index 795b4bc..fea269f 100644
+--- a/deploy/staging/migrate.cjs
++++ b/deploy/staging/migrate.cjs
+@@ -55,7 +55,7 @@ async function requireCurrent(client){
+   if(done.size!==migrations.length)throw Error("schema_migration_pending");
+   return migrations.at(-1).version;
+ }
+-module.exports={migrations,migrate,requireCurrent};
++module.exports={migrations,migrate,requireCurrent,check};
+ 
+ if(require.main===module)(async()=>{
+   const proof=require("./gate.cjs").verify({operation:"staging-migrate"});
+diff --git a/deploy/staging/object-store.cjs b/deploy/staging/object-store.cjs
+index 135637f..12b4074 100644
+--- a/deploy/staging/object-store.cjs
++++ b/deploy/staging/object-store.cjs
+@@ -28,7 +28,7 @@ class ImmutableStore {
+     }finally{clearTimeout(timer);}
+   }
+   async read(key,sha){
+-    if(!KEY.test(key)||!key.endsWith(`/${sha}`))throw fault("object_key_invalid");
++    if(!KEY.test(key)||!key.startsWith(`${this.dataset}/immutable/`)||!key.endsWith(`/${sha}`))throw fault("object_key_invalid");
+     let value;
+     try{value=await this.call("downloadAsBytes",key);}
+     catch(e){
+@@ -70,7 +70,15 @@ class ImmutableStore {
+   // Cold-start: populate a local cache with verified bytes only; any missing or
+   // corrupt object fails the whole restore rather than serving partial media.
+   async restore(rows,dir,{concurrency=4}={}){
++    const seen=new Set();
++    for(const row of rows){
++      if(!new RegExp(`^${UUID}$`).test(row.id||"")||!/^[0-9a-f]{64}$/.test(row.sha256||"")||
++        row.object_key!==this.key(row.id,row.sha256)||seen.has(row.id))throw fault("object_key_invalid");
++      seen.add(row.id);
++    }
+     fs.mkdirSync(dir,{recursive:true,mode:0o700});
++    const directoryStat=fs.lstatSync(dir);
++    if(!directoryStat.isDirectory()||directoryStat.isSymbolicLink())throw fault("unsafe_media_cache");
+     const counts={cached:0,restored:0},queue=[...rows];
+     let active=0,peak=0;
+     const worker=async()=>{
+@@ -78,6 +86,10 @@ class ImmutableStore {
+         active++;peak=Math.max(peak,active);
+         try{
+           const target=path.join(dir,row.id);
++          if(fs.existsSync(target)){
++            const st=fs.lstatSync(target);
++            if(!st.isFile()||st.isSymbolicLink()||st.nlink!==1)throw fault("unsafe_media_cache");
++          }
+           if(fs.existsSync(target)&&hash(fs.readFileSync(target))===row.sha256){counts.cached++;continue;}
+           const bytes=await this.read(row.object_key,row.sha256);
+           const temp=`${target}.${crypto.randomUUID()}.partial`;
+diff --git a/development/postgres/repository.cjs b/development/postgres/repository.cjs
+index 81bd119..21b797e 100644
+--- a/development/postgres/repository.cjs
++++ b/development/postgres/repository.cjs
+@@ -37,8 +37,13 @@ class Repository {
+   // isolation fence. With it, `proof` must be the frozen result of the staging
+   // gate and the binding supplies the bq_app credential, bucket store and the
+   // provision receipt read from that bucket.
+-  constructor(proof,staging) {
+-    if(staging) {
++  constructor(proof,staging,managed) {
++    if(managed){
++      const config=require("../../deploy/managed/config.cjs");config.assertProof(proof);
++      if(staging||managed.proof!==proof||!managed.store||managed.receipt?.dataset!==proof.dataset)throw Error("managed_binding_incomplete");
++      this.proof=proof;this.managed=managed;this.vault=vault(proof);
++      this.pool=new Pool(config.poolOptions(proof));
++    }else if(staging) {
+       if(!proof?.verifiedStaging||!Object.isFrozen(proof)||staging.proof!==proof)throw Error("staging_identity_required");
+       if(!staging.password||!staging.store||staging.receipt?.dataset!==proof.dataset)throw Error("staging_binding_incomplete");
+       this.proof=proof;this.staging=staging;
+@@ -64,16 +69,18 @@ class Repository {
+     });
+   }
+   async verify(client) {
+-    const provision=this.staging?this.staging.receipt:JSON.parse(fs.readFileSync(path.join(this.proof.root,"provision-receipt.json"),"utf8"));
++    const remote=this.staging||this.managed;
++    const provision=remote?remote.receipt:JSON.parse(fs.readFileSync(path.join(this.proof.root,"provision-receipt.json"),"utf8"));
+     if(provision.dataset!==this.proof.dataset||provision.seal!==this.proof.seal||provision.state!=="committed")throw Error("synthetic_provision_not_committed");
+     const r=await client.query("SELECT * FROM dev.authority WHERE singleton FOR SHARE");
+     const a=r.rows[0];
+-    if(!a||a.dataset_id!==this.proof.dataset||a.seal!==this.proof.seal||a.mode!=="synthetic"||String(a.epoch)!=="1")throw Error("synthetic_authority_refused");
++    const mode=this.managed&&this.proof.profile==="production"?"production":"synthetic";
++    if(!a||a.dataset_id!==this.proof.dataset||a.seal!==this.proof.seal||a.mode!==mode||String(a.epoch)!=="1")throw Error("synthetic_authority_refused");
+     return a;
+   }
+   async hardenControls() {
+     // Additive dev-only control migration, never a node-schema replacement.
+-    if(this.staging)throw Error("runtime_ddl_forbidden");
++    if(this.staging||this.managed)throw Error("runtime_ddl_forbidden");
+     const c=await this.pool.connect();
+     try {
+       await c.query("BEGIN");await c.query("SELECT pg_advisory_xact_lock(1793705963)");await this.verify(c);
+@@ -93,7 +100,7 @@ class Repository {
+     }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
+   }
+   async initialize(fixtures) {
+-    if(this.staging)throw Error("runtime_provisioning_forbidden");
++    if(this.staging||this.managed)throw Error("runtime_provisioning_forbidden");
+     const c=await this.pool.connect();
+     try {
+       const exists=await c.query("SELECT to_regclass('dev.authority') AS found");
+@@ -197,7 +204,8 @@ class Repository {
+         await intent.query("COMMIT");
+       }catch(e){await intent.query("ROLLBACK").catch(()=>{});throw e;}finally{intent.release();}
+       // The bucket copy is the durable one; the local file is only a cache.
+-      if(this.staging&&(await this.staging.store.put(row.id,row.bytes)).key!==key)throw Error("media_key_mismatch");
++      const remote=this.staging||this.managed;
++      if(remote&&(await remote.store.put(row.id,row.bytes)).key!==key)throw Error("media_key_mismatch");
+       const fd=fs.openSync(dest,"wx",0o600);try{fs.writeFileSync(fd,row.bytes);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+       const directory=fs.openSync(this.proof.objects,"r");
+       try{fs.fsyncSync(directory);}finally{fs.closeSync(directory);}
+@@ -226,9 +234,10 @@ class Repository {
+   // Staging only: fill cache gaps (another instance's upload, a lost cache file)
+   // with verified bucket bytes before the synchronous legacy media readers run.
+   async ensureMedia(rows) {
+-    if(!this.staging)return;
++    const remote=this.staging||this.managed;
++    if(!remote)return;
+     const missing=rows.filter(r=>{const file=path.join(this.proof.objects,r.id);return !fs.existsSync(file)||fs.statSync(file).size!==Number(r.size);});
+-    if(missing.length)await this.staging.store.restore(missing,this.proof.objects);
++    if(missing.length)await remote.store.restore(missing,this.proof.objects);
+   }
+   async drainFixtureOutbox() {
+     // Synthetic delivery receipts, never real SMTP/SMS/push/provider traffic.
+diff --git a/reports/REPLIT_MANAGED_POSTGRESQL.md b/reports/REPLIT_MANAGED_POSTGRESQL.md
+new file mode 100644
+index 0000000..4e58300
+--- /dev/null
++++ b/reports/REPLIT_MANAGED_POSTGRESQL.md
+@@ -0,0 +1,290 @@
++# BQ Connect — Replit-managed PostgreSQL implementation
++
++Date: 2026-11-04. Scope: the existing BQ Connect application, not a replacement product.
++
++## 1. Verified platform capabilities
++
++The actual development database was initially empty: PostgreSQL 16.10,
++`heliumdb`, role `postgres`, SSL off, zero visible user tables. The platform again
++reported no Replit-managed production database. Publishing metadata confirms the
++existing public Reserved VM application at https://bq-connect.replit.app.
++No published runtime authority/generation or original signing key was accessed.
++
++Official documentation confirms separate development/production DATABASE_URL
++values; the workspace URL is not production. Current Helium projects create
++production during Publishing when development contains data. Legacy Neon-backed
++projects instead expose a Create production database choice with an optional
++development-data copy. This project must use Replit-managed PostgreSQL; no
++external account or paid external resource was created or recommended.
++
++Publish compares actual schemas, reviews ambiguous changes, validates a diff and
++requires approval. Tables, columns, indices, constraints, generated expressions
++and their exact resulting definitions must be reviewed. Grants, functions,
++procedures and triggers are not copied; roles are not created/changed/removed.
++Normal schema updates do not copy data rows. Initial creation/copy behavior must
++be verified in this project's actual UI before approval, not assumed.
++
++Managed production PITR/scheduled backups are documented: Core up to 7 days,
++Pro/Enterprise up to 28 with 7 initially. Actual resource retention/permissions,
++PITR execution, recovery region and independent media backup are unverified.
++No production database was created and no Publish/Republish action was executed.
++
++Sources:
++- https://docs.replit.com/features/data-and-storage/development-and-production
++- https://docs.replit.com/features/data-and-storage/publish-database-changes
++- https://docs.replit.com/features/data-and-storage/connection-details
++- https://docs.replit.com/help/troubleshooting/databases
++- https://docs.replit.com/features/data-and-storage/data-recovery
++
++## 2. Implementation and changed files
++
++In the preserved isolated candidate:
++
++- `deploy/managed/config.cjs`: platform URL consumption without disclosure;
++  separate deployment/endpoint identities, strict production TLS, bounded pool,
++  key/permission contracts and bound activation approvals.
++- `deploy/managed/schema.cjs`: managed development schema and read-only structural
++  attestation; schema-only Publish compatibility without requiring copied ledger rows.
++- `deploy/managed/development.cjs`: explicit one-time empty-development install;
++  invented data only, independent durable provision intent, private key custody
++  and source-to-SQL semantic reconstruction.
++- `deploy/managed/runtime.cjs`: managed repository/media integration, readiness
++  and no startup schema changes/reset/seed/fallback. Real production activation
++  remains explicitly blocked pending real delivery qualification.
++- `deploy/managed/production-approvals.json`: empty; no production permission.
++- `deploy/managed/README.md`: operation, migration and residual-risk instructions.
++- `development/postgres/repository.cjs`: separate verified managed transport;
++  existing staging/local gates retained; same transactions, revision checks,
++  idempotency, encrypted controls and immutable-media lifecycle.
++- `deploy/staging/migrate.cjs`: exports existing checksum validator for reuse;
++  staging behavior unchanged.
++- `scripts/managed/{config-test,live-test,schema-test,test-child,preview}.cjs`:
++  configuration tests, actual Helium integration, rollback-only catalog probes,
++  explicit test-only outage injection/SQL audit and temporary preview.
++- This report.
++
++Previous media safety, stronger full-state recovery and REL-001 evidence changes
++were preserved in their own development checkpoint. No blind merge into the
++original workspace and no production-setting replacement was performed.
++
++## 3. Development/production separation and permission differences
++
++Development uses only the internal Helium endpoint in a non-published process,
++an invented `staging-synthetic` identity, private invented signing/backup keys and
++an isolated filesystem media mock. SQL and external receipt/intent must agree.
++Missing/lost metadata cannot regenerate keys or reseed a database. Actual test
++rows remain in the managed DEVELOPMENT database; they were not copied anywhere
++near production or erased after validation.
++
++Production configuration cannot consume this manifest in a published process.
++It requires a different approved endpoint identity, original key fingerprints,
++schema/release/capability contracts, no mock storage, full TLS certificate and
++hostname verification, and source/freeze/backup/reconciliation/custody/rollback
++evidence bound to a reviewed unexpired approval. None exists.
++
++**Observed privilege risk:** actual development connections use `postgres` with
++superuser/schema-create privileges. No custom bq_app role was installed and no
++database-enforced least privilege is claimed. Code-only DDL avoidance does not
++remove owner privileges. Production capability testing and explicit security
++approval remain required if provider-supported credential isolation cannot
++establish a restricted role. Development credentials are not implicitly approved
++for production.
++
++## 4. Schema lifecycle and compatibility
++
++All 28 codecs, relationships, IDs, historical JSONB attributes, ordering, checks,
++unique/expression/partial indices and generated columns remain represented.
++Managed parent/child foreign keys are immediate rather than initially deferred:
++an explicitly stronger constraint, tested against actual parent-first saves and
++orphan refusal. No dependency on custom triggers/functions/grants/roles was added.
++
++The original version/checksum chain is validated when ledger rows exist.
++Because Publish copies structure, not those rows, an empty ledger requires an
++exact independently reviewed schema fingerprint plus managed release checksum.
++Unknown versions, edited checksums, missing columns/schema, extra views,
++unexpected RLS or unsupported functions/triggers fail validation.
++
++The actual development catalog has 117 tables. The eventual Publish-generated
++SQL has NOT been generated/applied or provider-certified. It must preserve every
++required constraint/index/default/generated expression, not just table counts.
++Any altered integrity/authorization behavior blocks release.
++
++There is no production schema CLI or build/startup DDL. The explicit development
++installer refuses existing user tables and any prior external setup evidence.
++
++## 5. Authentication/session/2FA preservation
++
++The original handlers, KDF formats, session signing operations, TOTP and pending
++registration data continue through the same codec/repository transactions.
++Actual Helium tests exercised password+TOTP login, registration/SMS fixture,
++TOTP enrollment, email fixture confirmation and persisted sessions/accounts
++across a fresh worker/cache.
++
++This validates invented data, not live original-key/account continuity. A real
++source needs protected custody and independent reconciliation of all hashes,
++salts/KDF parameters, versions, sessions, active/pending factors and unknown
++historical fields. Missing keys must stop adoption, never regenerate identities.
++
++## 6. Replit App Storage integration
++
++The existing reviewed immutable adapter is reused with explicit dataset/bucket
++binding, hash-verified read-back, pending/ready records and cache reconstruction.
++Actual development application tests used a filesystem stand-in only; no real
++bucket was read, written, overwritten or deleted. Media URLs/SQL references
++survived worker/cache restart. Previous object tests still cover corruption,
++timeouts, cross-dataset refusal, traversal, symlinks and no deletion capability.
++
++Actual App Storage retention, existing story/highlight/profile media bytes and
++production bucket ownership are BLOCKED pending protected inventory. GitHub and
++the deployment filesystem are not treated as authoritative media backups.
++
++## 7. Actual test results and classification
++
++**Actual Replit DEVELOPMENT:** 20 integration checks PASS. These cover platform
++connection, 117-table/28-document reconstruction, truthful owner-privilege
++reporting, login/TOTP, registration/enrollment/email fixture, post create/edit/
++delete, comments/reactions, upload/hash/read-back, duplicate replay/conflict,
++bounded pool, client-loss readiness/write refusal/reconnection, forged-session
++refusal, immediate FK integrity, empty-ledger contract, edited checksum, missing
++schema, invalid authority, restart persistence, zero audited runtime DDL and
++refusal to re-seed.
++
++**Actual Replit DEVELOPMENT rollback-only probes:** 4 PASS — RLS, unexpected
++view, extra column and permission-fingerprint mismatch all refused. Every catalog
++probe rolled back; final catalog matched the original contract.
++
++**Managed configuration:** 20 PASS — profile/app/database/key/storage isolation,
++forged proof refusal, production evidence/approval checks, pool bound and strict
++certificate/hostname TLS configuration. Production TLS handshake itself was
++NOT TESTED because no production resource exists.
++
++**Applicable existing synthetic regressions:** 192 PASS:
++25 gates, 19 role/TLS/migration checks, 16 storage checks, 26 runtime checks,
++24 REL-001 imports, 7 boundary checks, 56 application regressions, 9 native
++authorization/profile checks and 10 keyed-membership checks.
++
++**Total: 236 PASS, 0 FAIL in completed suites.** An initial test-loader typo was
++fixed before database setup; it is not counted as an application pass.
++
++Important distinctions:
++
++- Connection loss on actual Helium was injected into the application client;
++  the provider service was NOT stopped. Real managed-service outage behavior is
++  NOT TESTED. The existing disposable-server outage test remains PASS.
++- Empty-ledger testing used a rolled-back local row removal. It is NOT a
++  completed Publish/schema-copy test.
++- Original logical-backup/full-media recovery tests use disposable local
++  PostgreSQL and a filesystem provider stand-in, NOT managed production PITR.
++- The managed application's public landing page was visually checked on the
++  temporary actual-Helium-backed preview; signed-in UI rendering was NOT TESTED.
++  Backend authenticated flows were tested through HTTP.
++
++## 8. Remaining provider-specific and implementation limits
++
++BLOCKED:
++
++1. Managed production creation and actual schema-only initial provisioning.
++2. Actual published TLS, runtime principal permissions and provider-generated diff.
++3. Protected authoritative source generation, complete live inventory and custody.
++4. Approved real-data REL-001-to-managed-authority adoption and media mapping.
++5. **Real production email/SMS/push delivery:** the inherited bridge still uses
++   fixture sinks. Runtime enforces `managed_production_side_effects_not_certified`;
++   removing this check is not an approved implementation.
++6. Provider PITR, independent immutable source/media recovery and real-key restore.
++7. Production-wide writer freeze/drain and compatible rollback with current SQL.
++
++No paid subscription status is treated as permission to create resources or
++publish. No fake least-privilege, provider recovery or production compatibility
++PASS is substituted for these missing results.
++
++## 9. Source, branch and commit
++
++Live GitHub read-only verification confirmed reviewed source
++`5a5a7d7564158c45ff47b34f90a3a0e739c52068` remains the tip of
++`development/staging-runtime-2026-11-04`.
++
++Implementation branch: `development/replit-managed-2026-11-04`, in
++`generated-artifacts/production-preparation/source`.
++Preservation checkpoint: `3b4f177` (previous reviewed safeguards).
++The managed implementation is committed separately after validation; its exact
++hash is recorded in the handoff response. No push was authorized or performed,
++no merge to main occurred, and the original application remains untouched.
++
++Ignored generated fixtures/keys/credentials, SQL labs, snapshots and mock media
++are excluded from commits. A review patch is retained outside the ignored
++worktree as a recovery/handoff artifact.
++
++## 10. Exact remaining Replit UI steps
++
++These are operator steps for LATER, not actions performed in this assignment.
++
++1. Open the existing app's Publishing settings. Confirm Reserved VM, existing
++   URL and current deployment; do not change them to a new product.
++2. Open Database, use its database selector and inspect Production. No resource
++   was available during this assignment. The workspace development connection
++   is not evidence otherwise.
++3. Complete the blocked production worker/adoption and security reviews first.
++   Obtain explicit approval for production creation, expected usage, target
++   identity and the exact schema/data-copy behavior.
++4. After that separate approval, enter Publishing's supported production setup:
++   current Helium infrastructure creates production through Publish when
++   development has data. Legacy interfaces expose Production database settings
++   → Create production database. If offered, leave “Set up your production
++   database with your current development data” OFF.
++5. For current Helium, do not assume a legacy checkbox exists or guarantees
++   schema-only initial creation. Confirm the actual current UI offers the
++   required no-copy behavior. If that cannot be verified, STOP before approval.
++   Development now contains invented test rows; they must never become
++   production employee accounts.
++6. Review Development database changes detected, all ambiguity/rename prompts,
++   and the complete generated SQL. Reject destructive operations, row clearing,
++   fixture/data copying, missing constraints or loss of generated/index semantics.
++   Never select “Copy your development database schema & data to production.”
++7. Require migration validation and a protected preview where supported. A
++   preview containing real data must remain protected; do not export it here.
++8. Before authority activation, separately verify the actual production endpoint,
++   role capabilities, full TLS and exact catalog contract, with counts/keyed
++   evidence only. Runtime startup must still refuse absent adoption evidence.
++9. Only after source/backup/custody/freeze/import/reconciliation/rollback evidence
++   and a release-ready production worker are approved, select Approve and publish
++   to update the existing app. No staging migrator, startup DDL or seed is used.
++
++Opening an approval/provision flow can create a production resource. Do not
++click Publish/Republish “just to inspect” without the separate authorization.
++
++## 11. Backup, migration and cutover readiness
++
++The existing REL-001 foundation remains valid for synthetic 28-path preservation,
++independent reconciliation, original-byte escrow, media checks and interrupted
++import/replay refusal. It is not a live managed adoption CLI.
++
++Remaining protected sequence:
++
++1. Attest exact JSON/App Storage source and all writer paths.
++2. Inventory every account/employee/entity/relationship, media object and pending
++   operational item, retaining original bytes independently.
++3. Prove signing/backup/2FA custody and independent access; rehearse provider and
++   media recovery with accepted-write continuity.
++4. Review schema-only managed production creation and actual security capability.
++5. Run an approved protected candidate import/reconciliation and reverse check,
++   preserving all 28 paths and unknown historical fields without normalization.
++6. Complete real durable delivery, authority adoption and production runtime tests.
++7. Approve final freeze; drain every writer/queue, capture the frozen generation,
++   back it up, import and independently reconcile before activation.
++8. Approve publication to the existing URL; verify real-account/session continuity,
++   media, durable canary writes and monitoring.
++9. Retain frozen JSON non-authoritatively and keep rollback on **current SQL**.
++   Never restore an older JSON generation over newer accepted writes.
++
++Abort on identity/custody drift, incomplete source/media, unsupported records,
++unverified copy behavior, TLS/permission/schema mismatch, failed recovery,
++unproven freeze, reconciliation mismatch or expired approval.
++
++## 12. Release verdict
++
++- **Replit-managed DEVELOPMENT: VERIFIED**, with invented state in the actual
++  managed database, not merely a local PostgreSQL mock.
++- **Production schema/TLS/permissions/recovery: BLOCKED**, not provider-certified.
++- **Lossless real-data adoption: BLOCKED** pending protected evidence/approval.
++- **PRODUCTION: NO-GO.** No production resource, live import, authority activation,
++  traffic switch or Publish/Republish was executed.
+diff --git a/scripts/managed/config-test.cjs b/scripts/managed/config-test.cjs
+new file mode 100644
+index 0000000..50a27bc
+--- /dev/null
++++ b/scripts/managed/config-test.cjs
+@@ -0,0 +1,41 @@
++const assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),os=require("node:os"),crypto=require("node:crypto");
++const c=require("../../deploy/managed/config.cjs"),schema=require("../../deploy/managed/schema.cjs");
++const root=fs.mkdtempSync(path.join(os.tmpdir(),"bq-managed-config-"));
++const key=crypto.randomBytes(48).toString("hex"),backup=crypto.randomBytes(32).toString("hex");
++const env={REPL_ID:"invented-managed-app",DATABASE_URL:"postgresql://invented:invented@helium/heliumdb",BQ_MANAGED_SESSION_KEY:key,BQ_MANAGED_BACKUP_KEY:backup};
++const base={kind:"BQ_REPLIT_MANAGED_V1",environment:"development",appFingerprint:c.sha(env.REPL_ID),endpointFingerprint:c.endpoint(env,"development").identity,
++  dataset:`staging-synthetic-${crypto.randomUUID()}`,bucket:"invented-isolated-bucket",mockStorage:true,productionBucketFingerprint:c.sha("invented-live-bucket"),
++  keys:{session:c.sha(key),backup:c.sha(backup)},schemaFingerprint:"a".repeat(64),releaseFingerprint:schema.releaseFingerprint,permissionsFingerprint:"b".repeat(64)};
++const results=[];
++function test(name,fn){try{fn();results.push({name,status:"PASS"});}catch(e){results.push({name,status:"FAIL",code:e.code||e.message});}}
++const verify=(m=base,e=env)=>c.verify({env:e,manifest:m,approvalRoot:root});
++const rejected=(m,e,code)=>assert.throws(()=>verify(m,e),{code});
++test("Helium internal transport and bounded pool",()=>{const p=verify(),o=c.poolOptions(p);assert.equal(o.ssl,false);assert.equal(o.max,4);assert(Object.isFrozen(p));assert(!JSON.stringify(p).includes("postgresql://"));});
++test("Forged proofs cannot construct a connection",()=>assert.throws(()=>c.poolOptions(Object.freeze({verifiedManaged:true})),{code:"managed_verified_proof_required"}));
++test("Development manifest cannot run in deployment",()=>rejected(base,{...env,REPLIT_DEPLOYMENT:"1"},"managed_environment_mismatch"));
++test("Workspace REPLIT_ENVIRONMENT is not deployment identity",()=>assert(verify(base,{...env,REPLIT_ENVIRONMENT:"production"})));
++test("Different app is refused",()=>rejected(base,{...env,REPL_ID:"other"},"managed_app_identity_mismatch"));
++test("Different database is refused",()=>rejected(base,{...env,DATABASE_URL:"postgresql://invented:invented@helium/other"},"managed_database_identity_mismatch"));
++test("External development endpoint is refused",()=>rejected(base,{...env,DATABASE_URL:"postgresql://invented:invented@example.invalid/db"},"managed_development_endpoint_refused"));
++test("Missing keys cannot regenerate",()=>rejected(base,{...env,BQ_MANAGED_SESSION_KEY:undefined},"managed_key_identity_mismatch"));
++test("Changed key fails identity",()=>rejected(base,{...env,BQ_MANAGED_BACKUP_KEY:"f".repeat(64)},"managed_key_identity_mismatch"));
++test("Production bucket cannot be used for development",()=>rejected({...base,productionBucketFingerprint:c.sha(base.bucket)},env,"managed_development_storage_refused"));
++test("Unreviewed connection options refused",()=>rejected(base,{...env,DATABASE_URL:env.DATABASE_URL+"?options=unreviewed"},"managed_connection_option_unreviewed"));
++test("Managed schema contains no custom roles/functions/triggers/grants",()=>{assert(!/\b(CREATE ROLE|CREATE FUNCTION|CREATE TRIGGER|GRANT)\b/i.test(schema.statements.join("\n")));assert(!schema.statements.join("\n").includes("DEFERRABLE INITIALLY DEFERRED"));});
++const penv={...env,REPLIT_DEPLOYMENT:"1",DATABASE_URL:"postgresql://invented:invented@production.invalid/db?sslmode=require"};
++const pm={...base,bucket:"invented-live-bucket",environment:"production",dataset:`managed-production-${crypto.randomUUID()}`,mockStorage:false,
++  endpointFingerprint:c.endpoint(penv,"production").identity,developmentEndpointFingerprint:base.endpointFingerprint,
++  permissionApproval:"reviewed-managed-runtime-capabilities",approval:"invented-approval",release:Object.fromEntries(["source","backup","reconciliation","custody","rollback","frozenGeneration"].map(n=>[n,"c".repeat(64)]))};
++fs.writeFileSync(path.join(root,"production-approvals.json"),JSON.stringify({approvals:[]}));
++test("Production cannot inherit development approval",()=>rejected(pm,penv,"managed_production_approval_missing"));
++test("Production evidence is mandatory",()=>rejected({...pm,release:{}},penv,"managed_cutover_evidence_missing"));
++test("Production cannot adopt the development bucket",()=>rejected({...pm,bucket:base.bucket},penv,"managed_production_bucket_mismatch"));
++test("TLS downgrade is refused",()=>rejected(pm,{...penv,DATABASE_URL:penv.DATABASE_URL.replace("require","disable")},"managed_tls_downgrade_refused"));
++fs.writeFileSync(path.join(root,"production-approvals.json"),JSON.stringify({approvals:[{id:pm.approval,operation:"managed-production-activate",binding:c.sha(c.canonical(pm)),approvedBy:"invented test reviewer",expires:"2099-01-01T00:00:00Z"}]}));
++test("Reviewed production configuration forces certificate and hostname validation",()=>{const o=c.poolOptions(verify(pm,penv));assert.equal(o.ssl.rejectUnauthorized,true);assert.equal(o.ssl.servername,"production.invalid");assert.equal(o.ssl.minVersion,"TLSv1.2");assert(!o.connectionString.includes("sslmode"));assert(o.enableChannelBinding);});
++test("Modified production manifest invalidates approval",()=>rejected({...pm,permissionApproval:"reviewed-managed-runtime-capabilities",schemaFingerprint:"e".repeat(64)},penv,"managed_production_approval_missing"));
++test("Runtime path options cannot override verified authority fields",()=>{const p=c.verify({env:penv,manifest:pm,approvalRoot:root,paths:{profile:"development",dataset:"wrong",verifiedManaged:false}});assert.equal(p.profile,"production");assert.equal(p.dataset,pm.dataset);assert.equal(p.verifiedManaged,true);});
++test("Empty ledger check still retains strict legacy migration validation",()=>assert.throws(()=>require("../../deploy/staging/migrate.cjs").check(new Map([["unknown","0"]]))));
++fs.rmSync(root,{recursive:true,force:true});
++console.log(JSON.stringify({suite:"managed-config",pass:results.filter(r=>r.status==="PASS").length,fail:results.filter(r=>r.status==="FAIL").length,results}));
++if(results.some(r=>r.status!=="PASS"))process.exitCode=1;
+diff --git a/scripts/managed/live-test.cjs b/scripts/managed/live-test.cjs
+new file mode 100644
+index 0000000..c2f0dce
+--- /dev/null
++++ b/scripts/managed/live-test.cjs
+@@ -0,0 +1,146 @@
++// ACTUAL Replit development PostgreSQL, invented records, filesystem media mock.
++// Never uses the original app's data/, bucket, SESSION_SECRET or production DB.
++const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),crypto=require("node:crypto"),assert=require("node:assert/strict");
++const {spawn}=require("node:child_process"),{Client}=require("pg");
++const cfg=require("../../deploy/managed/config.cjs"),schema=require("../../deploy/managed/schema.cjs");
++const {prepare}=require("../../deploy/managed/development.cjs"),{FileStorage}=require("../forensics/file-storage.cjs");
++const {ImmutableStore}=require("../../deploy/staging/object-store.cjs"),{vault}=require("../../development/postgres/sealed.cjs");
++const {readSql}=require("../migration/rel001/reconcile.cjs"),{code}=require("../../development/postgres/fixtures.cjs");
++const root=path.resolve(__dirname,"../../generated-artifacts/managed-development"),port=5134;
++const results=[],sleep=ms=>new Promise(r=>setTimeout(r,ms));
++async function test(name,fn){try{await fn();results.push({name,status:"PASS"});}catch(e){results.push({name,status:"FAIL",code:e.code||e.message.slice(0,160)});}console.log(JSON.stringify(results.at(-1)));}
++let worker,lab,client,store,storageDir,token,postId,mediaUrl;
++function launch(){
++  const child=spawn(process.execPath,["scripts/managed/test-child.cjs",root],{cwd:path.resolve(__dirname,"../.."),env:{
++    PATH:process.env.PATH,HOME:root,LANG:"C.UTF-8",REPL_ID:process.env.REPL_ID,DATABASE_URL:process.env.DATABASE_URL,
++    BQ_MANAGED_MANIFEST_FILE:path.join(root,"manifest.json"),BQ_MANAGED_SESSION_KEY:lab.keys.sessionKey,
++    BQ_MANAGED_BACKUP_KEY:lab.keys.backupKey,BQ_MANAGED_MOCK_DIRECTORY:storageDir,PORT:String(port),BQ_MANAGED_POOL_MAX:"3"
++  },stdio:["ignore","pipe","pipe"]});
++  child.output="";child.stdout.on("data",d=>child.output+=d);child.stderr.on("data",d=>child.output+=d);
++  child.done=new Promise(r=>child.once("exit",r));return child;
++}
++async function stop(){if(worker&&worker.exitCode===null&&!worker.signalCode){worker.kill("SIGTERM");await worker.done;}}
++async function ready(){
++  for(let i=0;i<160;i++){
++    if(worker.exitCode!==null)throw Error("managed_worker_startup_refused");
++    try{if((await fetch(`http://127.0.0.1:${port}/health/ready`,{signal:AbortSignal.timeout(2000)})).status===200)return;}catch{}
++    await sleep(150);
++  }throw Error("managed_worker_readiness_timeout");
++}
++let ip=1;
++async function req(url,body={},opts={}){
++  const method=opts.method||"POST",headers={"x-forwarded-for":`192.0.2.${1+ip++%240}`,...(token?{"x-session":token}:{}),...opts.headers};
++  if(method!=="GET"){headers["Idempotency-Key"]=opts.key||crypto.randomUUID();if(!opts.bytes)headers["Content-Type"]="application/json";}
++  const r=await fetch(`http://127.0.0.1:${port}${url}`,{method,headers,body:method==="GET"?undefined:opts.bytes||JSON.stringify({...body,...(token?{token}:{})}),signal:AbortSignal.timeout(15000)});
++  const bytes=Buffer.from(await r.arrayBuffer());let json;try{json=JSON.parse(bytes);}catch{}
++  return {status:r.status,json,bytes};
++}
++const ok=(r,status=200)=>assert.equal(r.status,status,`unexpected HTTP ${r.status}`);
++async function graph(){return (await readSql(client)).values;}
++const authVault=()=>vault({sessionKey:lab.keys.sessionKey,dataset:lab.manifest.dataset});
++async function messages(topic){return (await client.query("SELECT id,payload FROM dev.outbox WHERE topic=$1 ORDER BY created_at DESC",[topic])).rows.filter(r=>r.payload?.sealed).map(r=>authVault().decode(r.payload,`outbox:${r.id}`));}
++function fromBase32(text){const alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZ234567",bits=[...text].map(c=>alphabet.indexOf(c).toString(2).padStart(5,"0")).join("");return Buffer.from(bits.match(/.{8}/g).map(b=>parseInt(b,2))).toString("hex");}
++(async()=>{
++  try{
++    lab=await prepare({root,productionBucketFingerprint:"ce11c603901c2550295d04cf9a5898200348ff8d29086744a88ee73d8f8716ec"});
++    storageDir=fs.mkdtempSync(path.join(os.tmpdir(),"bq-forensics-managed-"));fs.chmodSync(storageDir,0o700);
++    fs.writeFileSync(path.join(root,"mock-directory.json"),JSON.stringify(storageDir),{mode:0o600});
++    store=new ImmutableStore(new FileStorage(storageDir),{dataset:lab.manifest.dataset});
++    await store.createControl("provision-intent.json",{dataset:lab.manifest.dataset});
++    await store.createControl("provision-receipt.json",JSON.parse(fs.readFileSync(path.join(root,"receipt.json"))));
++    const endpoint=cfg.endpoint(process.env,"development");
++    client=new Client({connectionString:endpoint.url.toString(),ssl:false,application_name:"bq-managed-validation"});await client.connect();
++    worker=launch();await ready();
++    await test("Actual Helium connection, 117-table contract and independent 28-file reconstruction",async()=>{
++      assert.equal((await schema.requireSchema(client,lab.manifest)).tables,117);assert.equal(Object.keys(await graph()).length,28);
++      const r=(await client.query("SELECT current_database() AS db,current_setting('ssl') AS ssl")).rows[0];assert.equal(r.db,"heliumdb");assert.equal(r.ssl,"off");
++    });
++    await test("Managed credentials truthfully expose owner privilege, not least privilege",()=>{assert(lab.capabilities.rolsuper);assert(lab.capabilities.schema_create);});
++    await test("Password plus existing TOTP format authenticates",async()=>{
++      const l=await req("/api/login",{badge:"101",password:lab.credentials.password});ok(l);assert(l.json.needTotp);
++      const r=await req("/api/login-2fa",{ticket:l.json.ticket,code:code(lab.credentials.totpKeys["101"])});ok(r);assert(r.json.token);token=r.json.token;
++    });
++    await test("Registration, SMS fixture, TOTP enrollment and email fixture confirmation",async()=>{
++      const body={badge:"107",code:lab.credentials.check,mobile:lab.credentials.mobile,password:`Register-${crypto.randomBytes(10).toString("hex")}-Aa1!`};
++      ok(await req("/api/register",body));const sms=(await messages("sms"))[0],otp=(new URLSearchParams(sms.body).get("Body")||sms.body).match(/\b\d{6}\b/)[0];
++      const reg=await req("/api/register",{...body,otp});ok(reg);
++      const setup=await req("/api/login-2fa",{op:"setup",ticket:reg.json.ticket});ok(setup);
++      const enrolled=await req("/api/login-2fa",{op:"enroll",ticket:reg.json.ticket,code:code(fromBase32(setup.json.secret))});ok(enrolled);
++      ok(await req("/api/login-2fa",{op:"email",ticket:enrolled.json.ticket,email:"managed107@example.invalid"}));
++      const mail=(await messages("mail")).find(m=>m.to==="managed107@example.invalid");
++      const done=await req("/api/login-2fa",{op:"email-confirm",ticket:enrolled.json.ticket,code:mail.text.match(/\b\d{6}\b/)[0]});ok(done);assert(done.json.token);
++    });
++    await test("Text post commits before success",async()=>{const r=await req("/api/ideas",{type:"post",text:"Actual managed development post"});ok(r,201);postId=r.json.idea.id;assert((await graph())["ideas.json"].some(p=>p.id===postId));});
++    await test("Comments and reactions persist with immediate foreign keys",async()=>{ok(await req(`/api/ideas/${postId}/comments`,{text:"Managed comment"}),201);ok(await req(`/api/ideas/${postId}/rating`,{vote:"like"}));const p=(await graph())["ideas.json"].find(p=>p.id===postId);assert(p.comments.length);});
++    await test("Post edit/delete preserve other content and commit durably",async()=>{
++      const made=await req("/api/ideas",{type:"post",text:"Managed disposable post"});ok(made,201);const id=made.json.idea.id;
++      ok(await req(`/api/ideas/${id}`,{text:"Managed edited post"},{method:"PATCH"}));
++      assert.equal((await graph())["ideas.json"].find(p=>p.id===id).text,"Managed edited post");
++      ok(await req(`/api/ideas/${id}`,{},{method:"DELETE"}));
++      assert(!(await graph())["ideas.json"].some(p=>p.id===id));assert((await graph())["ideas.json"].some(p=>p.id===postId));
++    });
++    await test("Immutable media upload, read-back and ready attachment",async()=>{
++      const png=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jM1sAAAAASUVORK5CYII=","base64");
++      const r=await req("/api/media",{},{bytes:png,headers:{"Content-Type":"image/png"}});ok(r,201);mediaUrl=r.json.url;
++      ok(await req("/api/ideas",{type:"post",text:"Managed image post",media:mediaUrl}),201);
++      const get=await req(mediaUrl,{},{method:"GET"});ok(get);assert(get.bytes.equals(png));
++      const row=(await client.query("SELECT * FROM dev.media WHERE legacy_path=$1",[mediaUrl])).rows[0];assert.equal(row.state,"ready");assert.equal(cfg.sha(png),row.sha256);assert((await store.read(row.object_key,row.sha256)).equals(png));
++    });
++    await test("Duplicate success is one durable write; changed payload conflicts",async()=>{
++      const key=crypto.randomUUID(),body={type:"post",text:"Managed exactly-once request"};
++      const a=await req("/api/ideas",body,{key}),b=await req("/api/ideas",body,{key});ok(a,201);ok(b,201);assert.equal(a.json.idea.id,b.json.idea.id);
++      ok(await req("/api/ideas",{...body,text:"changed"},{key}),409);assert.equal((await graph())["ideas.json"].filter(p=>p.text===body.text).length,1);
++    });
++    await test("Pool stays bounded under concurrent authenticated reads",async()=>{await Promise.all(Array.from({length:6},()=>req("/api/session")));assert(Number((await client.query("SELECT count(*) AS n FROM pg_stat_activity WHERE application_name='bq-managed-development'")).rows[0].n)<=3);});
++    await test("Client connectivity loss fails readiness and writes closed, then reconnects",async()=>{
++      const marker=path.join(root,"inject-client-outage");fs.writeFileSync(marker,"test only",{mode:0o600});
++      try{
++        assert((await req("/health/ready",{},{method:"GET"})).status>=500);
++        assert((await req("/api/ideas",{type:"post",text:"Must not commit during injected loss"})).status>=500);
++        ok(await req("/health/live",{},{method:"GET"}));
++      }finally{fs.unlinkSync(marker);}
++      await ready();ok(await req("/api/session"));
++      assert(!(await graph())["ideas.json"].some(p=>p.text==="Must not commit during injected loss"));
++    });
++    await test("Forged session cannot write",async()=>{
++      const original=token;token="invented-forged-session";
++      try{assert([401,403].includes((await req("/api/ideas",{type:"post",text:"Forged session post"})).status));}finally{token=original;}
++      assert(!(await graph())["ideas.json"].some(p=>p.text==="Forged session post"));
++    });
++    await test("Immediate foreign key rejects orphan graph data",async()=>{
++      await client.query("BEGIN");try{await assert.rejects(client.query("INSERT INTO dev.sessions(id,file_name,parent,ordinal,attrs,shape) VALUES('invented-orphan','accounts.json','missing',0,'{}','{}')"),e=>e.code==="23503");}finally{await client.query("ROLLBACK");}
++    });
++    await test("Schema-only publish equivalent: empty ledger uses exact structure contract",async()=>{
++      await client.query("BEGIN");try{await client.query("DELETE FROM dev.schema_migrations");assert.equal((await schema.requireSchema(client,lab.manifest)).ledger,"structural-contract");}finally{await client.query("ROLLBACK");}
++    });
++    await test("Migration checksum drift is rejected",async()=>{
++      await client.query("BEGIN");try{await client.query("UPDATE dev.schema_migrations SET checksum='invalid' WHERE version='0001_base'");await assert.rejects(schema.requireSchema(client,lab.manifest),/migration_checksum_mismatch/);}finally{await client.query("ROLLBACK");}
++    });
++    await test("Lost schema is refused, without startup repair",async()=>{
++      await client.query("BEGIN");try{await client.query("ALTER SCHEMA dev RENAME TO managed_missing_probe");await assert.rejects(schema.requireSchema(client,lab.manifest),/managed_schema_missing/);}finally{await client.query("ROLLBACK");}
++    });
++    await test("Changed SQL authority refuses requests",async()=>{
++      const original=(await client.query("SELECT seal FROM dev.authority")).rows[0].seal;
++      try{await client.query("UPDATE dev.authority SET seal='invented-invalid'");assert((await req("/api/session")).status>=500);}
++      finally{await client.query("UPDATE dev.authority SET seal=$1",[original]);}
++      ok(await req("/api/session"));
++    });
++    await test("Fresh runtime/cache preserves sessions, accounts, posts and bucket bytes",async()=>{
++      await stop();worker=launch();await ready();ok(await req("/api/session"));ok(await req(mediaUrl,{},{method:"GET"}));
++      assert((await graph())["accounts.json"]["107"].hash);assert((await graph())["ideas.json"].some(p=>p.id===postId));
++    });
++    await test("Runtime source never calls setup, DDL or fallback",()=>{
++      const source=fs.readFileSync(path.resolve(__dirname,"../../deploy/managed/runtime.cjs"),"utf8");
++      assert(!/prepare\(|\.initialize\(|\.hardenControls\(|query\(\s*["'`](CREATE|ALTER|DROP|TRUNCATE)/i.test(source));
++      assert(!source.includes("deploy/staging/seed"));
++      assert(!fs.existsSync(path.join(root,"runtime-ddl-detected")));
++    });
++    await test("Previous setup evidence prohibits re-seeding even if SQL is unavailable",async()=>assert.rejects(prepare({root,productionBucketFingerprint:lab.manifest.productionBucketFingerprint}),/managed_development_evidence_exists/));
++    fs.writeFileSync(path.join(root,"validation.json"),JSON.stringify({provider:"ACTUAL Replit development Helium",results,capabilities:lab.capabilities},null,2),{mode:0o600});
++  }catch(e){results.push({name:"environment",status:"FAIL",code:e.code||e.message.slice(0,160)});}
++  finally{
++    await stop();await client?.end().catch(()=>{});
++    const report={provider:"ACTUAL Replit DEVELOPMENT (not production)",pass:results.filter(r=>r.status==="PASS").length,fail:results.filter(r=>r.status==="FAIL").length,results};
++    console.log(JSON.stringify(report));if(report.fail)process.exitCode=1;
++  }
++})();
+diff --git a/scripts/managed/preview.cjs b/scripts/managed/preview.cjs
+new file mode 100644
+index 0000000..c57fb0a
+--- /dev/null
++++ b/scripts/managed/preview.cjs
+@@ -0,0 +1,13 @@
++// Temporary synthetic managed-development preview. Never modifies workflows.
++const fs=require("node:fs"),path=require("node:path"),{spawn}=require("node:child_process");
++if(process.env.REPLIT_DEPLOYMENT==="1")throw Error("managed_development_only");
++const root=path.resolve(__dirname,"../../generated-artifacts/managed-development");
++const keys=JSON.parse(fs.readFileSync(path.join(root,"keys.json"),"utf8"));
++const directory=JSON.parse(fs.readFileSync(path.join(root,"mock-directory.json"),"utf8"));
++const child=spawn(process.execPath,["scripts/managed/test-child.cjs",root],{cwd:path.resolve(__dirname,"../.."),env:{
++  PATH:process.env.PATH,HOME:root,LANG:"C.UTF-8",REPL_ID:process.env.REPL_ID,DATABASE_URL:process.env.DATABASE_URL,
++  BQ_MANAGED_MANIFEST_FILE:path.join(root,"manifest.json"),BQ_MANAGED_SESSION_KEY:keys.sessionKey,
++  BQ_MANAGED_BACKUP_KEY:keys.backupKey,BQ_MANAGED_MOCK_DIRECTORY:directory,PORT:"5134",BQ_MANAGED_POOL_MAX:"3"
++},stdio:["ignore","inherit","inherit"]});
++process.on("SIGINT",()=>child.kill("SIGINT"));process.on("SIGTERM",()=>child.kill("SIGTERM"));
++child.on("exit",code=>process.exit(code||0));
+diff --git a/scripts/managed/schema-test.cjs b/scripts/managed/schema-test.cjs
+new file mode 100644
+index 0000000..80eefe2
+--- /dev/null
++++ b/scripts/managed/schema-test.cjs
+@@ -0,0 +1,24 @@
++// Non-destructive catalog probes on the existing invented managed-development
++// dataset. Every temporary schema/policy change is rolled back, never published.
++const fs=require("node:fs"),path=require("node:path"),assert=require("node:assert/strict"),{Client}=require("pg");
++const cfg=require("../../deploy/managed/config.cjs"),schema=require("../../deploy/managed/schema.cjs");
++const root=path.resolve(__dirname,"../../generated-artifacts/managed-development");
++const results=[];
++async function probe(name,fn){try{await client.query("BEGIN");await client.query("SET LOCAL lock_timeout='2s'");await fn();results.push({name,status:"PASS"});}catch(e){results.push({name,status:"FAIL",code:e.code||e.message});}finally{await client.query("ROLLBACK");}}
++let client;
++(async()=>{
++  if(process.env.REPLIT_DEPLOYMENT==="1")cfg.fail("managed_development_only");
++  const manifest=JSON.parse(fs.readFileSync(path.join(root,"manifest.json"),"utf8")),keys=JSON.parse(fs.readFileSync(path.join(root,"keys.json"),"utf8"));
++  const env={...process.env,BQ_MANAGED_SESSION_KEY:keys.sessionKey,BQ_MANAGED_BACKUP_KEY:keys.backupKey};
++  const proof=cfg.verify({env,manifest});
++  client=new Client(cfg.poolOptions(proof));await client.connect();
++  try{
++    await probe("Unreviewed RLS is a release blocker",async()=>{await client.query("ALTER TABLE dev.authority ENABLE ROW LEVEL SECURITY");await assert.rejects(schema.requireSchema(client,manifest),/managed_unreviewed_schema_policy/);});
++    await probe("Unreviewed view is a release blocker",async()=>{await client.query("CREATE VIEW dev.managed_review_probe AS SELECT 1 AS n");await assert.rejects(schema.requireSchema(client,manifest),/managed_unreviewed_schema_policy/);});
++    await probe("Unexpected schema column is a release blocker",async()=>{await client.query("ALTER TABLE dev.authority ADD COLUMN managed_review_probe text");await assert.rejects(schema.requireSchema(client,manifest),/managed_schema_contract_mismatch/);});
++    await probe("Permission fingerprint mismatch refuses managed connection",async()=>{const wrong=cfg.verify({env,manifest:{...manifest,permissionsFingerprint:"f".repeat(64)}});await assert.rejects(cfg.verifyDatabase(client,wrong),/managed_permissions_changed/);});
++    await schema.requireSchema(client,manifest);
++  }finally{await client.end();}
++  console.log(JSON.stringify({suite:"actual-managed-schema-probes",pass:results.filter(r=>r.status==="PASS").length,fail:results.filter(r=>r.status==="FAIL").length,results}));
++  if(results.some(r=>r.status!=="PASS"))process.exitCode=1;
++})().catch(e=>{console.error(JSON.stringify({failed:e.code||"managed_schema_probe_failed"}));process.exitCode=1;});
+diff --git a/scripts/managed/test-child.cjs b/scripts/managed/test-child.cjs
+new file mode 100644
+index 0000000..b0fa3f7
+--- /dev/null
++++ b/scripts/managed/test-child.cjs
+@@ -0,0 +1,33 @@
++// Test-only client outage injection and actual SQL audit. Never loaded by CLI.
++const fs=require("node:fs"),path=require("node:path"),pg=require("pg");
++const root=process.argv[2],Original=pg.Pool;
++pg.Pool=class extends Original{
++  constructor(options){
++    super(options);
++    this.on("connect",client=>{
++      const query=client.query;
++      client.query=function(...args){
++        const sql=typeof args[0]==="string"?args[0]:args[0]?.text||"";
++        if(/\b(CREATE|ALTER|DROP|TRUNCATE)\s+(TABLE|SCHEMA|INDEX|ROLE|FUNCTION|TRIGGER)/i.test(sql))
++          fs.writeFileSync(path.join(root,"runtime-ddl-detected"),"unexpected DDL",{mode:0o600});
++        return query.apply(this,args);
++      };
++    });
++  }
++  connect(...args){
++    if(fs.existsSync(path.join(root,"inject-client-outage"))){
++      const error=Object.assign(Error("injected_client_connection_loss"),{code:"ECONNREFUSED"});
++      const callback=args.at(-1);
++      if(typeof callback==="function"){queueMicrotask(()=>callback(error));return;}
++      return Promise.reject(error);
++    }
++    return super.connect(...args);
++  }
++};
++const {FileStorage}=require("../forensics/file-storage.cjs");
++const {start}=require("../../deploy/managed/runtime.cjs");
++(async()=>{
++  const app=await start({storeClient:new FileStorage(process.env.BQ_MANAGED_MOCK_DIRECTORY)});
++  let closing=false;const stop=()=>{if(closing)return;closing=true;app.close().then(()=>process.exit(0),()=>process.exit(1));};
++  process.on("SIGTERM",stop);process.on("SIGINT",stop);
++})().catch(e=>{console.error(JSON.stringify({refused:e.code||e.message}));process.exit(1);});
+diff --git a/scripts/migration/rel001/membership-evidence-test.cjs b/scripts/migration/rel001/membership-evidence-test.cjs
+new file mode 100644
+index 0000000..9c25b45
+--- /dev/null
++++ b/scripts/migration/rel001/membership-evidence-test.cjs
+@@ -0,0 +1,17 @@
++const assert=require("node:assert/strict"),crypto=require("node:crypto");
++const {membership}=require("./membership-evidence.cjs");
++const key=crypto.randomBytes(32),base={domain:"accounts",sourceFingerprint:"a".repeat(64),generation:"invented-frozen-1",identifiers:["00101","Ab07","ab07"]};
++const results=[];
++function test(name,fn){try{fn();results.push({name,status:"PASS"});}catch{results.push({name,status:"FAIL"});}}
++test("Reports only algorithm/domain/count/keyed fingerprint",()=>assert.deepEqual(Object.keys(membership(base,key)).sort(),["algorithm","count","domain","fingerprint"]));
++test("Order-independent membership without source mutation",()=>{const before=[...base.identifiers];assert.deepEqual(membership(base,key),membership({...base,identifiers:[...before].reverse()},key));assert.deepEqual(base.identifiers,before);});
++test("Equal-count substitution changes fingerprint",()=>assert.notEqual(membership(base,key).fingerprint,membership({...base,identifiers:["00101","Ab07","other"]},key).fingerprint));
++test("Leading zeros are not normalized",()=>assert.notEqual(membership(base,key).fingerprint,membership({...base,identifiers:["101","Ab07","ab07"]},key).fingerprint));
++test("Case is not folded",()=>assert.notEqual(membership(base,key).fingerprint,membership({...base,identifiers:["00101","AB07","ab07"]},key).fingerprint));
++test("Context and domain are bound",()=>{for(const change of [{domain:"employees"},{generation:"invented-frozen-2"},{sourceFingerprint:"b".repeat(64)}])assert.notEqual(membership(base,key).fingerprint,membership({...base,...change},key).fingerprint);});
++test("Independent audit keys produce different evidence",()=>assert.notEqual(membership(base,key).fingerprint,membership(base,crypto.randomBytes(32)).fingerprint));
++test("Absent/short custody key is refused",()=>{for(const bad of [undefined,Buffer.alloc(4)])assert.throws(()=>membership(base,bad),{code:"audit_key_required"});});
++test("Duplicate and coerced identifiers are refused",()=>{assert.throws(()=>membership({...base,identifiers:["x","x"]},key),{code:"duplicate_inventory_identifier"});assert.throws(()=>membership({...base,identifiers:[101]},key),{code:"stable_string_identifiers_required"});});
++test("Missing source/generation context is refused",()=>assert.throws(()=>membership({...base,generation:undefined},key),{code:"inventory_context_required"}));
++console.log(JSON.stringify({scope:"invented identities only; no protected source read",pass:results.filter(r=>r.status==="PASS").length,fail:results.filter(r=>r.status==="FAIL").length,results}));
++if(results.some(r=>r.status!=="PASS"))process.exitCode=1;
+diff --git a/scripts/migration/rel001/membership-evidence.cjs b/scripts/migration/rel001/membership-evidence.cjs
+new file mode 100644
+index 0000000..897b30d
+--- /dev/null
++++ b/scripts/migration/rel001/membership-evidence.cjs
+@@ -0,0 +1,19 @@
++// Reporting primitive only: no filesystem, database, environment or key loading.
++// Protected inventory must run in its separately approved protected environment.
++// Use an independent custody-held audit key, never an app signing/backup key.
++const crypto=require("node:crypto");
++const domains=new Set(["accounts","employees","posts","groups","media"]);
++function membership({domain,sourceFingerprint,generation,identifiers},auditKey){
++  const refuse=code=>{throw Object.assign(Error(code),{code});};
++  if(!Buffer.isBuffer(auditKey)||auditKey.length<32)refuse("audit_key_required");
++  if(!domains.has(domain)||!/^[0-9a-f]{64}$/.test(sourceFingerprint||"")||
++    typeof generation!=="string"||!generation.length||generation.length>256)refuse("inventory_context_required");
++  if(!Array.isArray(identifiers)||identifiers.some(id=>typeof id!=="string"||!id.length))refuse("stable_string_identifiers_required");
++  if(new Set(identifiers).size!==identifiers.length)refuse("duplicate_inventory_identifier");
++  // Binary JS string sorting is deterministic and does not case-fold or coerce.
++  const ordered=[...identifiers].sort();
++  const envelope=JSON.stringify(["BQ_PROTECTED_MEMBERSHIP_V1",domain,sourceFingerprint,generation,ordered]);
++  return Object.freeze({algorithm:"HMAC-SHA256",domain,count:ordered.length,
++    fingerprint:crypto.createHmac("sha256",auditKey).update(envelope,"utf8").digest("hex")});
++}
++module.exports={membership};
+diff --git a/scripts/staging/object-store-test.cjs b/scripts/staging/object-store-test.cjs
+index b58364c..d414c7e 100644
+--- a/scripts/staging/object-store-test.cjs
++++ b/scripts/staging/object-store-test.cjs
+@@ -82,6 +82,28 @@ const dataset=`staging-synthetic-${crypto.randomUUID()}`;
+       if(typeof store.delete==="function"||Object.getOwnPropertyNames(ImmutableStore.prototype).some(n=>/delete|remove|purge/i.test(n)))throw Error("delete capability present");
+       const listed=(await bucket.list({prefix:`${dataset}/`})).value.length;
+       if(listed<stored.length)throw Error("objects disappeared");return `${listed} objects still present`;});
++    await check("O14","Another dataset namespace is rejected before any provider read",async()=>{
++      const other=new ImmutableStore(bucket,{dataset:`staging-synthetic-${crypto.randomUUID()}`});
++      const row=await other.put(crypto.randomUUID(),Buffer.from("foreign invented media"));
++      const reads=bucket.downloads;
++      const code=await refused("object_key_invalid",()=>store.read(row.key,row.sha));
++      if(bucket.downloads!==reads)throw Error("foreign object reached provider");
++      return `${code}; no provider read`;
++    });
++    await check("O15","Cold restore refuses traversal, duplicate ids and foreign bindings before writing",async()=>{
++      const destination=path.join(root,"invalid-cache");
++      for(const rows of [[{...stored[0],id:"../../outside"}],[stored[0],stored[0]],
++        [{...stored[0],object_key:stored[0].object_key.replace(dataset,`staging-synthetic-${crypto.randomUUID()}`)}]])
++        await refused("object_key_invalid",()=>store.restore(rows,destination));
++      if(fs.existsSync(destination))throw Error("invalid restore wrote cache");
++      return "all three rejected before filesystem writes";
++    });
++    await check("O16","Cold restore rejects symlink cache entries even with matching bytes",async()=>{
++      const destination=path.join(root,"symlink-cache");fs.mkdirSync(destination,{mode:0o700});
++      const outside=path.join(root,"outside");fs.writeFileSync(outside,items[0].bytes);
++      fs.symlinkSync(outside,path.join(destination,stored[0].id));
++      return refused("unsafe_media_cache",()=>store.restore([stored[0]],destination));
++    });
+   }finally{fs.rmSync(root,{recursive:true,force:true});}
+   for(const r of results)console.log(`${r.id} ${r.result.padEnd(4)} ${r.name} — ${r.detail}`);
+   const failed=results.filter(r=>r.result!=="PASS").length;
+diff --git a/scripts/staging/runtime-e2e.cjs b/scripts/staging/runtime-e2e.cjs
+index 65df030..14066c5 100644
+--- a/scripts/staging/runtime-e2e.cjs
++++ b/scripts/staging/runtime-e2e.cjs
+@@ -19,6 +19,7 @@ const {Repository}=require("../../development/postgres/repository.cjs");
+ const {vault}=require("../../development/postgres/sealed.cjs");
+ const {code}=require("../../development/postgres/fixtures.cjs");
+ const {createCluster}=require("./tls-cluster.cjs");
++const {readSql}=require("../migration/rel001/reconcile.cjs");
+ const workspace=path.resolve(__dirname,"../.."),child=path.join(__dirname,"runtime-child.cjs");
+ const DB="bq_staging_e2e",PORT=5131,POOL=4;
+ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+@@ -56,8 +57,8 @@ const baseEnv={PATH:process.env.PATH,HOME:cluster.root,LANG:"C.UTF-8",REPLIT_DEP
+   BQ_STAGING_DB_CA:cluster.ca(),BQ_STAGING_APP_PASSWORD:cluster.passwords.bq_app,BQ_STAGING_POOL_MAX:String(POOL),PORT:String(PORT)};
+ const envWith=(changes,m)=>{const env={...baseEnv,...(m?{BQ_STAGING_MANIFEST:JSON.stringify(m)}:{}),...changes};for(const [k,v] of Object.entries(env))if(v===undefined)delete env[k];return env;};
+ 
+-function worker(env=baseEnv,root=groot){
+-  const c=spawn(process.execPath,[child,root,storageDir],{env,stdio:["ignore","pipe","pipe"]});
++function worker(env=baseEnv,root=groot,bucketDir=storageDir){
++  const c=spawn(process.execPath,[child,root,bucketDir],{env,stdio:["ignore","pipe","pipe"]});
+   c.out="";c.stdout.on("data",d=>c.out+=d);c.stderr.on("data",d=>c.out+=d);
+   c.exited=new Promise(r=>c.once("exit",(code,signal)=>r(code??signal)));
+   return c;
+@@ -264,10 +265,31 @@ function walk(dir){
+     });
+     await test("S26","Encrypted bq_backup dump restores into an empty scratch database that passes preflight",async()=>{
+       const file=path.join(cluster.root,"staging.bqbackup"),RESTORE="bq_staging_restore";
++      const recoveryStorage=fs.mkdtempSync(path.join(os.tmpdir(),"bq-forensics-recovery-"));
++      fs.chmodSync(recoveryStorage,0o700);
++      let recoveredWorker;
++      const auditKey=crypto.randomBytes(32);
++      const fingerprint=value=>crypto.createHmac("sha256",auditKey).update(gate.canonical(value)).digest("hex");
++      async function completeSnapshot(database){
++        const c=new Client(cluster.tls("bq_backup",{database}));await c.connect();
++        try{
++          await c.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
++          const graph=await readSql(c),tables=Object.create(null);
++          const names=(await c.query("SELECT tablename FROM pg_tables WHERE schemaname='dev' ORDER BY tablename")).rows;
++          for(const {tablename} of names){
++            assert(/^[a-z_][a-z0-9_]*$/.test(tablename));
++            tables[tablename]=(await c.query(`SELECT to_jsonb(t)::text AS value FROM dev.${tablename} t ORDER BY 1`)).rows.map(r=>r.value);
++          }
++          return {files:Object.keys(graph.values).length,semantic:fingerprint(graph.values),allTables:fingerprint(tables),tables:names.length};
++        }finally{await c.query("ROLLBACK").catch(()=>{});await c.end();}
++      }
+       approve(manifest,["staging-seed","staging-activate","staging-backup"]);
+       assert.equal(await stop(w),0);
+       try{
+       const before=await preflight({env:baseEnv,root:groot,store});
++      const completeBefore=await completeSnapshot(DB);
++      fs.cpSync(storageDir,recoveryStorage,{recursive:true});
++      const independentStore=new ImmutableStore(new FileStorage(recoveryStorage),{dataset:manifest.dataset});
+       const b=await backup({proof:gate.verify({operation:"staging-backup",env:baseEnv,root:groot}),password:cluster.passwords.bq_backup,out:file});
+       const raw=fs.readFileSync(file);
+       assert(!raw.includes(Buffer.from("PGDMP"))&&!raw.includes(Buffer.from("schema_migrations")),"backup file is not encrypted");
+@@ -284,8 +306,19 @@ function walk(dir){
+       await assert.rejects(restore({proof:tampered,password:cluster.passwords.bq_migrator,input:file}),/backup_key_or_dataset_mismatch/);
+       const after=await preflight({env:renv,root:groot,store,verifyMedia:true});
+       assert.equal(after.state,before.state);assert.equal(after.database.role,"bq_app");assert.equal(after.mediaVerified,after.media);
+-      return `${b.bytes} byte archive, encrypted; restored ${after.files} files and ${after.media} media into ${RESTORE}; state fingerprint identical; overwrite and wrong key refused`;
+-      }finally{w=worker();await ready(w);}
++      assert.deepEqual(await completeSnapshot(RESTORE),completeBefore);
++      await independentStore.restore((await cluster.query("SELECT id,object_key,sha256 FROM dev.media WHERE state IN('ready','retained')",[],RESTORE)).rows,path.join(cluster.root,"independent-cache"));
++      recoveredWorker=worker(renv,groot,recoveryStorage);await ready(recoveredWorker);
++      ok(await request("/api/session",{},tokens["101"]));ok(await request("/api/session",{},tokens["107"]));
++      const recovered=await request(mediaUrl,{},tokens["101"],{method:"GET"});ok(recovered);assert(recovered.bytes.equals(png));
++      const accepted=await request("/api/ideas",{type:"post",text:"Accepted on restored current SQL authority"},tokens["101"]);ok(accepted,201);
++      await stop(recoveredWorker);recoveredWorker=worker(renv,groot,recoveryStorage);await ready(recoveredWorker);
++      const persisted=(await completeSnapshot(RESTORE)).semantic;
++      assert.notEqual(persisted,completeBefore.semantic);
++      const currentFiles=await (async()=>{const c=new Client(cluster.tls("bq_backup",{database:RESTORE}));await c.connect();try{return (await readSql(c)).values;}finally{await c.end();}})();
++      assert(currentFiles["ideas.json"].some(p=>p.id===accepted.json.idea.id));
++      return `${completeBefore.files} files and all ${completeBefore.tables} SQL tables exactly matched by independent keyed fingerprints; encrypted dump, separate media copy and original sessions recovered; accepted new write survived restart; overwrite/wrong key refused`;
++      }finally{if(recoveredWorker)await stop(recoveredWorker);fs.rmSync(recoveryStorage,{recursive:true,force:true});w=worker();await ready(w);}
+     });
+     await test("S23","A cache file lost while running is refilled from the bucket before serving",async()=>{
+       const cached=path.join(info(w).work,"objects",mediaRow.id);

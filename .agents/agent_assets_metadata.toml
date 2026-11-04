@@ -280,3 +280,17 @@ mtime_ms = 1793803811548
 storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/d6d656d7-a980-4e4e-8e6d-cc28dacb1455/57c6dec2-ba65-480d-8f29-da8061d9c8e8"
 storage_version_token = "1793803883196576"
 content_type = "text/html"
+
+[[outputs]]
+id = "Gl4rNuuQBUwTkENNUeoJf"
+uri = "file://generated-artifacts/production-preparation/replit-managed-postgresql.html"
+type = "html"
+title = "Replit-managed PostgreSQL — implementation report"
+description = "12-part handoff: actual managed-development validation, 236 passing checks, schema publishing/security differences, branch/commit, exact remaining UI steps and production blockers."
+logical_id = "fb6f031d-41b1-44bc-9402-5261508a6199"
+content_hash = "sha256:f966182774eb9117f7b780caaec8e5991ae4b2d26f49e78db6c7792bfdc0e366"
+size = 18926
+mtime_ms = 1793805827955
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/fb6f031d-41b1-44bc-9402-5261508a6199/84f8442a-cd58-4e49-92cd-275a1dcc0cec"
+storage_version_token = "1793805829273736"
+content_type = "text/html"
