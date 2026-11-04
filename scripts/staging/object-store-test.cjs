@@ -82,6 +82,28 @@ const dataset=`staging-synthetic-${crypto.randomUUID()}`;
       if(typeof store.delete==="function"||Object.getOwnPropertyNames(ImmutableStore.prototype).some(n=>/delete|remove|purge/i.test(n)))throw Error("delete capability present");
       const listed=(await bucket.list({prefix:`${dataset}/`})).value.length;
       if(listed<stored.length)throw Error("objects disappeared");return `${listed} objects still present`;});
+    await check("O14","Another dataset namespace is rejected before any provider read",async()=>{
+      const other=new ImmutableStore(bucket,{dataset:`staging-synthetic-${crypto.randomUUID()}`});
+      const row=await other.put(crypto.randomUUID(),Buffer.from("foreign invented media"));
+      const reads=bucket.downloads;
+      const code=await refused("object_key_invalid",()=>store.read(row.key,row.sha));
+      if(bucket.downloads!==reads)throw Error("foreign object reached provider");
+      return `${code}; no provider read`;
+    });
+    await check("O15","Cold restore refuses traversal, duplicate ids and foreign bindings before writing",async()=>{
+      const destination=path.join(root,"invalid-cache");
+      for(const rows of [[{...stored[0],id:"../../outside"}],[stored[0],stored[0]],
+        [{...stored[0],object_key:stored[0].object_key.replace(dataset,`staging-synthetic-${crypto.randomUUID()}`)}]])
+        await refused("object_key_invalid",()=>store.restore(rows,destination));
+      if(fs.existsSync(destination))throw Error("invalid restore wrote cache");
+      return "all three rejected before filesystem writes";
+    });
+    await check("O16","Cold restore rejects symlink cache entries even with matching bytes",async()=>{
+      const destination=path.join(root,"symlink-cache");fs.mkdirSync(destination,{mode:0o700});
+      const outside=path.join(root,"outside");fs.writeFileSync(outside,items[0].bytes);
+      fs.symlinkSync(outside,path.join(destination,stored[0].id));
+      return refused("unsafe_media_cache",()=>store.restore([stored[0]],destination));
+    });
   }finally{fs.rmSync(root,{recursive:true,force:true});}
   for(const r of results)console.log(`${r.id} ${r.result.padEnd(4)} ${r.name} — ${r.detail}`);
   const failed=results.filter(r=>r.result!=="PASS").length;

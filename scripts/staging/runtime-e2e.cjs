@@ -19,6 +19,7 @@ const {Repository}=require("../../development/postgres/repository.cjs");
 const {vault}=require("../../development/postgres/sealed.cjs");
 const {code}=require("../../development/postgres/fixtures.cjs");
 const {createCluster}=require("./tls-cluster.cjs");
+const {readSql}=require("../migration/rel001/reconcile.cjs");
 const workspace=path.resolve(__dirname,"../.."),child=path.join(__dirname,"runtime-child.cjs");
 const DB="bq_staging_e2e",PORT=5131,POOL=4;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -56,8 +57,8 @@ const baseEnv={PATH:process.env.PATH,HOME:cluster.root,LANG:"C.UTF-8",REPLIT_DEP
   BQ_STAGING_DB_CA:cluster.ca(),BQ_STAGING_APP_PASSWORD:cluster.passwords.bq_app,BQ_STAGING_POOL_MAX:String(POOL),PORT:String(PORT)};
 const envWith=(changes,m)=>{const env={...baseEnv,...(m?{BQ_STAGING_MANIFEST:JSON.stringify(m)}:{}),...changes};for(const [k,v] of Object.entries(env))if(v===undefined)delete env[k];return env;};
 
-function worker(env=baseEnv,root=groot){
-  const c=spawn(process.execPath,[child,root,storageDir],{env,stdio:["ignore","pipe","pipe"]});
+function worker(env=baseEnv,root=groot,bucketDir=storageDir){
+  const c=spawn(process.execPath,[child,root,bucketDir],{env,stdio:["ignore","pipe","pipe"]});
   c.out="";c.stdout.on("data",d=>c.out+=d);c.stderr.on("data",d=>c.out+=d);
   c.exited=new Promise(r=>c.once("exit",(code,signal)=>r(code??signal)));
   return c;
@@ -264,10 +265,31 @@ function walk(dir){
     });
     await test("S26","Encrypted bq_backup dump restores into an empty scratch database that passes preflight",async()=>{
       const file=path.join(cluster.root,"staging.bqbackup"),RESTORE="bq_staging_restore";
+      const recoveryStorage=fs.mkdtempSync(path.join(os.tmpdir(),"bq-forensics-recovery-"));
+      fs.chmodSync(recoveryStorage,0o700);
+      let recoveredWorker;
+      const auditKey=crypto.randomBytes(32);
+      const fingerprint=value=>crypto.createHmac("sha256",auditKey).update(gate.canonical(value)).digest("hex");
+      async function completeSnapshot(database){
+        const c=new Client(cluster.tls("bq_backup",{database}));await c.connect();
+        try{
+          await c.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+          const graph=await readSql(c),tables=Object.create(null);
+          const names=(await c.query("SELECT tablename FROM pg_tables WHERE schemaname='dev' ORDER BY tablename")).rows;
+          for(const {tablename} of names){
+            assert(/^[a-z_][a-z0-9_]*$/.test(tablename));
+            tables[tablename]=(await c.query(`SELECT to_jsonb(t)::text AS value FROM dev.${tablename} t ORDER BY 1`)).rows.map(r=>r.value);
+          }
+          return {files:Object.keys(graph.values).length,semantic:fingerprint(graph.values),allTables:fingerprint(tables),tables:names.length};
+        }finally{await c.query("ROLLBACK").catch(()=>{});await c.end();}
+      }
       approve(manifest,["staging-seed","staging-activate","staging-backup"]);
       assert.equal(await stop(w),0);
       try{
       const before=await preflight({env:baseEnv,root:groot,store});
+      const completeBefore=await completeSnapshot(DB);
+      fs.cpSync(storageDir,recoveryStorage,{recursive:true});
+      const independentStore=new ImmutableStore(new FileStorage(recoveryStorage),{dataset:manifest.dataset});
       const b=await backup({proof:gate.verify({operation:"staging-backup",env:baseEnv,root:groot}),password:cluster.passwords.bq_backup,out:file});
       const raw=fs.readFileSync(file);
       assert(!raw.includes(Buffer.from("PGDMP"))&&!raw.includes(Buffer.from("schema_migrations")),"backup file is not encrypted");
@@ -284,8 +306,19 @@ function walk(dir){
       await assert.rejects(restore({proof:tampered,password:cluster.passwords.bq_migrator,input:file}),/backup_key_or_dataset_mismatch/);
       const after=await preflight({env:renv,root:groot,store,verifyMedia:true});
       assert.equal(after.state,before.state);assert.equal(after.database.role,"bq_app");assert.equal(after.mediaVerified,after.media);
-      return `${b.bytes} byte archive, encrypted; restored ${after.files} files and ${after.media} media into ${RESTORE}; state fingerprint identical; overwrite and wrong key refused`;
-      }finally{w=worker();await ready(w);}
+      assert.deepEqual(await completeSnapshot(RESTORE),completeBefore);
+      await independentStore.restore((await cluster.query("SELECT id,object_key,sha256 FROM dev.media WHERE state IN('ready','retained')",[],RESTORE)).rows,path.join(cluster.root,"independent-cache"));
+      recoveredWorker=worker(renv,groot,recoveryStorage);await ready(recoveredWorker);
+      ok(await request("/api/session",{},tokens["101"]));ok(await request("/api/session",{},tokens["107"]));
+      const recovered=await request(mediaUrl,{},tokens["101"],{method:"GET"});ok(recovered);assert(recovered.bytes.equals(png));
+      const accepted=await request("/api/ideas",{type:"post",text:"Accepted on restored current SQL authority"},tokens["101"]);ok(accepted,201);
+      await stop(recoveredWorker);recoveredWorker=worker(renv,groot,recoveryStorage);await ready(recoveredWorker);
+      const persisted=(await completeSnapshot(RESTORE)).semantic;
+      assert.notEqual(persisted,completeBefore.semantic);
+      const currentFiles=await (async()=>{const c=new Client(cluster.tls("bq_backup",{database:RESTORE}));await c.connect();try{return (await readSql(c)).values;}finally{await c.end();}})();
+      assert(currentFiles["ideas.json"].some(p=>p.id===accepted.json.idea.id));
+      return `${completeBefore.files} files and all ${completeBefore.tables} SQL tables exactly matched by independent keyed fingerprints; encrypted dump, separate media copy and original sessions recovered; accepted new write survived restart; overwrite/wrong key refused`;
+      }finally{if(recoveredWorker)await stop(recoveredWorker);fs.rmSync(recoveryStorage,{recursive:true,force:true});w=worker();await ready(w);}
     });
     await test("S23","A cache file lost while running is refilled from the bucket before serving",async()=>{
       const cached=path.join(info(w).work,"objects",mediaRow.id);

@@ -28,7 +28,7 @@ class ImmutableStore {
     }finally{clearTimeout(timer);}
   }
   async read(key,sha){
-    if(!KEY.test(key)||!key.endsWith(`/${sha}`))throw fault("object_key_invalid");
+    if(!KEY.test(key)||!key.startsWith(`${this.dataset}/immutable/`)||!key.endsWith(`/${sha}`))throw fault("object_key_invalid");
     let value;
     try{value=await this.call("downloadAsBytes",key);}
     catch(e){
@@ -70,7 +70,15 @@ class ImmutableStore {
   // Cold-start: populate a local cache with verified bytes only; any missing or
   // corrupt object fails the whole restore rather than serving partial media.
   async restore(rows,dir,{concurrency=4}={}){
+    const seen=new Set();
+    for(const row of rows){
+      if(!new RegExp(`^${UUID}$`).test(row.id||"")||!/^[0-9a-f]{64}$/.test(row.sha256||"")||
+        row.object_key!==this.key(row.id,row.sha256)||seen.has(row.id))throw fault("object_key_invalid");
+      seen.add(row.id);
+    }
     fs.mkdirSync(dir,{recursive:true,mode:0o700});
+    const directoryStat=fs.lstatSync(dir);
+    if(!directoryStat.isDirectory()||directoryStat.isSymbolicLink())throw fault("unsafe_media_cache");
     const counts={cached:0,restored:0},queue=[...rows];
     let active=0,peak=0;
     const worker=async()=>{
@@ -78,6 +86,10 @@ class ImmutableStore {
         active++;peak=Math.max(peak,active);
         try{
           const target=path.join(dir,row.id);
+          if(fs.existsSync(target)){
+            const st=fs.lstatSync(target);
+            if(!st.isFile()||st.isSymbolicLink()||st.nlink!==1)throw fault("unsafe_media_cache");
+          }
           if(fs.existsSync(target)&&hash(fs.readFileSync(target))===row.sha256){counts.cached++;continue;}
           const bytes=await this.read(row.object_key,row.sha256);
           const temp=`${target}.${crypto.randomUUID()}.partial`;
