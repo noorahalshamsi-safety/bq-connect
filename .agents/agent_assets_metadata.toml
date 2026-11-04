@@ -266,3 +266,17 @@ mtime_ms = 1793771212963
 storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/a09f2880-eb2a-4873-949b-6e8140d7d2f1/0c182f2e-ca75-49df-8736-c94363b46fa0"
 storage_version_token = "1793771284845716"
 content_type = "text/csv"
+
+[[outputs]]
+id = "WilgB-QGxEAVPzLaG8SJe"
+uri = "file://generated-artifacts/production-preparation/production-database-preparation.html"
+type = "html"
+title = "BQ Connect — Production database preparation"
+description = "Complete 14-part report: verified source and platform findings, 192 passing synthetic checks, implemented safeguards, unresolved blockers, approvals and production cutover checklist. Production remains NO-GO."
+logical_id = "d6d656d7-a980-4e4e-8e6d-cc28dacb1455"
+content_hash = "sha256:261bec2206b082e126fda8b385a8a7821c12b8e0c181b77522da86106c79bf70"
+size = 25140
+mtime_ms = 1793803811548
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/d6d656d7-a980-4e4e-8e6d-cc28dacb1455/57c6dec2-ba65-480d-8f29-da8061d9c8e8"
+storage_version_token = "1793803883196576"
+content_type = "text/html"
