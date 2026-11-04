@@ -4,6 +4,8 @@ const path=require("node:path");
 process.env.BQ_TRANSLATE="1";
 process.env.BQ_MODELS_DIR=path.resolve(__dirname,"../../generated-artifacts/phase2b/models");
 const engine=require("../../translate.js");
+// A first download outlasts the per-request caller deadline.
+engine.limits.waitMs=30*60*1000;
 (async()=>{
   for(const [from,to,text] of [["ar","en","صباح الخير."],["en","ar","Good morning."]]){
     const result=await engine.translate(text,from,to);
