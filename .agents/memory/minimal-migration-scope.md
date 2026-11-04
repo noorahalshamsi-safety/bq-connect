@@ -30,3 +30,15 @@ break the account continuity the owner requires.
 **How to apply:** Scope new challenge signatures to the destination dataset,
 keep that scope stable across restarts, and let users restart unfinished
 challenges without replacing their account credentials or factor secrets.
+
+The owner selected Publishing's “Create production database” ON and “Set up
+production database with current development data” OFF, but preparation must
+not save/change deployment settings, provision resources or Republish.
+
+**Why:** The owner requested final execution preparation only, preserving the
+existing app and URL and prohibiting any Development test-record copy.
+
+**How to apply:** Distinguish selected UI values from verified persisted
+settings and actual provisioning. Confirm the effective no-copy Publishing
+plan for this project's backend before requesting authorization to execute;
+keep build/run proposals inert until approved.

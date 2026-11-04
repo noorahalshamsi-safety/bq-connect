@@ -1,0 +1,7 @@
+# INERT TEMPLATE: only after verified import and exact activation approval.
+# BQ_MINIMAL_OPERATION MUST be removed before publishing this configuration.
+# Preserve the existing application identity and domain.
+[deployment]
+deploymentTarget = "vm"
+build = ["npm", "ci", "--omit=dev"]
+run = ["node", "deploy/managed/minimal-bootstrap.cjs"]

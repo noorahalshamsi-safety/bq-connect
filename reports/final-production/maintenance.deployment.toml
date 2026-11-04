@@ -1,0 +1,8 @@
+# INERT TEMPLATE: replace only [deployment] after explicit owner approval.
+# Use the repository root of remote source cd5bd76, not the current old source.
+# Preserve existing app, domain, bucket configuration, PORT and workflows.
+# BQ_MINIMAL_OPERATION MUST be unset for the initial maintenance publish.
+[deployment]
+deploymentTarget = "vm"
+build = ["npm", "ci", "--omit=dev"]
+run = ["node", "deploy/managed/minimal-import-runner.cjs"]
