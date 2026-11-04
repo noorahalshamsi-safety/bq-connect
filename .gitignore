@@ -4,6 +4,8 @@ data/
 data-restored-*/
 *.bqb
 *.key
+.env
+.env.*
 *.tmp
 models/
 .vendor-tmp/
