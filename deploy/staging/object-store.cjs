@@ -6,6 +6,7 @@ const fs=require("node:fs"),path=require("node:path"),crypto=require("node:crypt
 const hash=bytes=>crypto.createHash("sha256").update(bytes).digest("hex");
 const UUID="[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const KEY=new RegExp(`^staging-synthetic-${UUID}/immutable/${UUID}/[0-9a-f]{64}$`);
+const CONTROL=new Set(["provision-intent.json","provision-receipt.json"]);
 const fault=(code,cause)=>Object.assign(Error(code),cause?{cause}:{});
 class ImmutableStore {
   constructor(client,{dataset,timeoutMs=15000}={}) {
@@ -45,6 +46,26 @@ class ImmutableStore {
     await this.call("uploadFromBytes",key,bytes);
     await this.read(key,sha);
     return {key,sha,state:"stored"};
+  }
+  // Provisioning records that bind a database to this bucket. Written once;
+  // check-then-write, so callers must hold the database provisioning lock.
+  controlKey(name){
+    if(!CONTROL.has(name))throw fault("object_key_invalid");
+    return `${this.dataset}/control/${name}`;
+  }
+  async readControl(name){
+    const key=this.controlKey(name);
+    if(!await this.call("exists",key))return null;
+    const value=await this.call("downloadAsBytes",key);
+    try{return JSON.parse((Array.isArray(value)?value[0]:value).toString("utf8"));}catch{throw fault("control_object_invalid");}
+  }
+  async createControl(name,record){
+    const key=this.controlKey(name),bytes=Buffer.from(JSON.stringify(record));
+    if(await this.call("exists",key))throw fault("control_object_exists");
+    await this.call("uploadFromBytes",key,bytes);
+    const stored=await this.call("downloadAsBytes",key);
+    if(hash(Array.isArray(stored)?stored[0]:stored)!==hash(bytes))throw fault("object_corrupt");
+    return key;
   }
   // Cold-start: populate a local cache with verified bytes only; any missing or
   // corrupt object fails the whole restore rather than serving partial media.

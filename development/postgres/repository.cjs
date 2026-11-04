@@ -21,14 +21,39 @@ function receipt(proof,state,exclusive=false) {
   try{fs.writeFileSync(fd,JSON.stringify({dataset:proof.dataset,seal:proof.seal,state}));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
   const directory=fs.openSync(proof.root,"r");try{fs.fsyncSync(directory);}finally{fs.closeSync(directory);}
 }
+async function saveFile(c,file,value,revision) {
+  // A SQL revision check, not a cache/file write, arbitrates each projection.
+  if(revision===null) await c.query("INSERT INTO dev.files(name) VALUES($1)",[file]);
+  else {
+    const r=await c.query("UPDATE dev.files SET revision=revision+1 WHERE name=$1 AND revision=$2 RETURNING name",[file,revision]);
+    if(r.rowCount!==1)throw Error("stale_entity_revision");
+    await c.query(`DELETE FROM dev.${codec.specs[file].table} WHERE file_name=$1`,[file]);
+  }
+  for(const row of codec.encode(file,value))await c.query(`INSERT INTO dev.${row.table}(id,file_name,parent,entry_key,ordinal,attrs,shape) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb)`,
+    [row.id,file,row.parent,row.entry_key,row.ordinal,JSON.stringify(row.attrs),JSON.stringify(row.shape)]);
+}
 class Repository {
-  constructor(proof) {
-    const checked=require("./isolation.cjs").verify(proof?.root||"");
-    if(!proof?.verifiedSynthetic||proof.dataset!==checked.dataset||proof.seal!==checked.seal||proof.socket!==checked.socket)throw Error("synthetic_identity_required");
-    this.proof=checked;
-    this.vault=vault(checked);
-    this.pool=new Pool({host:checked.socket,port:55441,user:checked.user,database:"bq_synthetic_development",max:4,
-      connectionTimeoutMillis:2500,idleTimeoutMillis:10000,statement_timeout:20000,lock_timeout:12000});
+  // Without `staging` this is the local development repository behind the
+  // isolation fence. With it, `proof` must be the frozen result of the staging
+  // gate and the binding supplies the bq_app credential, bucket store and the
+  // provision receipt read from that bucket.
+  constructor(proof,staging) {
+    if(staging) {
+      if(!proof?.verifiedStaging||!Object.isFrozen(proof)||staging.proof!==proof)throw Error("staging_identity_required");
+      if(!staging.password||!staging.store||staging.receipt?.dataset!==proof.dataset)throw Error("staging_binding_incomplete");
+      this.proof=proof;this.staging=staging;
+      this.vault=vault(proof);
+      const {ssl,...database}=proof.database;
+      this.pool=new Pool({...database,ssl:{...ssl},user:"bq_app",password:staging.password,max:staging.max||6,
+        connectionTimeoutMillis:5000,idleTimeoutMillis:10000,statement_timeout:20000,lock_timeout:12000,application_name:"bq-staging-runtime"});
+    } else {
+      const checked=require("./isolation.cjs").verify(proof?.root||"");
+      if(!proof?.verifiedSynthetic||proof.dataset!==checked.dataset||proof.seal!==checked.seal||proof.socket!==checked.socket)throw Error("synthetic_identity_required");
+      this.proof=checked;
+      this.vault=vault(checked);
+      this.pool=new Pool({host:checked.socket,port:55441,user:checked.user,database:"bq_synthetic_development",max:4,
+        connectionTimeoutMillis:2500,idleTimeoutMillis:10000,statement_timeout:20000,lock_timeout:12000});
+    }
     this.pool.on("error",()=>{}); // Requests still fail closed; no file fallback.
     // pg emits an error on checked-out clients as well as rejecting queries.
     // Handle the event without swallowing the query rejection/rollback path.
@@ -39,7 +64,7 @@ class Repository {
     });
   }
   async verify(client) {
-    const provision=JSON.parse(fs.readFileSync(path.join(this.proof.root,"provision-receipt.json"),"utf8"));
+    const provision=this.staging?this.staging.receipt:JSON.parse(fs.readFileSync(path.join(this.proof.root,"provision-receipt.json"),"utf8"));
     if(provision.dataset!==this.proof.dataset||provision.seal!==this.proof.seal||provision.state!=="committed")throw Error("synthetic_provision_not_committed");
     const r=await client.query("SELECT * FROM dev.authority WHERE singleton FOR SHARE");
     const a=r.rows[0];
@@ -48,6 +73,7 @@ class Repository {
   }
   async hardenControls() {
     // Additive dev-only control migration, never a node-schema replacement.
+    if(this.staging)throw Error("runtime_ddl_forbidden");
     const c=await this.pool.connect();
     try {
       await c.query("BEGIN");await c.query("SELECT pg_advisory_xact_lock(1793705963)");await this.verify(c);
@@ -67,6 +93,7 @@ class Repository {
     }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
   }
   async initialize(fixtures) {
+    if(this.staging)throw Error("runtime_provisioning_forbidden");
     const c=await this.pool.connect();
     try {
       const exists=await c.query("SELECT to_regclass('dev.authority') AS found");
@@ -106,15 +133,7 @@ class Repository {
     return result;
   }
   async save(c,file,value,revision) {
-    // A SQL revision check, not a cache/file write, arbitrates each projection.
-    if(revision===null) await c.query("INSERT INTO dev.files(name) VALUES($1)",[file]);
-    else {
-      const r=await c.query("UPDATE dev.files SET revision=revision+1 WHERE name=$1 AND revision=$2 RETURNING name",[file,revision]);
-      if(r.rowCount!==1)throw Error("stale_entity_revision");
-      await c.query(`DELETE FROM dev.${codec.specs[file].table} WHERE file_name=$1`,[file]);
-    }
-    for(const row of codec.encode(file,value))await c.query(`INSERT INTO dev.${row.table}(id,file_name,parent,entry_key,ordinal,attrs,shape) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb)`,
-      [row.id,file,row.parent,row.entry_key,row.ordinal,JSON.stringify(row.attrs),JSON.stringify(row.shape)]);
+    return saveFile(c,file,value,revision);
   }
   async begin(selected) {
     const started=performance.now();
@@ -177,6 +196,8 @@ class Repository {
           [row.id,row.legacy,key,hash(row.bytes),row.bytes.length,row.mime,row.owner]);
         await intent.query("COMMIT");
       }catch(e){await intent.query("ROLLBACK").catch(()=>{});throw e;}finally{intent.release();}
+      // The bucket copy is the durable one; the local file is only a cache.
+      if(this.staging&&(await this.staging.store.put(row.id,row.bytes)).key!==key)throw Error("media_key_mismatch");
       const fd=fs.openSync(dest,"wx",0o600);try{fs.writeFileSync(fd,row.bytes);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
       const directory=fs.openSync(this.proof.objects,"r");
       try{fs.fsyncSync(directory);}finally{fs.closeSync(directory);}
@@ -202,6 +223,13 @@ class Repository {
       }
     }
   }
+  // Staging only: fill cache gaps (another instance's upload, a lost cache file)
+  // with verified bucket bytes before the synchronous legacy media readers run.
+  async ensureMedia(rows) {
+    if(!this.staging)return;
+    const missing=rows.filter(r=>{const file=path.join(this.proof.objects,r.id);return !fs.existsSync(file)||fs.statSync(file).size!==Number(r.size);});
+    if(missing.length)await this.staging.store.restore(missing,this.proof.objects);
+  }
   async drainFixtureOutbox() {
     // Synthetic delivery receipts, never real SMTP/SMS/push/provider traffic.
     const c=await this.pool.connect();
@@ -217,4 +245,4 @@ class Repository {
     }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
   }
 }
-module.exports={Repository,hash,controlDdl};
+module.exports={Repository,hash,controlDdl,saveFile};

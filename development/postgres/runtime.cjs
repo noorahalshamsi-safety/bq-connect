@@ -12,6 +12,11 @@ async function start(root) {
   await repo.hardenControls();
   const nativeEnabled=!process.argv.includes("--reference");
   if(nativeEnabled)await nativeProfile.prepare(repo);
+  return serve(proof,repo,{nativeEnabled,faults:true,measure:process.argv[3]==="--measure"});
+}
+// Shared by development and staging. Performs no DDL; callers own schema state.
+// `faults` honours dev.test_faults injection points and is development-only.
+async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false}={}) {
   let poisoned=false,stopping=false,ingress=0,pending=0;
   const jobTimers=new Set();
   const timings=[];
@@ -22,6 +27,7 @@ async function start(root) {
   async function hydrate(t,nativeRead=false) {
     try{
       const media=nativeRead?{rows:[]}:await t.client.query("SELECT * FROM dev.media WHERE state IN('ready','retained')");
+      await repo.ensureMedia(media.rows);
       return {...t,nativeProfile:nativeRead,buffers:new Map([...t.files].map(([f,r])=>[f,Buffer.from(JSON.stringify(r.value))])),
         changed:new Set(),temps:new Map(),events:[],media:new Map(media.rows.map(row=>[row.legacy_path,{...row,legacy:row.legacy_path,object:path.join(proof.objects,row.id)}])),actor:""};
     }catch(e){await t.client.query("ROLLBACK").catch(()=>{});t.client.release(e);throw e;}
@@ -75,7 +81,7 @@ async function start(root) {
     catch(e){discard=e;await c.client.query("ROLLBACK").catch(()=>{});throw e;}
     finally{
       c.client.release(discard);context=null;
-      if(process.argv[3]==="--measure"&&c.label){
+      if(measure&&c.label){
         timings.push({...c.metrics,queryCount:c.client.__bqQueries-c.queryStart,nativeProfile:c.nativeProfile,label:c.label,totalTxMs:performance.now()-c.started,queueWaitMs:c.queueWaitMs});
         if(timings.length>1000)timings.shift();
         fs.writeFileSync(path.join(proof.root,"request-timings.json"),JSON.stringify(timings),{mode:0o600});
@@ -131,7 +137,12 @@ async function start(root) {
       source=source.replace(marker,`import(${JSON.stringify(entry)})`);
     }
     if(file==="auth.js"){
-      source='const setInterval=global.__bqDevInterval;\n'+source.replaceAll('.replace(/^0+/, "")',"");
+      // The original fence refuses JSON-file account authority in deployments.
+      // This copy has none: account bytes only reach the virtual filesystem,
+      // which commits through the request's SQL transaction or refuses.
+      const durable="if (process.env.REPLIT_DEPLOYMENT) safety.requireDurableBackend();";
+      if(!source.includes(durable))throw Error("durable_backend_contract_changed");
+      source='const setInterval=global.__bqDevInterval;\n'+source.replace(durable,"global.__bqRequireTransaction();").replaceAll('.replace(/^0+/, "")',"");
       source+='\nmodule.exports.__maps={failures,mailLog,usedTickets};\nmodule.exports.__refresh=()=>{for(const k of Object.keys(accounts))delete accounts[k];Object.assign(accounts,safety.readAccounts(ACCOUNTS));loadedStamp=accountsStamp();securityCache={stamp:"",value:null};};\n';
     }
     if(file==="server.js"){
@@ -161,6 +172,7 @@ async function start(root) {
   }
   fs.writeFileSync(path.join(publicDir,"synthetic-request.js"),`(()=>{const native=window.fetch.bind(window);window.fetch=async(input,options)=>{const r=new Request(input,options);if(new URL(r.url).origin!==location.origin||!["POST","PATCH","DELETE"].includes(r.method))return native(r);const h=new Headers(r.headers);if(!h.has("Idempotency-Key"))h.set("Idempotency-Key",crypto.randomUUID());const request=new Request(r,{headers:h}),retry=request.clone();try{return await native(request);}catch(error){return native(retry);}};})();`);
   const virtual=install(proof,()=>context);
+  global.__bqRequireTransaction=()=>{if(!context?.client)throw Error("transaction_context_required");};
   global.__bqNativePerson={
     active:()=>Boolean(context?.nativeProfile),
     read:(body,viewer,res)=>{context.response=res;return nativeProfile.person(context,body,viewer,app.__profileReads);}
@@ -264,7 +276,7 @@ async function start(root) {
             return;
           }
         }
-        if(key) {
+        if(key&&faults) {
           const injected=await c.client.query("SELECT point FROM dev.test_faults WHERE request_key=$1 FOR UPDATE",[key]);
           c.fault=injected.rows[0]?.point;
           if(c.fault)await c.client.query("DELETE FROM dev.test_faults WHERE request_key=$1",[key]);
@@ -317,4 +329,4 @@ async function start(root) {
   return {repo,proof,server:app.__server,close:async()=>{stopping=true;clearInterval(outboxTimer);for(const timer of jobTimers)clearInterval(timer);await new Promise(r=>app.__server.close(r));await queue;await repo.pool.end();virtual.restore();https.request=realHttps;}};
 }
 if(require.main===module)start(process.argv[2]).catch(e=>{console.error("Synthetic PostgreSQL application refused:",e.code||e.message);process.exit(1);});
-module.exports={start};
+module.exports={start,serve};

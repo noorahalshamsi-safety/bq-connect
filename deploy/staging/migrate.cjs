@@ -62,7 +62,8 @@ if(require.main===module)(async()=>{
   const password=process.env.BQ_STAGING_MIGRATOR_PASSWORD;
   if(!password)throw Error("migrator_credential_missing");
   const {Client}=require("pg");
-  const client=new Client({...proof.database,user:"bq_migrator",password,connectionTimeoutMillis:5000,application_name:"bq-staging-migrate"});
+  const {ssl,...database}=proof.database;
+  const client=new Client({...database,ssl:{...ssl},user:"bq_migrator",password,connectionTimeoutMillis:5000,application_name:"bq-staging-migrate"});
   await client.connect();
   try{const result=await migrate(client);console.log(JSON.stringify({dataset:proof.dataset,...result}));}
   finally{await client.end();}
