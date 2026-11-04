@@ -1,4 +1,4 @@
-modules = ["nodejs-22"]
+modules = ["nodejs-22", "python-base-3.13"]
 run = "node start.js"
 entrypoint = "server.js"
 hidden = [".config", "node_modules", "package-lock.json"]
