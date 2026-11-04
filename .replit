@@ -74,8 +74,8 @@ externalPort = 4200
 
 [deployment]
 deploymentTarget = "vm"
-build = ["npm", "install", "--omit=dev"]
-run = ["node", "start.js"]
+build = ["npm", "ci", "--omit=dev"]
+run = ["node", "deploy/managed/minimal-import-runner.cjs"]
 
 [objectStorage]
 defaultBucketID = "replit-objstore-df2b12f8-b7e9-4f8b-bb9d-e3f13ecdeb0d"

@@ -32,13 +32,16 @@ keep that scope stable across restarts, and let users restart unfinished
 challenges without replacing their account credentials or factor secrets.
 
 The owner selected Publishing's “Create production database” ON and “Set up
-production database with current development data” OFF, but preparation must
-not save/change deployment settings, provision resources or Republish.
+production database with current development data” OFF. The owner approved a
+temporary maintenance window and preparing the next-publish maintenance-only
+build/run configuration, but not executing Republish, migration or activation.
 
-**Why:** The owner requested final execution preparation only, preserving the
-existing app and URL and prohibiting any Development test-record copy.
+**Why:** The owner requested reversible, isolated preparation while preserving
+the existing source, deployment configuration, app/URL and employee App Storage,
+and prohibiting any Development test-record copy.
 
 **How to apply:** Distinguish selected UI values from verified persisted
 settings and actual provisioning. Confirm the effective no-copy Publishing
-plan for this project's backend before requesting authorization to execute;
-keep build/run proposals inert until approved.
+plan for this project's backend before publishing. If no-copy creation cannot
+be confirmed, report BLOCKED. Maintenance approval never authorizes real-data
+import or SQL activation; those require their separate exact approvals.

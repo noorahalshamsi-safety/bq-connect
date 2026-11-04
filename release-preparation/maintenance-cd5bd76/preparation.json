@@ -1,0 +1,11 @@
+{
+  "kind": "BQ_FIRST_MAINTENANCE_PREPARATION_V1",
+  "originalWorkspaceCommit": "69516cca76f8fe2aeea0eb266962c385c83028ef",
+  "sourceBranch": "development/minimal-accounts-2026-11-04",
+  "sourceCommit": "cd5bd760a3b1d4a663d9a41c0479a58e36f02dd9",
+  "sourceFilesVerified": 94,
+  "sourceDataCopied": false,
+  "importsEnabled": false,
+  "activationEnabled": false,
+  "noCopyProvisioning": "BLOCKED_UNVERIFIED_EFFECTIVE_PUBLISH_SETTINGS"
+}

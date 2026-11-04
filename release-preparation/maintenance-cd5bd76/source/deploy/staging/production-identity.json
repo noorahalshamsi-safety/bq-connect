@@ -1,0 +1,7 @@
+{
+  "about": "SHA-256 fingerprints of production identities that staging must never use. Recorded by the release owner; values are hashes only. Until every field is set, the staging gate refuses all operations.",
+  "replIdSha256": null,
+  "originSha256": null,
+  "bucketSha256s": [],
+  "databaseHostSha256s": []
+}
