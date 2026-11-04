@@ -86,6 +86,31 @@ async function model(pair){
     const a=await engine.translate(CORPUS[pair][0],from,to),b=await engine.translate(CORPUS[pair][0]+" "+CORPUS[pair][4],from,to);
     assert.notEqual(a,b);return{distinct:true};
   });
+  if(pair==="ar>en"){
+    const saved={...engine.limits};
+    await check("A91","Overload beyond the pending bound fails fast instead of queueing",async()=>{
+      engine.limits.pending=2;
+      try{
+        const texts=Array.from({length:5},(_,i)=>`${CORPUS[pair][0]} رقم ${i+11}`),at=performance.now();
+        const timed=texts.map(t=>engine.translate(t,from,to).then(r=>({r,ms:Math.round(performance.now()-at)})));
+        const out=await Promise.all(timed),refused=out.filter(x=>!x.r);
+        assert.equal(refused.length,3,"expected three immediate refusals");
+        assert(refused.every(x=>x.ms<200),"refusals were not immediate");
+        assert(out.filter(x=>x.r).length===2,"admitted jobs did not complete");
+        return{admitted:2,refused:3,refusalMs:Math.max(...refused.map(x=>x.ms))};
+      }finally{Object.assign(engine.limits,saved);}
+    });
+    await check("A92","A caller is released at the deadline; the engine stays usable",async()=>{
+      const text=`${CORPUS[pair][3]} مرة أخرى`;
+      engine.limits.waitMs=1;
+      let first;
+      try{first=await engine.translate(text,from,to);}finally{Object.assign(engine.limits,saved);}
+      assert.equal(first,"","caller was not released at the deadline");
+      const second=await engine.translate(text,from,to);
+      assert(second.length>0,"engine unusable after a deadline");
+      return{released:true,retry:"translated"};
+    });
+  }
   console.log("RSS_MIB",Math.round(process.memoryUsage().rss/1048576),"MAX_WARM_MS",warm);
 }
 

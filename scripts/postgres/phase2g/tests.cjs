@@ -65,7 +65,7 @@ try{
        if(mode==="hang")return new Promise(()=>{});
        return batch.map(t=>({translation_text:mode==="empty"?"":`fixture:${t}`}));};
    }};
-   const context={module,exports:module.exports,require:n=>{assert(["crypto","path"].includes(n));return require(n);},process:{env:{BQ_TRANSLATE:"1"}},__dirname:root,__fixtureLibrary:lib};
+   const context={module,exports:module.exports,require:n=>{assert(["crypto","path"].includes(n));return require(n);},process:{env:{BQ_TRANSLATE:"1"}},__dirname:root,__fixtureLibrary:lib,setTimeout,clearTimeout};
    vm.runInNewContext(engineSource.replace(marker,"Promise.resolve(__fixtureLibrary)"),context);
    return{api:module.exports,calls,setMode:next=>{mode=next;}};
  }
@@ -83,12 +83,14 @@ try{
    assert.equal(await engine("empty").api.translate("Invented empty","en","ar"),"");
    return "Import/inference failure and empty result simulated; no real provider outage or HTTP failure injection.";
  });
- await test("G10","Engine has no own deadline; overlong token truncation demonstrated",async()=>{
-   const hung=engine("hang").api.translate("Invented wait","en","ar");
+ await test("G10","Engine deadline releases a hung caller; overlong token truncation demonstrated",async()=>{
+   const stuck=engine("hang");stuck.api.limits.waitMs=200;
+   const at=Date.now(),hung=stuck.api.translate("Invented wait","en","ar");
    const result=await Promise.race([hung.then(()=>"resolved"),new Promise(r=>setTimeout(()=>r("pending"),50))]);assert.equal(result,"pending");
+   assert.equal(await hung,"");assert(Date.now()-at<1000);
    const {api,calls}=engine();await api.translate("x".repeat(500),"en","ar");
    assert.equal(calls.flat().join("").length,380);
-   return "Controlled fixture remains pending for 50ms (not a measured real-model timeout); 500-character unbroken token becomes 380 before inference. Existing server fail-stop deadline is separate.";
+   return "Controlled hung fixture stays pending at 50ms and is released empty at the 200ms test deadline (not a measured real-model timeout); 500-character unbroken token becomes 380 before inference. Existing server fail-stop deadline is separate.";
  });
  await test("G11","Exact frontend language heuristic and translation output sinks",async()=>{
    const source=fs.readFileSync(path.join(root,"public/js/posting.js"),"utf8");

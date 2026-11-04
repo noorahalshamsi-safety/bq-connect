@@ -6,10 +6,15 @@ const MAX_TEXT = 3000;
 const PIECE = 380;
 const CACHE_MAX = 600;
 
+// The engine is one serial CPU queue: bound how many requests may wait on it
+// and how long a caller waits, so overload fails fast instead of piling up.
+const limits = { pending: 6, waitMs: 45000 };
+
 const pipelines = new Map();
 const cache = new Map();
 let library = null;
 let queue = Promise.resolve();
+let pending = 0;
 
 function enabled() {
   return process.env.BQ_TRANSLATE !== "0";
@@ -121,15 +126,22 @@ function translate(text, from, to) {
     cache.set(key, hit);
     return Promise.resolve(hit);
   }
+  if (pending >= limits.pending) return Promise.resolve("");
+  pending += 1;
   const job = queue.then(() => run(pair, source));
   queue = job.catch(() => {});
-  return job.then((result) => {
+  // A job that outlives its caller still finishes and fills the cache.
+  const done = job.then((result) => {
     if (result) {
       cache.set(key, result);
       if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
     }
     return result;
-  });
+  }).finally(() => { pending -= 1; });
+  done.catch(() => {});
+  let timer;
+  const deadline = new Promise((resolve) => { timer = setTimeout(() => resolve(""), limits.waitMs); });
+  return Promise.race([done, deadline]).finally(() => clearTimeout(timer));
 }
 
 function warm() {
@@ -138,4 +150,4 @@ function warm() {
     .catch(() => {});
 }
 
-module.exports = { enabled, translate, warm, segments, MAX_TEXT };
+module.exports = { enabled, translate, warm, segments, MAX_TEXT, limits };
