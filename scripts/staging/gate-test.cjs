@@ -11,9 +11,10 @@ function expect(code,fn){try{fn();}catch(e){if(e.message===code)return code;thro
 const root=fs.mkdtempSync(path.join(os.tmpdir(),"bq-staging-gate-"));
 try{
   fs.mkdirSync(path.join(root,"deploy","staging"),{recursive:true});
-  fs.writeFileSync(path.join(root,".replit"),'[objectStorage]\ndefaultBucketID = "invented-production-bucket"\n');
+  const writeReplit=bucket=>fs.writeFileSync(path.join(root,".replit"),`[objectStorage]\ndefaultBucketID = "${bucket}"\n`);
+  writeReplit("invented-staging-bucket");
   const productionReplId="invented-production-repl",productionOrigin="https://production.invalid";
-  const production={replIdSha256:gate.sha(productionReplId),originSha256:gate.sha(productionOrigin),databaseHostSha256s:[gate.sha("prod-db.invalid")]};
+  const production={replIdSha256:gate.sha(productionReplId),originSha256:gate.sha(productionOrigin),bucketSha256s:[gate.sha("invented-production-bucket")],databaseHostSha256s:[gate.sha("prod-db.invalid")]};
   fs.writeFileSync(path.join(root,"deploy","staging","production-identity.json"),JSON.stringify(production));
   const sessionKey=hex(48),backupKey=hex(32),ca="-----BEGIN CERTIFICATE-----\ninvented\n-----END CERTIFICATE-----\n";
   const manifest={kind:"BQ_STAGING_SYNTHETIC",dataset:`staging-synthetic-${crypto.randomUUID()}`,
@@ -44,7 +45,7 @@ try{
     ["G06","Process is not the approved staging app","staging_app_identity_mismatch",()=>attempt({REPL_ID:"some-other-repl"})],
     ["G07","Production app identity","production_identity_refused",()=>attempt({REPL_ID:productionReplId},undefined,variant(m=>m.app.replId=productionReplId))],
     ["G08","Production origin","production_identity_refused",()=>attempt({},undefined,variant(m=>m.app.origin=productionOrigin))],
-    ["G09","Production bucket from .replit","production_bucket_refused",()=>attempt({},undefined,variant(m=>m.bucket="invented-production-bucket"))],
+    ["G09","Recorded production bucket","production_bucket_refused",()=>attempt({},undefined,variant(m=>m.bucket="invented-production-bucket"))],
     ["G10","Recorded production database host","production_database_refused",()=>attempt({},undefined,variant(m=>m.database.host="prod-db.invalid"))],
     ["G11","Database name outside staging namespace","staging_database_binding_required",()=>attempt({},undefined,variant(m=>m.database.name="bq_production"))],
     ["G12","Production provider secret present","production_secret_present",()=>attempt({SMTP_PASS:"x"})],
@@ -53,7 +54,7 @@ try{
     ["G15","Database CA differs from approved fingerprint","staging_database_ca_mismatch",()=>attempt({BQ_STAGING_DB_CA:"-----BEGIN CERTIFICATE-----\nother\n-----END CERTIFICATE-----\n"})],
     ["G16","Operation not in approval scope","staging_approval_scope_refused",()=>attempt({},"staging-backup")],
     ["G17","Unknown operation","staging_operation_unknown",()=>attempt({},"production-activate")],
-    ["G18","Approval for a different binding (changed bucket)","staging_approval_binding_mismatch",()=>attempt({},undefined,variant(m=>m.bucket="another-staging-bucket"))],
+    ["G18","Approval for a different binding (changed database port)","staging_approval_binding_mismatch",()=>attempt({},undefined,variant(m=>m.database.port=5433))],
   ];
   for(const [id,name,code,fn] of refusals)check(id,`Refuses: ${name}`,()=>expect(code,fn));
   check("G19","Refuses: expired approval",()=>{writeApprovals([{...approval,expires:"2020-01-01T00:00:00Z"}]);try{return expect("staging_approval_expired",()=>attempt());}finally{writeApprovals([approval]);}});
@@ -61,6 +62,16 @@ try{
   check("G21","Refuses: legacy employee data directory present",()=>{
     fs.mkdirSync(path.join(root,"data"));fs.writeFileSync(path.join(root,"data","accounts.json"),"{}");
     try{return expect("employee_dataset_present",()=>attempt());}finally{fs.rmSync(path.join(root,"data"),{recursive:true});}});
+  check("G23","Refuses: Repl still configured with the inherited production bucket",()=>{
+    writeReplit("invented-production-bucket");
+    try{return expect("staging_bucket_binding_mismatch",()=>attempt());}finally{writeReplit("invented-staging-bucket");}});
+  check("G24","Refuses: production bucket fingerprints not recorded",()=>{
+    const file=path.join(root,"deploy","staging","production-identity.json");
+    fs.writeFileSync(file,JSON.stringify({...production,bucketSha256s:[]}));
+    try{return expect("production_identity_unrecorded",()=>attempt());}finally{fs.writeFileSync(file,JSON.stringify(production));}});
+  check("G25","Accepts a staging Repl whose configured bucket is the approved one, and one with none configured",()=>{
+    attempt();fs.rmSync(path.join(root,".replit"));
+    try{attempt();return "both accepted";}finally{writeReplit("invented-staging-bucket");}});
   check("G22","Development fence still refuses inside a deployment",()=>{
     const saved=process.env.REPLIT_DEPLOYMENT;process.env.REPLIT_DEPLOYMENT="1";
     try{return expect("production_activation_forbidden",()=>require("../../development/postgres/isolation.cjs").prepare());}

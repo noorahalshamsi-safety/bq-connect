@@ -71,6 +71,13 @@ const dataset=`staging-synthetic-${crypto.randomUUID()}`;
         for(const f of fs.readdirSync(fresh)){const row=stored.find(r=>r.id===f);if(!row||hash(fs.readFileSync(path.join(fresh,f)))!==row.sha256)throw Error("unverified file cached");}
         return `${code}; only verified files present`;
       }finally{fs.writeFileSync(file,original);}});
+    await check("O13","Provision control records are create-once and name-restricted",async()=>{
+      if(await store.readControl("provision-receipt.json")!==null)throw Error("phantom receipt");
+      const key=await store.createControl("provision-receipt.json",{dataset,state:"committed"});
+      const again=await refused("control_object_exists",()=>store.createControl("provision-receipt.json",{dataset,state:"forged"}));
+      if((await store.readControl("provision-receipt.json")).state!=="committed")throw Error("receipt overwritten");
+      const name=await refused("object_key_invalid",()=>store.createControl("../accounts.json",{}));
+      return `${key.slice(dataset.length)}; ${again}; ${name}`;});
     await check("O12","Adapter exposes no delete path and never deleted an object",async()=>{
       if(typeof store.delete==="function"||Object.getOwnPropertyNames(ImmutableStore.prototype).some(n=>/delete|remove|purge/i.test(n)))throw Error("delete capability present");
       const listed=(await bucket.list({prefix:`${dataset}/`})).value.length;
