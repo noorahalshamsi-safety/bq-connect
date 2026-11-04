@@ -16,7 +16,7 @@ async function start(root) {
 }
 // Shared by development and staging. Performs no DDL; callers own schema state.
 // `faults` honours dev.test_faults injection points and is development-only.
-async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false}={}) {
+async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,minimalRelease=false,deliverMail,deliverSms}={}) {
   let poisoned=false,stopping=false,ingress=0,pending=0;
   const jobTimers=new Set();
   const timings=[];
@@ -87,7 +87,7 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false}=
         fs.writeFileSync(path.join(proof.root,"request-timings.json"),JSON.stringify(timings),{mode:0o600});
       }
     }
-    if(commit)repo.drainFixtureOutbox().catch(()=>{}); // Provider delivery is fixture-only.
+    if(commit&&!minimalRelease)repo.drainFixtureOutbox().catch(()=>{}); // Never synthetic acknowledgements in a real release.
   }
   const enqueue=(topic,payload)=>{
     if(!context)throw Error("outbox_transaction_required");
@@ -143,6 +143,13 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false}=
       const durable="if (process.env.REPLIT_DEPLOYMENT) safety.requireDurableBackend();";
       if(!source.includes(durable))throw Error("durable_backend_contract_changed");
       source='const setInterval=global.__bqDevInterval;\n'+source.replace(durable,"global.__bqRequireTransaction();").replaceAll('.replace(/^0+/, "")',"");
+      if(minimalRelease){
+        // Keep original session/recovery/TOTP keys and signatures. Only old
+        // unfinished login/reset challenge tickets are excluded at cutover.
+        const marker="`ticket:${stage}:";
+        if(source.split(marker).length!==3)throw Error("minimal_ticket_epoch_contract_changed");
+        source=source.replaceAll(marker,"`ticket:"+proof.dataset+":${stage}:");
+      }
       source+='\nmodule.exports.__maps={failures,mailLog,usedTickets};\nmodule.exports.__refresh=()=>{for(const k of Object.keys(accounts))delete accounts[k];Object.assign(accounts,safety.readAccounts(ACCOUNTS));loadedStamp=accountsStamp();securityCache={stamp:"",value:null};};\n';
     }
     if(file==="server.js"){
@@ -178,16 +185,20 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false}=
     read:(body,viewer,res)=>{context.response=res;return nativeProfile.person(context,body,viewer,app.__profileReads);}
   };
   auth=require(path.join(proof.app,"auth.js"));
-  auth.sendMail=(to,subject,text)=>enqueue("mail",{to,subject,text});
+  const realMail=auth.sendMail.bind(auth);
+  auth.sendMail=(to,subject,text)=>{
+    if(minimalRelease&&!deliverMail&&!auth.mailConfigured())return Promise.reject(Error("smtp_unconfigured"));
+    return enqueue("mail",{to,subject,text});
+  };
   const push=require(path.join(proof.app,"push.js"));
   const originalPublic=push.publicKey;
-  push.publicKey=()=>{if(!context.files.get("push-keys.json")?.value?.privateJwk)throw Error("vapid_key_missing");return originalPublic();};
-  push.send=(badge,message)=>enqueue("push",{badge,message});
+  push.publicKey=()=>{if(!context.files.get("push-keys.json")?.value?.privateJwk){if(minimalRelease)return "";throw Error("vapid_key_missing");}return originalPublic();};
+  push.send=minimalRelease?async()=>false:(badge,message)=>enqueue("push",{badge,message});
   const backup=require(path.join(proof.app,"backup.js"));
   const backupStatus=()=>JSON.parse(context.buffers.get("backup-status.json"));
   backup.status=()=>{const saved=backupStatus();return{vault:null,lastAt:saved.lastAt||"",size:saved.lastSize||0,files:saved.files||0,kept:saved.kept||0,failed:false,keyReady:true};};
   backup.createBackup=async()=>{
-    const bundle={kind:"SYNTHETIC_PG_BACKUP",dataset:proof.dataset,files:Object.fromEntries([...context.buffers].map(([f,b])=>[f,JSON.parse(b)])),media:{}};
+    const bundle={kind:minimalRelease?"BQ_MINIMAL_SQL_BACKUP":"SYNTHETIC_PG_BACKUP",dataset:proof.dataset,files:Object.fromEntries([...context.buffers].map(([f,b])=>[f,JSON.parse(b)])),media:{}};
     for(const [legacy,row]of context.media)bundle.media[legacy]=(row.bytes||virtual.original.readFileSync(row.object)).toString("base64");
     const iv=crypto.randomBytes(12),cipher=crypto.createCipheriv("aes-256-gcm",Buffer.from(proof.backupKey,"hex"),iv);
     const bytes=Buffer.concat([iv,cipher.update(JSON.stringify(bundle)),cipher.final(),cipher.getAuthTag()]);
@@ -209,16 +220,31 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false}=
   const realHttps=https.request;
   https.request=(url,options,callback)=>{
     const host=typeof url==="string"?new URL(url).hostname:url.hostname;
-    if(!/^(api\.twilio\.com|api\.taqnyat\.sa)$/.test(host||""))throw Error("external_transport_not_available_in_synthetic_development");
+    if(!(minimalRelease?/^(api\.twilio\.com|api\.taqnyat\.sa|el\.cloud\.unifonic\.com)$/:/^(api\.twilio\.com|api\.taqnyat\.sa)$/).test(host||""))throw Error("external_transport_not_available");
     if(typeof options==="function"){callback=options;options={};}
     const chunks=[],request=new Writable({write(chunk,encoding,done){chunks.push(Buffer.from(chunk));done();}});
     request.setTimeout=()=>request;
-    request.on("finish",()=>{enqueue("sms",{host,body:Buffer.concat(chunks).toString()});const response=Readable.from([Buffer.from('{"synthetic":true}')]);response.statusCode=201;callback(response);});
+    request.on("finish",()=>{
+      const payload={host,body:Buffer.concat(chunks).toString()};
+      if(minimalRelease){
+        const target=typeof url==="string"?new URL(url):url;
+        payload.path=target.pathname!==undefined?target.pathname+(target.search||""):target.path;
+        payload.method=options.method||target.method||"POST";payload.headers=options.headers||target.headers||{};
+        require("./minimal-delivery.cjs").validate(payload);
+      }
+      enqueue("sms",payload);
+      const response=Readable.from([Buffer.from(minimalRelease?'{"queued":true}':'{"synthetic":true}')]);
+      response.statusCode=minimalRelease?202:201;callback(response);
+    });
     return request;
   };
   async function handle(listener,req,res) {
     if(req.url==="/health/live"){res.writeHead(200,{"Content-Type":"application/json"});res.end('{"live":true}');return;}
     await ready;
+    if(minimalRelease&&["/api/push"].includes((req.url||"").split("?")[0])){
+      res.writeHead(503,{"Content-Type":"application/json","Cache-Control":"no-store"});
+      res.end('{"error":"not_enabled_in_existing_accounts_release"}');return;
+    }
     if(poisoned){res.writeHead(503,{"Content-Type":"application/json"});res.end('{"error":"worker_restarting"}');return;}
     if(!["GET","HEAD"].includes(req.method)&&!originAllowed(req)){res.writeHead(403,{"Content-Type":"application/json"});res.end('{"error":"origin_forbidden"}');return;}
     if(staticRequest(req))return listener(req,res);
@@ -324,7 +350,25 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false}=
   };
   app=require(path.join(proof.app,"server.js"));
   http.createServer=realCreate;
-  const outboxTimer=setInterval(()=>{if(!poisoned&&!stopping)repo.drainFixtureOutbox().catch(()=>{});},1000);outboxTimer.unref();
+  // Production mail is queued in the request transaction and delivered only by
+  // a later committed job. SMTP is at-least-once; unknown acknowledgement can
+  // cause a duplicate message, never a fabricated provider-success receipt.
+  const deliver=()=>job(async()=>{
+    const c=context.client;
+    await c.query("UPDATE dev.requests SET body=''::bytea,headers='{}'::jsonb,policy='expired' WHERE expires_at<clock_timestamp() AND policy='encrypted'");
+    const rows=(await c.query("SELECT id,topic,payload FROM dev.outbox WHERE topic IN('mail','sms') AND delivered_at IS NULL AND (fixture_receipt IS NULL OR (fixture_receipt->>'retryAfter')::timestamptz<=clock_timestamp()) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1")).rows;
+    for(const row of rows){
+      const payload=repo.vault.decode(row.payload,`outbox:${row.id}`);let sent=false;
+      try{
+        if(row.topic==="mail")await (deliverMail||realMail)(payload.to,payload.subject,payload.text);
+        else await (deliverSms||((p)=>require("./minimal-delivery.cjs").sendSms(p,realHttps)))(payload);
+        sent=true;
+      }catch{}
+      const receipt={transport:row.topic==="mail"?"smtp-outbox-v1":"sms-outbox-v1",event:row.id,...(!sent?{retryAfter:new Date(Date.now()+60000).toISOString()}:{}),semantics:"provider-accepted-at-least-once"};
+      await c.query("UPDATE dev.outbox SET attempts=attempts+1,delivered_at=CASE WHEN $2 THEN clock_timestamp() ELSE NULL END,fixture_receipt=$3::jsonb WHERE id=$1",[row.id,sent,JSON.stringify(receipt)]);
+    }
+  },"minimal-mail-outbox");
+  const outboxTimer=setInterval(()=>{if(!poisoned&&!stopping)(minimalRelease?deliver():repo.drainFixtureOutbox()).catch(()=>{});},1000);outboxTimer.unref();
   await ready;
   return {repo,proof,server:app.__server,close:async()=>{stopping=true;clearInterval(outboxTimer);for(const timer of jobTimers)clearInterval(timer);await new Promise(r=>app.__server.close(r));await queue;await repo.pool.end();virtual.restore();https.request=realHttps;}};
 }

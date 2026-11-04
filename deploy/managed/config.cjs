@@ -43,7 +43,7 @@ function verify({env=process.env,manifest,paths={},approvalRoot=__dirname}={}){
       typeof a.approvedBy==="string"&&a.approvedBy.length&&Number.isFinite(Date.parse(a.expires))&&Date.parse(a.expires)>Date.now()))fail("managed_production_approval_missing");
   }
   const seal=sha(canonical([manifest.dataset,manifest.keys.session,manifest.keys.backup]));
-  const proof=Object.freeze({verifiedManaged:true,profile,dataset:manifest.dataset,seal,sessionKey,backupKey,bucket:manifest.bucket,
+  const proof=Object.freeze({verifiedManaged:true,profile,dataset:manifest.dataset,seal,sessionKey,backupKey,bucket:manifest.bucket,manifestFingerprint:sha(canonical(manifest)),
     schemaFingerprint:manifest.schemaFingerprint,releaseFingerprint:manifest.releaseFingerprint,
     permissionsFingerprint:manifest.permissionsFingerprint,endpointFingerprint:e.identity,
     root:paths.root,app:paths.app,objects:paths.objects});

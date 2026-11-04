@@ -9,13 +9,20 @@ const KEY=new RegExp(`^staging-synthetic-${UUID}/immutable/${UUID}/[0-9a-f]{64}$
 const CONTROL=new Set(["provision-intent.json","provision-receipt.json"]);
 const fault=(code,cause)=>Object.assign(Error(code),cause?{cause}:{});
 class ImmutableStore {
-  constructor(client,{dataset,timeoutMs=15000}={}) {
-    if(!new RegExp(`^staging-synthetic-${UUID}$`).test(dataset||""))throw fault("synthetic_dataset_required");
+  constructor(client,{dataset,timeoutMs=15000,managedProof}={}) {
+    let production=false;
+    if(managedProof){
+      require("../managed/config.cjs").assertProof(managedProof);
+      production=managedProof.profile==="production"&&managedProof.dataset===dataset&&new RegExp(`^managed-production-${UUID}$`).test(dataset||"");
+      if(!production)throw fault("managed_media_identity_required");
+    }
+    if(!production&&!new RegExp(`^staging-synthetic-${UUID}$`).test(dataset||""))throw fault("synthetic_dataset_required");
     this.client=client;this.dataset=dataset;this.timeoutMs=timeoutMs;
+    this.keyPattern=production?new RegExp(`^managed-production-${UUID}/immutable/${UUID}/[0-9a-f]{64}$`):KEY;
   }
   key(id,sha){
     const key=`${this.dataset}/immutable/${id}/${sha}`;
-    if(!KEY.test(key))throw fault("object_key_invalid");
+    if(!this.keyPattern.test(key))throw fault("object_key_invalid");
     return key;
   }
   async call(method,...args){
@@ -28,7 +35,7 @@ class ImmutableStore {
     }finally{clearTimeout(timer);}
   }
   async read(key,sha){
-    if(!KEY.test(key)||!key.startsWith(`${this.dataset}/immutable/`)||!key.endsWith(`/${sha}`))throw fault("object_key_invalid");
+    if(!this.keyPattern.test(key)||!key.startsWith(`${this.dataset}/immutable/`)||!key.endsWith(`/${sha}`))throw fault("object_key_invalid");
     let value;
     try{value=await this.call("downloadAsBytes",key);}
     catch(e){
