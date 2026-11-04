@@ -15,6 +15,55 @@ externalPort = 80
 localPort = 5000
 externalPort = 5000
 
+[[ports]]
+localPort = 5108
+externalPort = 5173
+
+[[ports]]
+localPort = 5109
+externalPort = 6000
+
+[[ports]]
+localPort = 5138
+externalPort = 6800
+
+[[ports]]
+localPort = 5139
+externalPort = 8000
+
+[[ports]]
+localPort = 5140
+externalPort = 8008
+
+[[ports]]
+localPort = 5150
+externalPort = 8080
+
+[[ports]]
+localPort = 5151
+externalPort = 8081
+
+[[ports]]
+localPort = 5163
+externalPort = 8099
+
+[[ports]]
+localPort = 5180
+externalPort = 3002
+exposeLocalhost = true
+
+[[ports]]
+localPort = 5181
+externalPort = 3000
+
+[[ports]]
+localPort = 5183
+externalPort = 3001
+
+[[ports]]
+localPort = 5185
+externalPort = 4200
+
 [deployment]
 deploymentTarget = "vm"
 build = ["npm", "install", "--omit=dev"]

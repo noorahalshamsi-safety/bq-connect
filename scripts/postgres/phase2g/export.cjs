@@ -1,0 +1,23 @@
+const fs=require("node:fs"),path=require("node:path"),assert=require("node:assert/strict");
+const root=path.resolve(__dirname,"../../.."),out=path.join(root,"generated-artifacts/phase2g");
+fs.mkdirSync(out,{recursive:true});
+const read=p=>fs.readFileSync(path.join(root,p),"utf8");
+const blockers=JSON.parse(read("reports/POSTGRESQL_PHASE2G_BLOCKERS.json"));
+const required=["id","priority","mandatory","order","owner","title","evidence","files","state","impact","dependencies","acceptance","tests","productionRelevance"];
+assert.equal(new Set(blockers.map(x=>x.id)).size,blockers.length);
+for(const b of blockers){for(const k of required)assert(Object.hasOwn(b,k),`${b.id} missing ${k}`);assert(["P0","P1","P2","P3"].includes(b.priority));assert(b.acceptance.length>50);}
+assert.equal(blockers.filter(x=>x.mandatory).length,15);
+const review=read("reports/POSTGRESQL_PHASE2G_READINESS_REVIEW.md"),checklist=read("reports/POSTGRESQL_PHASE2G_BROWSER_CHECKLIST.md");
+assert.equal((checklist.match(/\| BR-\d\d \|/g)||[]).length,22);
+assert.equal((review.match(/^## \d+\./gm)||[]).length,12);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const css=`:root{font:16px/1.6 system-ui,sans-serif;color:#14283b;background:#eef2f5}body{margin:0}main{max-width:1120px;margin:auto;padding:32px}header,article,section{background:#fff;border:1px solid #dce3eb;border-radius:12px;padding:24px;margin:0 0 22px}h1{line-height:1.2}h2{margin-top:0}a{color:#075a9c}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.65 ui-monospace,monospace}dt{font-weight:700;margin-top:12px}dd{margin:2px 0;overflow-wrap:anywhere}.verdict{background:#7a1821;color:#fff;padding:12px 18px;border-radius:6px;font-weight:700}.meta{color:#526578}details{border-top:1px solid #dce3eb;padding:16px 0}summary{cursor:pointer;font-weight:700}@media(max-width:600px){main{padding:12px}header,article,section{padding:16px}}`;
+const sections=review.split(/(?=^## \d+\.)/m);
+const body=sections.map(s=>{const lines=s.split("\n"),heading=lines[0].replace(/^#+ /,"");return`<article><h2>${esc(heading)}</h2><pre>${esc(lines.slice(1).join("\n"))}</pre></article>`;}).join("");
+const cards=blockers.map(b=>`<details open><summary>${esc(b.id+" · "+b.priority+" · "+b.title)}</summary><p class="meta">${b.mandatory?"Mandatory release gate":"Optional / conditional"} · order ${b.order} · ${esc(b.owner)}</p><dl>${required.filter(k=>!["id","title","mandatory","priority","order","owner"].includes(k)).map(k=>`<dt>${esc(k)}</dt><dd>${esc(Array.isArray(b[k])?b[k].join("; "):b[k])}</dd>`).join("")}</dl></details>`).join("");
+fs.writeFileSync(path.join(out,"phase2g-readiness-review.html"),`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BQ Connect — Production readiness review</title><style>${css}</style><main><header><h1>BQ Connect — Phase 2G</h1><p>Consolidated readiness, single blocker register and authenticated browser checklist</p><p class="verdict">Production NO-GO · Development conditional / synthetic-only</p><nav><a href="#register">18-item register</a> · <a href="#browser">22-step browser checklist</a></nav></header>${body}<section id="register"><h2>Authoritative release-blocker register</h2><p>Generated from reports/POSTGRESQL_PHASE2G_BLOCKERS.json. Fifteen mandatory gates; three optional/conditional items.</p>${cards}</section><section id="browser"><h2>Manual authenticated browser acceptance</h2><pre>${esc(checklist)}</pre></section></main></html>`);
+const csv=x=>`"${String(Array.isArray(x)?x.join("; "):x).replace(/"/g,'""')}"`;
+fs.writeFileSync(path.join(out,"phase2g-blockers.csv"),[required.map(csv).join(","),...blockers.map(b=>required.map(k=>csv(b[k])).join(","))].join("\n")+"\n");
+const current=JSON.parse(fs.readFileSync(path.join(out,"targeted-tests.json")));
+assert.equal(current.fail,0);assert.equal(current.pass,11);
+console.log(JSON.stringify({reportSections:12,register:blockers.length,mandatory:15,browserRows:22,currentPass:current.pass,currentFail:current.fail,html:"generated-artifacts/phase2g/phase2g-readiness-review.html"}));

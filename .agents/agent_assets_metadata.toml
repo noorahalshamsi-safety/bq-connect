@@ -210,3 +210,31 @@ mtime_ms = 1793733632146
 storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/94a2cc8f-1a64-4de6-8f04-2736bfcbe279/e304d339-a1dc-4a0b-ae3b-bee99aa56286"
 storage_version_token = "1793733657972825"
 content_type = "text/html"
+
+[[outputs]]
+id = "kiaFZIQtLHG3VuPY_WLI2"
+uri = "file://generated-artifacts/phase2g/phase2g-readiness-review.html"
+type = "html"
+title = "Phase 2G readiness review"
+description = "Complete 12-section review, single 18-item blocker register, and 22-step authenticated browser checklist. Production remains NO-GO."
+logical_id = "9db32179-8ffd-4b9a-a182-4d818485f391"
+content_hash = "sha256:54a461e19c5b8e7ba40a020049f24b9e7177eae442eefe82195198045147cf76"
+size = 77495
+mtime_ms = 1793768126571
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/9db32179-8ffd-4b9a-a182-4d818485f391/fa113a83-7d18-4a6b-8665-30d9b0dd84bb"
+storage_version_token = "1793768161164511"
+content_type = "text/html"
+
+[[outputs]]
+id = "YgcUcawIsK92ZS4HTtemd"
+uri = "file://generated-artifacts/phase2g/phase2g-blockers.csv"
+type = "table"
+title = "Release-blocker register"
+description = "15 mandatory release gates and 3 optional or conditional items, including accountable roles, evidence, dependencies and executable acceptance criteria."
+logical_id = "d8dfd5c0-5541-4e34-a63c-532681bc8459"
+content_hash = "sha256:da0bd01501b6ea9b830910105f0a3c2982923af6db1e4e8766857fa9296d57ee"
+size = 23088
+mtime_ms = 1793768126571
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:86b3158f-badd-4128-8102-0fc7598d63a5/d8dfd5c0-5541-4e34-a63c-532681bc8459/995eef7f-8165-497d-aecc-ee558967c7c4"
+storage_version_token = "1793768162440929"
+content_type = "text/csv"
