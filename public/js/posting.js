@@ -131,6 +131,14 @@ function textLanguage(text) {
 
 const translators = new Map();
 const TRANSLATE_WAIT = 8000;
+const TRANSLATE_MAX = 3000;
+
+function translatablePart(text) {
+  if (text.length <= TRANSLATE_MAX) return text;
+  const cut = text.slice(0, TRANSLATE_MAX);
+  const boundary = Math.max(cut.lastIndexOf("\n"), cut.lastIndexOf(" "));
+  return (boundary > TRANSLATE_MAX * 0.8 ? cut.slice(0, boundary) : cut).trim();
+}
 
 function withinTime(promise) {
   return Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(null), TRANSLATE_WAIT))]);
@@ -163,7 +171,7 @@ async function serverTranslate(text, from, to) {
     const response = await fetch("/api/translate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token: selectedPerson.token, text: text.slice(0, 3000), from, to }),
+      body: JSON.stringify({ token: selectedPerson.token, text, from, to }),
       signal: stop.signal,
     });
     if (!response.ok) return null;
@@ -207,9 +215,10 @@ function translateControl(text) {
     }
     button.disabled = true;
     button.textContent = t("translating");
+    const part = translatablePart(source);
     let result = null;
     try {
-      result = (await serverTranslate(source, from, to)) || (await browserTranslate(source, from, to));
+      result = (await serverTranslate(part, from, to)) || (await browserTranslate(part, from, to));
     } catch {
       result = null;
     }
@@ -223,6 +232,12 @@ function translateControl(text) {
       body.dir = "auto";
       body.textContent = result;
       output.append(note, body);
+      if (part.length < source.length) {
+        const partial = document.createElement("small");
+        partial.className = "x-translate-partial";
+        partial.textContent = t("translatePartial");
+        output.append(partial);
+      }
     } else {
       note.textContent = t("translateNoLocal");
       output.append(note, webTranslateLink(source, from, to));

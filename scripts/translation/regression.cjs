@@ -41,6 +41,23 @@ async function unit(){
     assert(segments("مرحبا 2026").some(p=>p.translate));
     return{numbersOnly:"verbatim"};
   });
+  await check("T03","Engine refuses overlong text instead of silently truncating it",async()=>{
+    const {translate,MAX_TEXT}=require(path.join(root,"translate.js"));
+    assert.equal(await translate("ok ".repeat(MAX_TEXT),"en","ar"),"");
+    return{maxText:MAX_TEXT,result:"refused"};
+  });
+  await check("T04","Client translates a word-bounded prefix of long posts and flags it as partial",()=>{
+    const src=require("node:fs").readFileSync(path.join(root,"public/js/posting.js"),"utf8");
+    const max=src.match(/const TRANSLATE_MAX = \d+;/)?.[0],fn=src.match(/function translatablePart\(text\) \{[\s\S]*?\n\}/)?.[0];
+    assert(max&&fn,"client helper missing");
+    assert(/part\.length < source\.length[\s\S]{0,200}translatePartial/.test(src),"partial note missing");
+    const cut=require("node:vm").runInNewContext(`${max}(${fn})`);
+    const article=Array.from({length:500},(_,i)=>`Invented sentence ${i}.`).join(" ");
+    const part=cut(article);
+    assert(part.length<=3000&&article.startsWith(part)&&/\.$/.test(part),"cut is not a word-bounded prefix");
+    assert.equal(cut("short"),"short");
+    return{articleChars:article.length,partChars:part.length};
+  });
 }
 
 async function model(pair){

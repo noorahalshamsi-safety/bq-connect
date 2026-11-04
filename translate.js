@@ -112,8 +112,8 @@ async function run(pair, text) {
 
 function translate(text, from, to) {
   const pair = `${from}>${to}`;
-  const source = String(text || "").trim().slice(0, MAX_TEXT);
-  if (!MODELS[pair] || !source) return Promise.resolve("");
+  const source = String(text || "").trim();
+  if (!MODELS[pair] || !source || source.length > MAX_TEXT) return Promise.resolve("");
   const key = `${pair}:${crypto.createHash("sha256").update(source).digest("base64url")}`;
   if (cache.has(key)) {
     const hit = cache.get(key);
