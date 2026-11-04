@@ -59,19 +59,55 @@ function pieces(text) {
     .flatMap(splitLong));
 }
 
+// The OPUS models garble URLs and drop emoji, so these spans are kept verbatim.
+const VERBATIM = /(https?:\/\/\S+|www\.\S+|[\w.+-]+@[\w-]+(?:\.[\w-]+)+|\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic})*)/u;
+
+function segments(piece) {
+  return piece.split(new RegExp(VERBATIM.source, "gu"))
+    .filter((part) => part !== "")
+    .map((part) => ({ text: part, translate: !VERBATIM.test(part) && /\p{L}/u.test(part) }));
+}
+
+const degenerate = (text) => /(\S+)(?:\s+\1){2,}/u.test(text) || /([.،,!؟?])\1{2,}/u.test(text);
+
+async function translateSegment(translator, text) {
+  // Padded batches and unbounded generation make the quantized models repeat tokens.
+  const limit = Math.min(400, Math.ceil(text.length * 1.5) + 16);
+  const attempt = async (options) => {
+    const [row] = await translator([text], { max_new_tokens: limit, ...options });
+    return String(row && row.translation_text || "").trim();
+  };
+  const first = await attempt({});
+  if (!degenerate(first) || degenerate(text)) return first;
+  const second = await attempt({ repetition_penalty: 1.3, no_repeat_ngram_size: 2 });
+  return degenerate(second) ? text : second;
+}
+
+async function translatePiece(translator, piece) {
+  const out = [];
+  for (const part of segments(piece)) {
+    if (!part.translate) {
+      out.push(part.text);
+      continue;
+    }
+    const lead = /^\s/.test(part.text) ? " " : "";
+    const trail = /\s$/.test(part.text) ? " " : "";
+    out.push(lead + await translateSegment(translator, part.text.trim()) + trail);
+  }
+  return out.join("").replace(/\s{2,}/g, " ").trim();
+}
+
 async function run(pair, text) {
   const translator = await translatorFor(pair);
   const lines = pieces(text);
-  const flat = lines.flat();
-  if (!flat.length) return "";
+  if (!lines.flat().length) return "";
   const results = [];
-  for (let index = 0; index < flat.length; index += 8) {
-    const batch = flat.slice(index, index + 8);
-    const output = await translator(batch, { max_new_tokens: 400 });
-    (Array.isArray(output) ? output : [output]).forEach((row) => results.push(String(row.translation_text || "").trim()));
+  for (const line of lines) {
+    const translated = [];
+    for (const piece of line) translated.push(await translatePiece(translator, piece));
+    results.push(translated.join(" "));
   }
-  let cursor = 0;
-  return lines.map((line) => line.map(() => results[cursor++] || "").join(" ")).join("\n").trim();
+  return results.join("\n").trim();
 }
 
 function translate(text, from, to) {
@@ -102,4 +138,4 @@ function warm() {
     .catch(() => {});
 }
 
-module.exports = { enabled, translate, warm, MAX_TEXT };
+module.exports = { enabled, translate, warm, segments, MAX_TEXT };

@@ -72,7 +72,7 @@ try{
  await test("G08","Multilingual orchestration and content-keyed edits",async()=>{
    const {api,calls}=engine(),samples=["مرحبا بالعالم.","Hello colleagues.","مرحبا Project A42","Invented Noor / نور","https://example.invalid/a?b=1 #مشروع #Project","😊 !؟،.","First line\nالسطر الثاني"];
    const frozen=JSON.stringify(samples);
-   for(const s of samples){const r=await api.translate(s,"en","ar");assert(r.includes("fixture:"));assert(s.trim());}
+   for(const s of samples){const r=await api.translate(s,"en","ar");if(/\p{L}/u.test(s))assert(r.includes("fixture:"));else assert.equal(r,s.trim());assert(s.trim());}
    const n=calls.length;await api.translate(samples[0],"en","ar");assert.equal(calls.length,n);
    await api.translate("Edited invented note","en","ar");assert.equal(calls.length,n+1);
    assert.equal(JSON.stringify(samples),frozen);
