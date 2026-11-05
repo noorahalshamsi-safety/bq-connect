@@ -67,3 +67,14 @@ per-file artifact manifest or deployed binding digest.
 **How to apply:** Compare the recorded Git tree when available, but label that
 comparison as source-tree evidence. Without snapshot-bound provenance, report
 the actual deployed binding hash as UNKNOWN rather than inferring MATCH.
+
+For this release, use the existing managed implementation and make only a
+minimal evidence-supported correction. Do not add more release frameworks,
+attestors or broad diagnostic systems.
+
+**Why:** The owner explicitly repeated this scope restriction after additional
+release infrastructure was prepared.
+
+**How to apply:** Locate the existing guard first; if independent Production
+identity/artifact evidence is unavailable, identify the missing evidence and
+stop without inventing a replacement identity or a new verification framework.
