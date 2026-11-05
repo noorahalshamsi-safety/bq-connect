@@ -47,6 +47,11 @@ The following draft fields intentionally remain unapproved:
   fabricated administrator.
 - `emailDomains`: approved company email domain(s), lowercase, without `@`.
 
+The latest supported Production catalog results and exact permission fingerprint
+are documented in `production-permission-review.md`. The observed role and
+fingerprint are now populated in the draft, but owner privilege approval,
+application hostname/TLS and owner policy selections remain pending.
+
 Do not change the dataset after initialization or edit an already active
 installation manifest casually; its hash and key seal are installation identity.
 Do not populate fields from synthetic test output.
