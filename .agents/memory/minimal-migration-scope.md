@@ -58,10 +58,12 @@ entry failed from a pre-publish existence check, or ask for duplicate entries.
 Use a protected in-process comparison after an approved maintenance-only
 publication; never substitute workspace keys or print secret values.
 
-Diagnostic publication output must contain only PASS/BLOCKED statuses, not
-credentials, key values, account records, fingerprints or raw diagnostic data.
+Diagnostic output must use allowlisted, value-free execution states that
+distinguish skipped checks from missing/invalid dependencies, never credentials,
+key values, account records, fingerprints or raw diagnostic data.
 
-**Why:** The owner explicitly restricted the diagnostic publication's output.
+**Why:** The owner explicitly restricted diagnostic output, then required
+distinguishing skipped checks from missing/invalid dependencies.
 
 **How to apply:** Keep diagnostics in maintenance mode on success or failure
 and project output through a fixed status allowlist; do not log arbitrary

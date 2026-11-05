@@ -26,7 +26,8 @@ const env = { REPLIT_DEPLOYMENT: "1", REPL_ID: "invented-diagnostic-test",
 const spec = { ...bindings, appFingerprint: cfg.sha(env.REPL_ID) };
 function statusOnly(result) {
   assert.deepEqual(result, statuses(result));
-  for (const value of Object.values(result)) assert.ok(["PASS", "BLOCKED"].includes(value));
+  for (const value of Object.values(result))
+    assert.ok(["VERIFIED", "MISSING", "INVALID", "NOT_EXECUTED"].includes(value));
 }
 function request(port, url) {
   return new Promise((resolve, reject) => http.get({
@@ -75,7 +76,9 @@ function response(port, url, method = "GET") {
   for (const [changes, bindingChanges, expected] of contextCases) {
     const state = statuses();
     assert.throws(() => requireContext({ ...env, ...changes }, { ...spec, ...bindingChanges }, state));
-    assert.equal(state[expected], "BLOCKED");
+    const missing = ["PUBLISHED_PROCESS", "SESSION_KEY_PRESENT", "AUDIT_KEY_PRESENT",
+      "ENDPOINT_PRESENT"].includes(expected) || changes.REPL_ID === undefined && Object.hasOwn(changes, "REPL_ID");
+    assert.equal(state[expected], missing ? "MISSING" : "INVALID");
     statusOnly(state);
   }
   assert.equal(resolvePort({}, undefined), 4173);
@@ -99,7 +102,7 @@ function response(port, url, method = "GET") {
   const saved = { Pool: pg.Pool, list: Client.prototype.list, read: source.read,
     access: source.access, schema: schema.requireSchema, permissions: cfg.permissions };
   const sqlSeen = [];
-  let pools = 0;
+  let pools = 0, sourceReads = 0, controlReads = 0;
   const fakeClient = {
     connection: { stream: { encrypted: true, authorized: true } }, release() {},
     async query(sql) {
@@ -120,8 +123,9 @@ function response(port, url, method = "GET") {
     return fakeClient;
   };
   pg.Pool.prototype.end = async function () {};
-  Client.prototype.list = async () => ({ ok: true, value: [] });
+  Client.prototype.list = async () => { controlReads++; return { ok: true, value: [] }; };
   source.read = async input => {
+    sourceReads++;
     assert.equal(input.bucketFingerprint, bindings.sourceBucketFingerprint);
     assert.deepEqual(Object.keys(input.client), ["exists", "downloadAsText"]);
     return {};
@@ -134,14 +138,61 @@ function response(port, url, method = "GET") {
   try {
     const success = await verify({ env, bindings: spec });
     statusOnly(success);
-    assert.equal(success.ORIGINAL_KEY_MATCH, "PASS");
-    assert.equal(success.PRODUCTION_DATABASE, "PASS");
-    assert.equal(success.SOURCE_WRITER_FREEZE, "BLOCKED");
-    assert.equal(success.PERMISSION_REVIEW, "BLOCKED");
+    assert.equal(success.ORIGINAL_KEY_MATCH, "VERIFIED");
+    assert.equal(success.PRODUCTION_DATABASE, "VERIFIED");
+    assert.equal(success.SOURCE_WRITER_FREEZE, "NOT_EXECUTED");
+    assert.equal(success.PERMISSION_REVIEW, "MISSING");
     const priorPools = pools;
-    await assert.rejects(verify({ env: { ...env, BQ_MANAGED_BACKUP_KEY: "5".repeat(64) }, bindings: spec }),
-      error => { statusOnly(error.statuses); return error.statuses.ORIGINAL_KEY_MATCH === "BLOCKED"; });
-    assert.equal(pools, priorPools);
+    const mismatch = await verify({ env: { ...env, BQ_MANAGED_BACKUP_KEY: "5".repeat(64) }, bindings: spec });
+    statusOnly(mismatch);
+    assert.equal(mismatch.ORIGINAL_KEY_MATCH, "INVALID");
+    assert.equal(mismatch.CONTROL_BUCKET, "VERIFIED");
+    assert.equal(mismatch.PRODUCTION_DATABASE, "VERIFIED");
+    assert.equal(pools, priorPools + 1);
+    const beforeIdentityFailure = pools;
+    const readsBeforeIdentityFailure = [sourceReads, controlReads];
+    const missingId = await verify({ env: { ...env, REPL_ID: undefined }, bindings: spec });
+    assert.equal(missingId.APP_IDENTITY, "MISSING");
+    assert.equal(missingId.SESSION_KEY_PRESENT, "VERIFIED");
+    assert.equal(missingId.BACKUP_KEY_FORMAT, "VERIFIED");
+    assert.equal(missingId.ENDPOINT_SYNTAX, "VERIFIED");
+    assert.equal(missingId.BUCKET_BINDING, "VERIFIED");
+    assert.equal(missingId.CONTROL_BUCKET_CONFIRMATION, "VERIFIED");
+    assert.equal(missingId.ORIGINAL_KEY_MATCH, "NOT_EXECUTED");
+    assert.equal(missingId.ENDPOINT_NOT_DEVELOPMENT, "NOT_EXECUTED");
+    assert.equal(missingId.DATABASE_TLS, "NOT_EXECUTED");
+    assert.equal(pools, beforeIdentityFailure);
+    assert.deepEqual([sourceReads, controlReads], readsBeforeIdentityFailure);
+    const lostEnvironment = await verify({ env, bindings: spec, workerEnvironmentVerified: false });
+    assert.equal(lostEnvironment.WORKER_ENVIRONMENT, "INVALID");
+    assert.equal(lostEnvironment.DATABASE_TLS, "NOT_EXECUTED");
+    assert.equal(pools, beforeIdentityFailure);
+    assert.deepEqual([sourceReads, controlReads], readsBeforeIdentityFailure);
+    const missingBindings = await verify({ env, bindings: null });
+    assert.equal(missingBindings.APP_BINDING, "MISSING");
+    assert.equal(missingBindings.BUCKET_BINDING, "MISSING");
+    assert.equal(missingBindings.SESSION_KEY_FORMAT, "VERIFIED");
+    assert.equal(missingBindings.ENDPOINT_PRESENT, "VERIFIED");
+    assert.deepEqual([sourceReads, controlReads], readsBeforeIdentityFailure);
+    const noKey = await verify({ env: { ...env, BQ_MANAGED_BACKUP_KEY: undefined }, bindings: spec });
+    assert.equal(noKey.BACKUP_KEY_PRESENT, "MISSING");
+    assert.equal(noKey.BACKUP_KEY_FORMAT, "NOT_EXECUTED");
+    assert.equal(noKey.SOURCE_READ, "NOT_EXECUTED");
+    assert.equal(noKey.CONTROL_BUCKET, "VERIFIED");
+    assert.equal(noKey.PRODUCTION_DATABASE, "VERIFIED");
+    const savedRead = source.read;
+    source.read = async () => { throw Error("NEVER_OUTPUT_THIS"); };
+    const unreadable = await verify({ env, bindings: spec });
+    source.read = savedRead;
+    assert.equal(unreadable.SOURCE_READ, "INVALID");
+    assert.equal(unreadable.ORIGINAL_KEY_MATCH, "NOT_EXECUTED");
+    assert.equal(unreadable.CONTROL_BUCKET, "VERIFIED");
+    assert.equal(unreadable.PRODUCTION_DATABASE, "VERIFIED");
+    fakeClient.connection.stream.authorized = false;
+    const badTls = await verify({ env, bindings: spec });
+    fakeClient.connection.stream.authorized = true;
+    assert.equal(badTls.DATABASE_TLS, "INVALID");
+    assert.equal(badTls.PRODUCTION_DATABASE, "NOT_EXECUTED");
   } finally {
     Client.prototype.list = saved.list; source.read = saved.read; source.access = saved.access;
     schema.requireSchema = saved.schema; cfg.permissions = saved.permissions;
@@ -173,15 +224,30 @@ function response(port, url, method = "GET") {
     await app.close(); assert.equal(unchecked, 0);
     // Exercise the actual isolated diagnostic loader. This intentionally
     // invented app identity fails BEFORE cloud access, even with valid formats.
+    assert.notEqual(cfg.sha(env.REPL_ID), bindings.appFingerprint);
     const isolated = await launch({ env, port: 0 });
     try {
       assert.equal(await request(isolated.server.address().port, "/"), 200);
       const result = await isolated.diagnostic;
-      assert.equal(result.DIAGNOSTIC_WORKER, "PASS");
-      assert.equal(result.APP_IDENTITY, "BLOCKED");
-      assert.equal(result.PRODUCTION_CONTEXT, "BLOCKED");
+      assert.equal(result.DIAGNOSTIC_WORKER, "VERIFIED");
+      assert.equal(result.WORKER_ENVIRONMENT, "VERIFIED");
+      assert.equal(result.APP_IDENTITY, "INVALID");
+      assert.equal(result.PRODUCTION_CONTEXT, "INVALID");
+      assert.equal(result.SESSION_KEY_PRESENT, "VERIFIED");
+      assert.equal(result.AUDIT_KEY_FORMAT, "VERIFIED");
+      assert.equal(result.BUCKET_BINDING, "VERIFIED");
+      assert.equal(result.DATABASE_TLS, "NOT_EXECUTED");
       assert.equal(await request(isolated.server.address().port, "/"), 200);
     } finally { await isolated.close(); }
+    const { runCheck } = require("../../release-preparation/production-bindings/diagnostic-worker.cjs");
+    const withoutIdentity = { ...env };
+    delete withoutIdentity.REPL_ID;
+    const inheritedMissing = await runCheck({ env: withoutIdentity });
+    assert.equal(inheritedMissing.WORKER_ENVIRONMENT, "VERIFIED");
+    assert.equal(inheritedMissing.APP_ID_PRESENT, "MISSING");
+    assert.equal(inheritedMissing.APP_IDENTITY, "MISSING");
+    assert.equal(inheritedMissing.SESSION_KEY_PRESENT, "VERIFIED");
+    assert.equal(inheritedMissing.ORIGINAL_KEY_MATCH, "NOT_EXECUTED");
 
     // Verify the exact configured listen argument without taking over the
     // workspace's existing4173 listener. Own an ephemeral TCP listener instead.
@@ -194,7 +260,7 @@ function response(port, url, method = "GET") {
     };
     try {
       blocked = await launch({ env, check: options => verify({
-        env: { ...options.env, DATABASE_URL: undefined }, bindings: spec
+        env: { ...options.env, REPL_ID: undefined }, bindings: spec
       }) });
     } finally { http.Server.prototype.listen = originalListen; }
     try {
@@ -202,10 +268,11 @@ function response(port, url, method = "GET") {
       const localPort = blocked.server.address().port;
       assert.equal(blocked.server.address().address, "0.0.0.0");
       const result = await blocked.diagnostic;
-      assert.equal(result.MAINTENANCE, "PASS");
-      assert.equal(result.DIAGNOSTIC_REQUEST, "PASS");
-      assert.equal(result.PRODUCTION_CONTEXT, "BLOCKED");
-      assert.equal(result.ENDPOINT_PRESENT, "BLOCKED");
+      assert.equal(result.MAINTENANCE, "VERIFIED");
+      assert.equal(result.DIAGNOSTIC_REQUEST, "VERIFIED");
+      assert.equal(result.PRODUCTION_CONTEXT, "MISSING");
+      assert.equal(result.APP_IDENTITY, "MISSING");
+      assert.equal(result.ENDPOINT_PRESENT, "VERIFIED");
       for (const url of ["/", "/?probe=1", "/health/live"]) {
         const res = await response(localPort, url);
         assert.equal(res.status, 200); assert.equal(JSON.parse(res.body).ready, false);
@@ -234,13 +301,15 @@ function response(port, url, method = "GET") {
   assert.equal(errors.length, 0);
   for (const line of lines) {
     assert.ok(!line.includes("NEVER_OUTPUT_THIS")); statusOnly(JSON.parse(line));
-    assert.equal(JSON.parse(line).MAINTENANCE, "PASS");
+    assert.equal(JSON.parse(line).MAINTENANCE, "VERIFIED");
   }
   assert.ok(sqlSeen.length > 0);
   console.log(JSON.stringify({ result: "PASS", readOnlyCapabilities: "PASS", keyMismatchRefused: "PASS",
     statusOnlyOutput: "PASS", maintenanceOnSuccessAndFailure: "PASS",
     importFlagCannotActivate: "PASS", configuredPort4173: "PASS",
     contextFailureAndHungDiagnosticHealth: "PASS", contextGuardCases: contextCases.length,
+    independentPrerequisites: "PASS", workerEnvironmentInheritance: "PASS",
+    skippedMissingInvalidVerifiedStates: "PASS",
     realProductionAccess: false }));
 })().catch(error => {
   console.error("diagnostic_publication_check_failed");

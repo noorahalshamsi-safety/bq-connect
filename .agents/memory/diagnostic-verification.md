@@ -12,7 +12,8 @@ only the aggregate status, making the exact cause unrecoverable from its logs.
 
 **How to apply:** Report unreached checks as unverified. Distinguish presence/
 format from original-key equality and configured TLS policy from negotiated TLS.
-Keep only allowlisted PASS/BLOCKED status output.
+Keep only allowlisted, value-free execution states, not arbitrary results or
+exception details.
 
 Local diagnostic HTTP tests must own their listeners; use ephemeral ports and
 verify Publishing's configured port argument separately.
@@ -22,3 +23,15 @@ service. Rebinding it fails, and probing it would test somebody else's server.
 
 **How to apply:** Do not stop existing workflows or redirect their ports merely
 to run focused health tests. Check real HTTP on the test-owned listener.
+
+Do not request another diagnostic publication solely to discover which
+Production identity prerequisite failed. Identify and address that cause first.
+
+**Why:** The owner explicitly required this after repeated diagnostic
+publication cycles. A workspace identity match cannot prove the deployed
+process received the same identity; deployment metadata did not expose it.
+
+**How to apply:** Do not override the runtime-managed REPL_ID, auto-rebind the
+expected identity, or treat the workspace Shell as Production process access.
+If protected deployed-process inspection is unavailable, report that limit
+and stop rather than requesting another speculative publication.

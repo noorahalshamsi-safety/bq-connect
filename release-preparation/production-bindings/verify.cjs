@@ -10,82 +10,67 @@ const schema = require(path.join(base, "deploy/managed/schema.cjs"));
 const sourceModule = require(path.join(base, "migration/minimal/source.cjs"));
 const readOnly = require("./read-only.cjs");
 const { statuses, report } = require("./status.cjs");
+const { assess } = require("./context.cjs");
 
 function stop(code) { throw Object.assign(Error(code), { code }); }
-function guard(state, name, condition, code) {
-  state[name] = condition ? "PASS" : "BLOCKED";
-  if (!condition) stop(code);
-}
 function requireContext(env, bindings, state = statuses()) {
-  guard(state, "PUBLISHED_PROCESS", env.REPLIT_DEPLOYMENT === "1", "preflight_published_process_required");
-  guard(state, "PINNED_BINDINGS", bindings?.kind === "BQ_PENDING_PRODUCTION_BINDINGS_V1" &&
-    bindings.implementationCommit === "cd5bd760a3b1d4a663d9a41c0479a58e36f02dd9",
-    "preflight_pinned_bindings_required");
-  guard(state, "APP_IDENTITY", !!env.REPL_ID && cfg.sha(env.REPL_ID) === bindings.appFingerprint,
-    "preflight_app_identity_mismatch");
-  for (const [name, key, length] of [
-    ["SESSION", "BQ_MANAGED_SESSION_KEY", 96],
-    ["BACKUP", "BQ_MANAGED_BACKUP_KEY", 64],
-    ["AUDIT", "BQ_MINIMAL_AUDIT_KEY", 64]
-  ]) {
-    state[name + "_KEY_PRESENT"] = typeof env[key] === "string" && env[key].length ? "PASS" : "BLOCKED";
-    state[name + "_KEY_FORMAT"] = new RegExp("^[a-f0-9]{" + length + "}$").test(env[key] || "") ? "PASS" : "BLOCKED";
-  }
-  if (["SESSION", "BACKUP", "AUDIT"].some(name => state[name + "_KEY_FORMAT"] !== "PASS"))
-    stop("preflight_applied_production_secrets_required");
-  state.PRODUCTION_SECRETS = "PASS"; // presence/format only, NOT original-key equality
-  guard(state, "ENDPOINT_PRESENT", !!env.DATABASE_URL, "managed_connection_missing");
-  let url;
-  try { url = new URL(env.DATABASE_URL); } catch { stop("managed_connection_invalid"); }
-  guard(state, "ENDPOINT_SYNTAX", ["postgres:", "postgresql:"].includes(url.protocol) &&
-    !!url.hostname && !!url.pathname.slice(1), "managed_connection_invalid");
-  guard(state, "ENDPOINT_DESTINATION",
-    !["helium", "localhost", "127.0.0.1", "::1", "[::1]"].includes(url.hostname),
-    "managed_production_endpoint_refused");
-  guard(state, "ENDPOINT_ALLOWED_OPTIONS",
-    [...url.searchParams.keys()].every(key => ["sslmode", "channel_binding"].includes(key)),
-    "managed_connection_option_unreviewed");
-  guard(state, "ENDPOINT_TLS_POLICY",
-    !["disable", "no-verify", "allow", "prefer"].includes(url.searchParams.get("sslmode")),
-    "managed_tls_downgrade_refused");
-  // Retain the original pinned validator as the authority, not a permissive
-  // replacement. Subchecks above expose only which existing guard failed.
-  const endpoint = cfg.endpoint(env, "production");
-  guard(state, "ENDPOINT_NOT_DEVELOPMENT", endpoint.identity !== bindings.developmentEndpointFingerprint,
-    "preflight_development_endpoint_refused");
-  guard(state, "BUCKET_BINDING", !!bindings.sourceBucket && !!bindings.targetBucket &&
-    bindings.sourceBucketFingerprint === "ce11c603901c2550295d04cf9a5898200348ff8d29086744a88ee73d8f8716ec" &&
-    bindings.targetBucketFingerprint === "71b5a307f0aa650bee9a8a4359d5caa2841eb5717f590e983100951fca2dd6b2" &&
-    cfg.sha(bindings.sourceBucket) === bindings.sourceBucketFingerprint &&
-    cfg.sha(bindings.targetBucket) === bindings.targetBucketFingerprint &&
-    bindings.sourceBucket !== bindings.targetBucket, "preflight_distinct_bucket_binding_required");
-  guard(state, "CONTROL_BUCKET_CONFIRMATION", bindings.targetNameConfirmedByOperator === true,
-    "preflight_control_bucket_name_confirmation_required");
-  return endpoint;
+  const result = assess(env, bindings, state);
+  if (![result.identityReady, result.secretsReady, result.endpointReady,
+    result.bucketsReady, result.schemaReady].every(Boolean)) stop("preflight_context_required");
+  return result.endpoint;
 }
-async function verify({ env = process.env, bindings } = {}) {
+async function verify({ env = process.env, bindings, workerEnvironmentVerified } = {}) {
   const state = statuses({ READ_ONLY_SAFETY: "PASS" });
-  try {
-  const endpoint = requireContext(env, bindings, state);
-  state.PRODUCTION_CONTEXT = "PASS";
-  state.PRODUCTION_SECRETS = "PASS";
-  const { Client } = await import("@replit/object-storage");
-  // Always explicit IDs: never the new or current default bucket.
-  const sourceClient = readOnly.source(new Client({ bucketId: bindings.sourceBucket }));
-  const targetClient = readOnly.target(new Client({ bucketId: bindings.targetBucket }));
-  const source = await sourceModule.read({
-    client: sourceClient, bucketFingerprint: bindings.sourceBucketFingerprint,
-    auditKey: Buffer.from(env.BQ_MINIMAL_AUDIT_KEY, "hex")
-  });
-  const original = sourceModule.access(source);
-  if (!crypto.timingSafeEqual(Buffer.from(original.sessionKey), Buffer.from(env.BQ_MANAGED_SESSION_KEY)) ||
-      !crypto.timingSafeEqual(Buffer.from(original.backupKey), Buffer.from(env.BQ_MANAGED_BACKUP_KEY)))
-    stop("preflight_original_key_mismatch");
-  state.ORIGINAL_KEY_MATCH = "PASS";
-  const objects = await targetClient.list({ maxResults: 1 });
-  if (!objects.ok) stop("preflight_control_bucket_read_unverified");
-  if (objects.value.length) stop("preflight_control_bucket_not_empty");
-  state.CONTROL_BUCKET = "PASS";
+  if (workerEnvironmentVerified !== undefined)
+    state.WORKER_ENVIRONMENT = workerEnvironmentVerified ? "VERIFIED" : "INVALID";
+  const context = assess(env, bindings, state);
+  // Independent local checks above ALWAYS run. Unknown/incorrect app identity
+  // still forbids ALL protected reads. Never fall back to a configured app ID.
+  if (!context.identityReady) return statuses(state);
+  if (context.bucketsReady) {
+    let Client;
+    try { ({ Client } = await import("@replit/object-storage")); } catch {
+      state.CONTROL_BUCKET = "INVALID";
+      if (context.secretsReady) state.SOURCE_READ = "INVALID";
+    }
+    if (Client) {
+      if (context.secretsReady) {
+        let original;
+        try {
+          const source = await sourceModule.read({
+            client: readOnly.source(new Client({ bucketId: bindings.sourceBucket })),
+            bucketFingerprint: bindings.sourceBucketFingerprint,
+            auditKey: Buffer.from(env.BQ_MINIMAL_AUDIT_KEY, "hex")
+          });
+          original = sourceModule.access(source);
+          state.SOURCE_READ = "VERIFIED";
+        } catch { state.SOURCE_READ = "INVALID"; }
+        if (original) {
+          const equal = (a, b) => typeof a === "string" && typeof b === "string" &&
+            Buffer.byteLength(a) === Buffer.byteLength(b) &&
+            crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+          state.ORIGINAL_KEY_MATCH = equal(original.sessionKey, env.BQ_MANAGED_SESSION_KEY) &&
+            equal(original.backupKey, env.BQ_MANAGED_BACKUP_KEY) ? "VERIFIED" : "INVALID";
+        }
+      }
+      // Target read is independent of source availability/key equality.
+      try {
+        const objects = await readOnly.target(new Client({ bucketId: bindings.targetBucket })).list({ maxResults: 1 });
+        state.CONTROL_BUCKET = objects.ok && objects.value.length === 0 ? "VERIFIED" : "INVALID";
+      } catch { state.CONTROL_BUCKET = "INVALID"; }
+    }
+  }
+  // TLS/schema/empty-table observation does not require authentication keys or
+  // storage access. It still requires verified app/Production endpoint identity.
+  if (context.endpointReady && context.schemaReady) {
+    try { await checkDatabase(context.endpoint, bindings, state); } catch {
+      if (state.DATABASE_TLS === "NOT_EXECUTED") state.DATABASE_TLS = "INVALID";
+      else state.PRODUCTION_DATABASE = "INVALID";
+    }
+  }
+  return statuses(state);
+}
+async function checkDatabase(endpoint, bindings, state) {
   const pool = new Pool({
     connectionString: endpoint.url.toString(),
     ssl: { rejectUnauthorized: true, servername: endpoint.url.hostname, minVersion: "TLSv1.2" },
@@ -99,7 +84,7 @@ async function verify({ env = process.env, bindings } = {}) {
     client = await pool.connect();
     if (!client.connection.stream.encrypted || !client.connection.stream.authorized)
       stop("preflight_verified_tls_required");
-    state.DATABASE_TLS = "PASS";
+    state.DATABASE_TLS = "VERIFIED";
     const reads = readOnly.sql(client);
     const identity = (await reads.query(
       "SELECT current_database() AS database_name, current_user AS role_name, current_setting('transaction_read_only') AS read_only"
@@ -119,19 +104,14 @@ async function verify({ env = process.env, bindings } = {}) {
       tables.map(n => "SELECT count(*) AS n FROM dev." + n).join(" UNION ALL ") + ") q")).rows[0];
     if (total.total !== "0") stop("preflight_destination_not_empty");
     const permissions = await cfg.permissions(reads);
-    state.PRODUCTION_DATABASE = "PASS";
+    state.PRODUCTION_DATABASE = "VERIFIED";
     // Observation is not owner approval of elevated runtime capabilities.
     if (bindings.permissionReviewApproved === true &&
         bindings.permissionsFingerprint === permissions.fingerprint)
-      state.PERMISSION_REVIEW = "PASS";
+      state.PERMISSION_REVIEW = "VERIFIED";
+    else state.PERMISSION_REVIEW = bindings.permissionReviewApproved === true ? "INVALID" : "MISSING";
     // No inference that other writers are frozen; no migration approval exists.
-    return statuses(state);
   } finally { if (client) client.release(); await pool.end(); }
-  } catch (error) {
-    // Never propagate credentials, records, fingerprints or arbitrary messages
-    // to either entrypoint. Only allowlisted PASS/BLOCKED statuses survive.
-    throw Object.assign(Error("diagnostic blocked"), { statuses: statuses(state) });
-  }
 }
 module.exports = { verify, requireContext };
 if (require.main === module) {
