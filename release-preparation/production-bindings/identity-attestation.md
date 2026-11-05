@@ -51,18 +51,48 @@ marker values never authorize a comparison. No value or hash is printed.
 Maintenance HTTP remains unchanged: root liveness 200; readiness and login
 503 with ready:false. No probe result authorizes any other operation.
 
-Existing logs cannot retroactively produce these three observations. To collect
-them, an authorized process-execution facility on the existing deployment could
-run the equivalent probe without publication. None is exposed in the Agent's
-available tools. Otherwise an **owner-approved maintenance-only diagnostic
-publication is technically necessary** to execute this new code. It has not
-been requested or performed automatically; Production identity remains UNKNOWN.
+## Deployed mismatch evidence and remaining boundary
+
+The owner has since executed the probe. A bounded, read-only investigation
+independently found its three results in this project's latest successful VM
+revision's logs at 2026-11-05T07:42:18.501Z:
+
+- REPL_ID_PRESENT: YES
+- REPL_ID_FINGERPRINT_MATCH: NO
+- REPLIT_DEPLOYMENT_PRESENT: YES
+
+Authenticated deployment metadata reports a successful, public VM deployment
+and supplies its Production URL. That URL returned maintenance HTTP 200 and
+readiness HTTP 503 with ready:false. Workspace REPL_ID still matches the
+workspace's pinned binding. No identity values or fingerprints were printed.
+
+This independently correlates the probe with this project's deployment
+telemetry, not an arbitrary owner-supplied URL. It does not establish the
+meaning or provenance of the unequal runtime identity. The probe compares
+against the binding inside its deployed artifact; the three booleans alone
+cannot attest that artifact's complete contents or a runtime-to-parent mapping.
+
+Supported build metadata exposes build state and revision information, but
+does not expose a mapping from runtime REPL_ID to the originating project.
+The official [Publishing documentation](https://docs.replit.com/learn/projects-and-artifacts/replit-deployments)
+describes a separate running snapshot, not a separate REPL_ID namespace.
+Consequently neither a supported Production-specific identity distinction nor
+an incorrect project binding has been established. Root cause remains UNKNOWN.
+Do not request another publication merely to repeat this probe.
+
+The next bounded operator check is the existing Publishing configuration:
+confirm the intended project/release and inspect environment/secret **names**
+for an explicit REPL_ID override without showing values or changing anything.
+The local .replit does not declare such an override. Legitimate rebinding still
+requires authenticated provider evidence mapping the observed runtime identity
+to this project and deployment, and verification of the deployed binding.
+No such mapping is exposed by the currently available tools.
 
 ## Conditional alternative — design only, disabled
 
 Do not select an alternative merely because REPL_ID failed once. First establish
-absence in the actual deployed process and whether that absence is legitimate
-under the provider's supported runtime contract.
+whether its absence or its distinct Production identity is legitimate under
+the provider's supported runtime contract.
 
 A safe alternative needs two separately trusted inputs:
 
@@ -82,6 +112,15 @@ challenge nonce. Its signing authority must be independent of the application.
 The runtime must verify that signature against a reviewed pinned trust anchor,
 validate audience/expiry/nonce, and match the binding to the independently
 authenticated workload assertion. Renewal/revocation must fail closed.
+
+If a distinct Production namespace is officially established, preserve the
+existing workspace appFingerprint and introduce an explicit, separately
+approved Production identity record. It must bind the parent-project
+fingerprint, protected runtime-identity fingerprint, deployment/revision,
+release digest and production audience to the independent evidence above.
+Acceptance requires the complete verified relationship, never a bare second
+fingerprint or an OR fallback after the existing guard fails. Do not fill this
+record from workspace identity or operator assertion alone.
 
 This is not implemented as an executable configuration or a new secret.
 The current tooling does not establish the requisite provider workload

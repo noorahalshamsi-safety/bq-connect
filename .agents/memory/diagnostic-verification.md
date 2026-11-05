@@ -46,3 +46,14 @@ while retaining authentication, TLS, permissions and source/bucket authority.
 **How to apply:** Keep alternatives disabled until the provider trust source
 is established. A production-only binding alone is replayable and does not
 prove which workload received it.
+
+A separately running Publishing snapshot is not evidence of a separate
+REPL_ID namespace. Project-scoped deployment logs can establish where a probe
+was recorded without establishing the runtime identifier's parent mapping.
+
+**Why:** The documented snapshot model and supported deployment metadata did
+not provide an explicit runtime-to-project identity contract.
+
+**How to apply:** Require explicit provider semantics and authenticated mapping
+before approving a distinct Production binding; never infer them from a
+fingerprint mismatch or from environment isolation alone.
