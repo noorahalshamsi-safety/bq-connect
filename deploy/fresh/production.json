@@ -5,7 +5,7 @@
   "employees": 6311,
   "legacyAccounts": 0,
   "registrationPolicy": "directory-code-mobile-email-v1",
-  "ownershipCompatibilityApproval": null,
+  "ownershipCompatibilityApproval": "verified-known-employee:b09a4e983a0e903618f8e247c1e6758ca3d2502e3a3ac32850afecbf0e7f6022",
   "sourceBucket": "replit-objstore-df2b12f8-b7e9-4f8b-bb9d-e3f13ecdeb0d",
   "bucket": "replit-objstore-44cb0252-dd69-42fb-8f2d-af513c735acb",
   "directorySha256": "46f7929e592f245e613b027bd25c4b143148d6dc53e7de2f96eda8ce6ebe75be",
