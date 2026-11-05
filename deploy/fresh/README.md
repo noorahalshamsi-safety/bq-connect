@@ -45,8 +45,9 @@ The following technical binding fields remain unapproved:
   role capabilities and set approval to `reviewed-managed-runtime-capabilities`.
 The final owner business selections are already applied: initial administrator
 badge `41060` and company email domain `binquraya.com`. Do not request
-reconfirmation. The administrator is present, but eligibility now depends on an
-explicit, unique company email in the trusted employee directory, not phone/KBA.
+reconfirmation. The administrator is present and has complete original code/mobile
+hashes. Its stronger owner-confirmed identity/email gate is separate from those
+weak knowledge checks.
 
 The latest supported Production catalog results and exact permission fingerprint
 are documented in `production-permission-review.md`. The observed role and
@@ -139,21 +140,37 @@ applies them, and APPLIED is not established until observed in the new process.
 
 ## Ownership and providers
 
-Fresh registration policy `directory-email-v1` requires a directory badge, a new
-strong password and a one-time code sent to that employee's **explicit email**
-in the designated trusted directory. It must be uniquely linked to that badge
-and belong to `binquraya.com`. Arbitrary company emails, guessed badge/name
-addresses, absent/ambiguous email associations and caller-supplied mappings
-are refused before sending. No public account is created until code confirmation.
-There is no phone, identity-number or SMS OTP step. TOTP is optional after
+Fresh registration policy `directory-code-mobile-email-v1` requires a directory
+badge, the existing **4-digit directory verification code**, registered mobile,
+an employee-entered `binquraya.com` email, SMTP OTP and a new strong password.
+The code's source contract does not establish that it is a national ID.
+The exact existing ascii-digit normalization, HMAC-SHA256 `${badge}:${code}`,
+and `phone:${badge}:${last-nine-mobile-digits}` comparisons are reused unchanged.
+The hardcoded PEPPER is public compatibility material, **not a secret or strong
+authentication factor**. Code/mobile are knowledge checks, not proof of phone
+possession. There is no SMS send, dependency or claim of phone possession.
+Missing/malformed check or phone hashes and ambiguous records fail closed even
+though the original phone matcher alone tolerated absent hashes.
+No directory email is required, and no account exists before email OTP confirmation.
+TOTP is optional after
 registration through authenticated security settings; enabling it requires
 password reauthentication. Subsequent logins enforce TOTP when enabled.
 Per-badge/IP rate limits, expiring five-attempt single-use email codes, password
 hashing, SQL transaction authority, sessions and roles remain enforced. Failed
 attempt/challenge state survives application restart.
-`POST /api/register` accepts `{badge,password,email}`, returning
+`POST /api/register` accepts `{badge,code,mobile,password,email}`, returning
 `{needEmailCode,ticket}`; repeat with `emailCode` and that ticket to register
 and obtain a session. No role input is honored.
+
+`POST /api/forgot` sends a reset code only to the account's already verified
+email, ignoring caller-supplied destinations and returning the same public
+response for unknown badges. Confirm with `{badge,op:"confirm",code,newPassword}`.
+Codes expire, are single-use and attempt limited; reset revokes existing sessions
+and pending login/setup/email tickets,
+invalidates older reset challenges and preserves TOTP. No password is emailed.
+Every successful completed login queues a security notification to the verified
+email through the existing durable SMTP outbox. Delivery failures are not claimed
+to be successful delivery.
 
 Configure existing providers through Production Secrets:
 
@@ -182,19 +199,33 @@ notifications remain available.
 node deploy/fresh/prepare.cjs --verify-current --smtp-auth
 ```
 
-This reads only the original employees.json and the two explicitly designated
-provider settings objects, prints value-free states and performs no source
+This reads only the original employees.json and designated SMTP settings,
+prints value-free states and performs no source
 writes, Production database operations or message sends. The SMTP probe reuses
 the existing implicit-TLS/AUTH LOGIN protocol and stops before MAIL FROM,
 RCPT TO or DATA.
 
-Observed under the new policy: 6,311 employees, unchanged checksum, approved
-administrator present, but **zero** eligible unique explicit company-email
-associations (including administrator 41060). Public registration is therefore
-blocked for every current record. Trusted email-to-badge association evidence
-must be supplied and reviewed; this implementation does not guess addresses,
-accept self-attestation or silently authorize a mapping file.
-Do not edit the designated source or synthesize missing addresses.
+Observed under the replacement policy: 6,311 employees, unchanged checksum,
+6,255 complete unambiguous ownership records, including badge 41060; 56 incomplete
+records remain blocked individually. All 6,311 are preserved, including original
+check/phone bytes. Source producer/verifier semantics and synthetic vectors are
+verified, but **a known employee's positive source-hash comparison remains
+required**. Format checks and synthetic fixtures alone cannot prove compatibility
+of actual stored values. No codes/mobile numbers were derived or brute-forced.
+
+Use a trusted interactive terminal and hidden input, never command-line values,
+chat, shell history or a file:
+
+```sh
+python3 -c 'import getpass,json,warnings; warnings.simplefilter("error",getpass.GetPassWarning); print(json.dumps({k:getpass.getpass(k+" (hidden): ") for k in ("badge","code","mobile")}))' \
+  | node deploy/fresh/prepare.cjs --verify-ownership
+```
+
+This command is source-read-only, outputs PASS/BLOCKED and a nonsecret approval
+only, and never touches Production. After a real positive comparison, the owner
+may record the returned `ownershipCompatibilityApproval` in production.json.
+It binds the source checksum and exact existing verifier contract. Initialization
+and startup reject a missing/stale approval; no input or original hash is stored.
 
 Existing SMTP configuration authenticated successfully with verified TLS.
 Actual message delivery was not tested and is not claimed VERIFIED.
@@ -298,8 +329,15 @@ or missing database never authorizes reinitialization. Failure keeps readiness
 
 ## Initial administrator — no default password
 
-The owner-selected `initialAdminBadge` employee must first register normally with
-the uniquely associated verified company email. The separate privileged bootstrap
+The owner must independently confirm badge 41060's identity and chosen company
+email; code/mobile knowledge alone is **not** enough to authorize this administrator.
+Put the independently approved email in Production `BQ_FRESH_ADMIN_EMAIL`.
+Set Production `BQ_FRESH_ADMIN_REGISTRATION_APPROVAL` to
+`register-admin:SHA256(canonical([finalManifestDigest,initialAdminBadge,normalizedApprovedEmail]))`
+only after that independent review. Public registration for that badge is refused
+without this approval and can only use the pinned email. The same pin and approval
+are checked again by bootstrap; user role flags cannot bypass them.
+The separate privileged bootstrap
 retains its stronger MFA requirement: enroll optional TOTP before operator
 elevation. This is not a registration prerequisite. No public registration request can
 assign administrator privileges. There are initially zero administrators.
@@ -337,7 +375,7 @@ node scripts/managed/diagnostic-publication-check.cjs
 The integration test uses a private temporary PostgreSQL instance, the real
 repository/runtime/auth HTTP handlers, 6,311 invented employees and synthetic
 provider sinks. It tests zero initial accounts, idempotency, explicit new
-binding, exact email-to-badge ownership, registration without phone/SMS/TOTP,
+binding, exact original code/mobile hash compatibility, registration without SMS,
 optional post-registration TOTP, email-code expiry/attempt limits, persistent
 challenges, concurrent unique registration, login, authorization,
 one-use admin bootstrap, directory lookup, new posts and restart. It never

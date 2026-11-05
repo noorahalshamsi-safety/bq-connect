@@ -28,8 +28,10 @@ async function verifyCurrent({ smtpAuth = false } = {}) {
   return { directory: { employees: directory.rows.length,
     checksum: directory.sha256 === manifest.directorySha256 ? "MATCH" : "CHANGED",
     approvedAdministrator: administrator ? "PRESENT" : "ABSENT",
-    emailAssociation: require("./email-ownership.cjs").readiness(directory.rows,
-      manifest.emailDomains, manifest.initialAdminBadge) },
+    ownershipRecords: require("./email-ownership.cjs").readiness(directory.rows,
+      manifest.initialAdminBadge),
+    compatibility: manifest.ownershipCompatibilityApproval === require("./email-ownership.cjs").approval(manifest) ?
+      "OWNER_VERIFIED" : "KNOWN_EMPLOYEE_PROOF_REQUIRED" },
     providers, unavailableProviderObjects: unavailable, source: "READ_ONLY",
     productionSecretTransfer: "NOT_EXECUTED", messagesSent: 0 };
 }
@@ -46,7 +48,7 @@ async function prepare({ readSource = false } = {}) {
   }
   return { kind: "BQ_FRESH_INSTALL_V1", mode: "fresh-install",
     dataset: "managed-production-" + crypto.randomUUID(), employees: 6311, legacyAccounts: 0,
-    registrationPolicy: "directory-email-v1",
+    registrationPolicy: "directory-code-mobile-email-v1", ownershipCompatibilityApproval: null,
     sourceBucket: pins.sourceBucket, bucket: pins.targetBucket, directorySha256,
     endpoint: { hostname: null, port: "5432", database: "neondb", role: null, schema: "dev" },
     schemaFingerprint: pins.schemaFingerprint,
@@ -54,9 +56,26 @@ async function prepare({ readSource = false } = {}) {
     permissionsFingerprint: null, permissionApproval: null,
     initialAdminBadge: null, emailDomains: [] };
 }
-module.exports = { prepare, verifyCurrent };
+async function verifyOwnership(input) {
+  const manifest = load(), ownership = require("./email-ownership.cjs");
+  need(sha(manifest.sourceBucket) === "ce11c603901c2550295d04cf9a5898200348ff8d29086744a88ee73d8f8716ec" &&
+    manifest.sourceBucket !== manifest.bucket, "fresh_source_binding_required");
+  const { Client } = await import("@replit/object-storage");
+  const directory = await require("./directory.cjs").read(new Client({ bucketId: manifest.sourceBucket }));
+  need(directory.sha256 === manifest.directorySha256, "fresh_directory_binding_mismatch");
+  const row = directory.rows.find(r => String(r.badge) === String(input.badge));
+  need(ownership.matches(directory.rows, row, input.code, input.mobile), "fresh_known_employee_proof_failed");
+  return { OWNERSHIP_COMPATIBILITY: "PASS", ownershipCompatibilityApproval: ownership.approval(manifest) };
+}
+module.exports = { prepare, verifyCurrent, verifyOwnership };
 if (require.main === module) {
-  if (process.argv[2] === "--verify-current") {
+  if (process.argv[2] === "--verify-ownership") {
+    (async () => {
+      let input = "";
+      for await (const chunk of process.stdin) { input += chunk; need(Buffer.byteLength(input) <= 4096); }
+      console.log(JSON.stringify(await verifyOwnership(JSON.parse(input))));
+    })().catch(() => { console.error('{"OWNERSHIP_COMPATIBILITY":"BLOCKED"}'); process.exitCode = 1; });
+  } else if (process.argv[2] === "--verify-current") {
     verifyCurrent({ smtpAuth: process.argv[3] === "--smtp-auth" }).then(r => console.log(JSON.stringify(r))).catch(() => {
       console.error('{"FRESH_SOURCE_REVIEW":"BLOCKED"}'); process.exitCode = 1;
     });

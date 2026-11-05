@@ -3,7 +3,7 @@ const I = require("./installation.cjs");
 const { saveFile } = require(path.join(base, "development/postgres/repository.cjs"));
 const { vault } = require(path.join(base, "development/postgres/sealed.cjs"));
 const tombstone = "fresh-admin-bootstrap:v1";
-async function bootstrap({ c, proof, manifest, approval }) {
+async function bootstrap({ c, proof, manifest, approval, env = process.env }) {
   I.authority(proof);
   need(approval === "bootstrap:" + sha(canonical([sha(canonical(manifest)), manifest.initialAdminBadge])),
     "fresh_operator_bootstrap_approval_required");
@@ -17,8 +17,12 @@ async function bootstrap({ c, proof, manifest, approval }) {
     const files = await Repository.prototype.load.call({}, c, ["accounts.json", "security.json"]);
     const account = files.get("accounts.json")?.value?.[manifest.initialAdminBadge];
     need(account?.hash && account.totp?.on === true && typeof account.email === "string" &&
+      account.freshEmailVerified === true && account.freshEmailPolicy === "directory-code-mobile-email-v1" &&
       manifest.emailDomains.includes(account.email.trim().toLowerCase().split("@")[1]),
       "fresh_admin_must_register_verify_company_email_and_mfa");
+    const ownerPolicy = require("./email-ownership.cjs").adminPolicy(manifest, env);
+    need(ownerPolicy.approved && sha(account.email.trim().toLowerCase()) === ownerPolicy.emailHash,
+      "fresh_owner_confirmed_admin_identity_required");
     need((await c.query("SELECT EXISTS(SELECT 1 FROM dev.employees WHERE attrs->>'badge'=$1) AS present",
       [manifest.initialAdminBadge])).rows[0].present, "fresh_admin_not_in_directory");
     const security = files.get("security.json");
@@ -41,7 +45,7 @@ async function execute({ env = process.env, manifest = load(env) } = {}) {
   let c;
   try {
     c = await pool.connect(); await I.database(c, proof, manifest); await I.reconcile(c, proof, manifest, receipt);
-    await bootstrap({ c, proof, manifest, approval: env.BQ_FRESH_ADMIN_APPROVAL });
+    await bootstrap({ c, proof, manifest, approval: env.BQ_FRESH_ADMIN_APPROVAL, env });
   } finally { c?.release(); await pool.end(); }
 }
 module.exports = { execute, bootstrap };

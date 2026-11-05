@@ -7,6 +7,11 @@ function transform(source) {
   need(begin > 0 && end > begin, "fresh_client_registration_contract_changed");
   source = source.slice(0, begin) + fs.readFileSync(path.join(__dirname, "registration-client.txt"), "utf8") +
     "\n" + source.slice(end);
+  const forgot = source.indexOf('document.querySelector("#forgot-form").addEventListener');
+  const forgotEnd = source.indexOf("const JOIN_ERRORS", forgot);
+  need(forgot > 0 && forgotEnd > forgot, "fresh_client_recovery_contract_changed");
+  source = source.slice(0, forgot) + fs.readFileSync(path.join(__dirname, "recovery-client.txt"), "utf8") +
+    "\n" + source.slice(forgotEnd);
   const paint = "  tfaOnView(body, data.status);";
   need(source.includes(paint), "fresh_client_optional_totp_contract_changed");
   source = source.replace(paint, `

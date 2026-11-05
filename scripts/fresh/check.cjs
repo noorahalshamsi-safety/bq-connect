@@ -9,7 +9,7 @@ const { Repository } = require(path.join(base, "development/postgres/repository.
 const schema = require(path.join(base, "deploy/managed/schema.cjs"));
 const { code } = require("../../development/postgres/fixtures.cjs");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "bq-pg-dev-fresh-"));
-let proof, repo, child, port, token, stage = "setup";
+let proof, repo, child, port, token, adminPolicy, adminEnv, stage = "setup";
 const events = [], controls = new Map();
 const store = { readControl: async k => controls.get(k) || null,
   createControl: async (k, v) => { assert(!controls.has(k)); controls.set(k, v); } };
@@ -19,13 +19,14 @@ function unbase32(s) {
   let bits = ""; for (const ch of s.toUpperCase().replace(/=+$/, "")) bits += alphabet.indexOf(ch).toString(2).padStart(5, "0");
   return Buffer.from((bits.match(/.{8}/g) || []).map(b => parseInt(b, 2))).toString("hex");
 }
-async function boot(off = false) {
+async function boot(off = false, adminApproved = true) {
   const reservation = net.createServer();
   await new Promise(r => reservation.listen(0, "127.0.0.1", r));
   port = reservation.address().port; await new Promise(r => reservation.close(r));
   const logs = [];
   child = fork(path.join(__dirname, "fixture-server.cjs"), [root, off ? "providers-off" : "providers-on"], {
-    env: { ...proof.childEnv, PORT: String(port), HOST: "127.0.0.1" }, silent: true });
+    env: { ...proof.childEnv, PORT: String(port), HOST: "127.0.0.1",
+      BQ_TEST_ADMIN_POLICY: JSON.stringify({ ...adminPolicy, approved: adminApproved && adminPolicy.approved }) }, silent: true });
   child.stdout.on("data", b => logs.push(b.toString()));
   child.stderr.on("data", b => logs.push(b.toString()));
   child.on("message", m => events.push(m));
@@ -58,9 +59,9 @@ async function request(url, body = {}, options = {}) {
   return { status: r.status, json };
 }
 function ok(r, status = 200) { assert.equal(r.status, status, `http_${r.status}_${r.json.error || "unexpected"}`); return r.json; }
-async function event(kind, start) {
+async function event(kind, start, predicate = () => true) {
   for (let i = 0; i < 300; i++) {
-    const row = events.slice(start).find(e => e.kind === kind);
+    const row = events.slice(start).find(e => e.kind === kind && predicate(e));
     if (row) return row; await delay(100);
   }
   throw Error("fixture_delivery_timeout");
@@ -74,6 +75,8 @@ async function main() {
     directorySha256: sha("invented-directory"), permissionsFingerprint: sha("invented-permissions"),
     permissionApproval: "reviewed-managed-runtime-capabilities",
     initialAdminBadge: "101", emailDomains: ["example.invalid"] };
+  const ownership = require("../../deploy/fresh/email-ownership.cjs");
+  proposed.ownershipCompatibilityApproval = ownership.approval(proposed);
   const env = { REPLIT_DEPLOYMENT: "1", REPL_ID: "not-the-workspace-identity",
     DATABASE_URL: "postgresql://synthetic:synthetic@synthetic.invalid/neondb?sslmode=require",
     BQ_FRESH_SESSION_KEY: crypto.randomBytes(48).toString("hex"),
@@ -165,9 +168,8 @@ async function main() {
       email: `synthetic${badge}@binquraya.com`,
       check: h(`${badge}:1234`), phone: h(`phone:${badge}:512345678`) };
   });
-  delete people[0].check; delete people[0].phone;
-  delete people[2].email;
-  people[3].email = people[4].email; // Ambiguous directory ownership must fail closed.
+  delete people[2].phone;
+  people[3].check = people[4].check; // Ambiguous ownership hashes must fail closed.
   people[5].badge = "00106";
   people[5].check = crypto.createHmac("sha256", "bq-rd-ideas-2026").update("00106:1234").digest("hex");
   people[5].phone = crypto.createHmac("sha256", "bq-rd-ideas-2026").update("phone:00106:512345678").digest("hex");
@@ -180,6 +182,13 @@ async function main() {
   assert.throws(() => S.validate('{"accounts":{}}'));
   const manifest = { employees: 6311, directorySha256: source.sha256, initialAdminBadge: "101",
     emailDomains: ["binquraya.com"] };
+  adminEnv = { BQ_FRESH_ADMIN_EMAIL: "synthetic101@binquraya.com",
+    BQ_FRESH_ADMIN_REGISTRATION_APPROVAL: "register-admin:" + sha(canonical([
+      sha(canonical(manifest)), "101", "synthetic101@binquraya.com"])) };
+  adminPolicy = ownership.adminPolicy(manifest, adminEnv);
+  assert(ownership.matches(people, people[0], "١٢٣٤", "+966512345678"));
+  assert(!ownership.matches(people, people[0], "991234", "512345678"));
+  assert(!ownership.matches(people, people[2], "1234", "512345678"));
   stage = "employee-only initialization";
   const c = await repo.pool.connect();
   try {
@@ -200,23 +209,30 @@ async function main() {
   finally { premature.release(); }
   stage = "registration ownership guard";
   await boot(true);
-  ok(await request("/api/register", { badge: "101", email: "synthetic101@binquraya.com",
+  ok(await request("/api/register", { badge: "101", code: "1234", mobile: "512345678",
+    email: "synthetic101@binquraya.com",
     password: "FreshSynthetic!Password2026" }, { anonymous: true }), 503);
   assert.equal((await repo.pool.query("SELECT count(*)::int AS n FROM dev.accounts")).rows[0].n, 0);
   await stop(); events.length = 0;
   stage = "verified registration";
+  await boot(false, false);
+  ok(await request("/api/register", { badge: "101", code: "1234", mobile: "512345678",
+    email: "synthetic101@binquraya.com", password: "FreshSynthetic!Password2026" },
+    { anonymous: true }), 403);
+  await stop(); events.length = 0;
   await boot();
   const clientJs = await (await fetch(`http://127.0.0.1:${port}/js/secure.js`)).text();
   assert(clientJs.includes("freshRegistrationTicket"));
   new vm.Script(clientJs);
-  const body = { badge: "101", email: "synthetic101@binquraya.com",
+  const body = { badge: "101", code: "1234", mobile: "512345678", email: "synthetic101@binquraya.com",
     password: "FreshSynthetic!Password2026", admin: true, role: "admin" };
   for (const attack of [
-    { ...body, email: "arbitrary@binquraya.com" },
-    { ...body, email: "synthetic102@binquraya.com" },
+    { ...body, code: "0000" },
+    { ...body, mobile: "500000000" },
     { ...body, email: "synthetic101@binquraya.com.evil.test" },
-    { ...body, badge: "103", email: "synthetic103@binquraya.com" },
-    { ...body, badge: "104", email: people[3].email }
+    { ...body, badge: "103" },
+    { ...body, badge: "104" },
+    { ...body, email: "arbitrary@binquraya.com" }
   ]) ok(await request("/api/register", attack, { anonymous: true, ip: "192.0.2.93" }), 403);
   assert.equal((await repo.pool.query("SELECT count(*)::int AS n FROM dev.accounts")).rows[0].n, 0);
   const mailStart = events.length;
@@ -242,7 +258,10 @@ async function main() {
   const securityClient = await repo.pool.connect();
   try { assert.deepEqual((await repo.load(securityClient, ["security.json"])).get("security.json").value.admins, []); }
   finally { securityClient.release(); }
+  const loginMailStart = events.length;
   assert(ok(await request("/api/login", { badge: "101", password: body.password }, { anonymous: true })).token);
+  const loginNotice = await event("mail", loginMailStart);
+  assert(loginNotice.to === body.email && loginNotice.text.includes("BQ Connect login successful"));
   ok(await request("/api/terms", { accepted: true }));
   ok(await request("/api/session"));
   ok(await request("/api/social", { action: "admin-summary" }), 403);
@@ -269,13 +288,15 @@ async function main() {
   const adminClient = await repo.pool.connect();
   const approval = "bootstrap:" + sha(canonical([sha(canonical(manifest)), "101"]));
   try {
-    await assert.rejects(bootstrap({ c: adminClient, proof, manifest, approval: "wrong" }));
+    await assert.rejects(bootstrap({ c: adminClient, proof, manifest, approval: "wrong", env: adminEnv }));
     const otherDomain = { ...manifest, emailDomains: ["other.invalid"] };
     await assert.rejects(bootstrap({ c: adminClient, proof, manifest: otherDomain,
       approval: "bootstrap:" + sha(canonical([sha(canonical(otherDomain)), "101"])) }),
     error => error.code === "fresh_admin_must_register_verify_company_email_and_mfa");
-    await bootstrap({ c: adminClient, proof, manifest, approval });
-    await assert.rejects(bootstrap({ c: adminClient, proof, manifest, approval }));
+    await assert.rejects(bootstrap({ c: adminClient, proof, manifest, approval, env: {} }),
+      error => error.code === "fresh_owner_confirmed_admin_identity_required");
+    await bootstrap({ c: adminClient, proof, manifest, approval, env: adminEnv });
+    await assert.rejects(bootstrap({ c: adminClient, proof, manifest, approval, env: adminEnv }));
   } finally { adminClient.release(); }
   ok(await request("/api/social", { action: "admin-summary" }));
   stage = "directory lookup and new post";
@@ -284,9 +305,48 @@ async function main() {
   assert((await repo.pool.query("SELECT count(*)::int AS n FROM dev.posts")).rows[0].n >= 1);
   ok(await request("/api/push", { action: "subscribe" }), 503);
   ok(await request("/api/media", {}), 503);
+  stage = "verified-email password recovery";
+  const second = { badge: "102", code: "1234", mobile: "512345678",
+    email: "entered102@binquraya.com", password: "SecondSynthetic!Password2026" };
+  const secondMailStart = events.length;
+  const secondChallenge = ok(await request("/api/register", second, { anonymous: true }));
+  const secondMail = await event("mail", secondMailStart, e => /\b\d{6}\b/.test(e.text));
+  const secondRegistered = ok(await request("/api/register", { ...second,
+    ticket: secondChallenge.ticket, emailCode: secondMail.text.match(/\b\d{6}\b/)[0] }, { anonymous: true }));
+  assert(secondRegistered.token);
+  const secondSetup = ok(await request("/api/2fa", { token: secondRegistered.token,
+    op: "setup", password: second.password }));
+  const secondEnrolled = ok(await request("/api/2fa", { token: secondRegistered.token,
+    op: "enroll", password: second.password, code: code(unbase32(secondSetup.secret)) }));
+  const staleLogin = ok(await request("/api/login", { badge: "102", password: second.password }, { anonymous: true }));
+  const resetStart = events.length;
+  const genericKnown = ok(await request("/api/forgot", { badge: "102", email: "attacker@binquraya.com" },
+    { anonymous: true }));
+  const resetMail = await event("mail", resetStart, e => /\b\d{6}\b/.test(e.text));
+  assert.equal(resetMail.to, second.email);
+  const genericUnknown = ok(await request("/api/forgot", { badge: "9999999999" }, { anonymous: true }));
+  assert.deepEqual(genericKnown, genericUnknown);
+  const resetCode = resetMail.text.match(/\b\d{6}\b/)[0], newPassword = "RecoveredSynthetic!Password2026";
+  await stop(); events.length = 0; await boot();
+  ok(await request("/api/forgot", { badge: "102", op: "confirm",
+    code: resetCode === "000000" ? "000001" : "000000", newPassword }, { anonymous: true }), 400);
+  ok(await request("/api/forgot", { badge: "102", op: "confirm", code: resetCode, newPassword },
+    { anonymous: true }));
+  ok(await request("/api/forgot", { badge: "102", op: "confirm", code: resetCode, newPassword },
+    { anonymous: true }), 400);
+  ok(await request("/api/session", { token: secondRegistered.token }), 401);
+  ok(await request("/api/login", { badge: "102", password: second.password }, { anonymous: true }), 401);
+  const recoveredLogin = ok(await request("/api/login", { badge: "102", password: newPassword }, { anonymous: true }));
+  assert(recoveredLogin.needTotp && !recoveredLogin.token);
+  ok(await request("/api/login-2fa", { ticket: staleLogin.ticket,
+    code: secondEnrolled.recovery[0] }, { anonymous: true }), 401);
+  assert(ok(await request("/api/login-2fa", { ticket: recoveredLogin.ticket,
+    code: secondEnrolled.recovery[0] }, { anonymous: true })).token);
+  assert(events.filter(e => e.kind === "mail").every(e =>
+    !e.text.includes(newPassword) && !e.text.includes(second.password)));
   let limited = false;
   for (let i = 0; i < 12; i++) {
-    const r = await request("/api/register", { ...body, badge: "102", email: body.email },
+    const r = await request("/api/register", { ...body, badge: "102", code: "0000" },
       { anonymous: true, ip: "192.0.2.80" });
     if (r.status === 429) { limited = true; break; }
   }
@@ -294,7 +354,7 @@ async function main() {
   stage = "restart and durable account";
   await stop(); events.length = 0; await boot();
   assert(ok(await request("/api/login", { badge: "101", password: body.password }, { anonymous: true })).needTotp);
-  ok(await request("/api/register", { ...body, badge: "102", email: body.email },
+  ok(await request("/api/register", { ...body, badge: "102", code: "0000" },
     { anonymous: true, ip: "192.0.2.80" }), 429);
   const account = (await repo.pool.query("SELECT attrs FROM dev.accounts WHERE entry_key=$1", ["101"])).rows[0].attrs;
   assert(account.hash && !JSON.stringify(account).includes(body.password));
@@ -303,7 +363,11 @@ async function main() {
   finally { client.release(); }
   console.log(JSON.stringify({ result: "PASS", employees: 6311, initialAccounts: 0,
     employeeOnlyImport: "PASS", idempotency: "PASS", ownership: "PASS", realRegistration: "PASS",
-    optionalTotp: "PASS", emailToBadgeOwnership: "PASS", smsNotRequired: "PASS",
+    optionalTotp: "PASS", originalCodeMobileHashes: "PASS", ownerGatedAdmin: "PASS",
+    loginEmailNotifications: "PASS", smsNotRequired: "PASS",
+    emailRecovery: "PASS", recoverySingleUseAndRestart: "PASS",
+    recoveryRevokesSessionsAndPendingTickets: "PASS", recoveryPreservesTotp: "PASS",
+    recoveryDoesNotEmailPasswords: "PASS",
     singleUseEmailCode: "PASS", emailExpiryAndAttempts: "PASS",
     pendingChallengeRestart: "PASS", concurrentUniqueRegistration: "PASS", clientServingAndSyntax: "PASS",
     login: "PASS", bootstrapConsumed: "PASS", directory: "PASS",

@@ -39,6 +39,7 @@ async function start({ env = process.env, manifest = load(env) } = {}) {
     const running = await require(path.join(base, "development/postgres/runtime.cjs")).serve(proof, repo, {
       nativeEnabled: true, minimalRelease: true, freshInstall: true,
       freshProviders, freshEmailDomains: manifest.emailDomains,
+      freshAdminPolicy: require("./email-ownership.cjs").adminPolicy(manifest, env),
       mediaEnabled: env.BQ_FRESH_MEDIA_ENABLED === "1"
     });
     return { ...running, close: async () => {

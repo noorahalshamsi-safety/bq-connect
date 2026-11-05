@@ -1,10 +1,18 @@
     const person = byBadge.get(badge);
     const email = __freshOwnership.normalize(body.email, __freshDomains);
-    if (!person || !__freshOwnership.associated(directory, badge, email, __freshDomains)) {
+    if (!email || !__freshOwnership.matches(directory, person, body.code, body.mobile)) {
       auth.noteFailure(`reg:${badge}`);
       noteIpFailure(ip);
-      send(res, tooManyAttempts(ip) ? 429 : 403, { error: "email_ownership_unverified" });
+      send(res, tooManyAttempts(ip) ? 429 : 403, { error: "ownership_unverified" });
       return;
+    }
+    if (badge === __freshAdmin.badge && (!__freshAdmin.approved ||
+      crypto.createHash("sha256").update(email).digest("hex") !== __freshAdmin.emailHash)) {
+      send(res, 403, { error: "owner_admin_approval_required" }); return;
+    }
+    if (directory.some(r => String(r.badge) !== badge &&
+      String(auth.accountOf(r.badge)?.email || "").trim().toLowerCase() === email)) {
+      send(res, 409, { error: "email_unavailable" }); return;
     }
     if (auth.accountOf(badge)?.hash) {
       send(res, 409, { error: "already_registered" }); return;
@@ -28,7 +36,7 @@
     }
     auth.useTicket(body.ticket);
     await auth.setPassword(badge, String(body.password), {
-      email, freshEmailVerified: true, freshEmailPolicy: "directory-email-v1"
+      email, freshEmailVerified: true, freshEmailPolicy: "directory-code-mobile-email-v1"
     });
     auth.clearFailures(`reg:${badge}`);
     auth.audit("register", publicId(badge), loginInfo(req, body));

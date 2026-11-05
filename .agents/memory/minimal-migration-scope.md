@@ -29,18 +29,20 @@ that they not be requested again while completing the fresh launch.
 blocked, and never invent provider credentials, recipient approvals or missing
 employee ownership information to make a readiness check pass.
 
-Fresh registration uses badge, a new password and an SMTP code to the exact
-employee's independently associated company email. Phone/SMS and mandatory TOTP
-are removed from registration; TOTP is optional afterward. The previous
-verification method was Authenticator/TOTP, not SMS.
+Fresh registration uses badge, the existing 4-digit directory verification code,
+the existing registered mobile (hash verification only, no SMS), an employee-entered
+company email verified by SMTP OTP and a new password. TOTP is optional afterward.
+The previous verification method was Authenticator/TOTP, not SMS.
 
-**Why:** The owner explicitly simplified fresh registration while requiring
-protection against claiming somebody else's badge with an arbitrary company email.
+**Why:** The owner replaced directory-email-only registration with the original
+compatible check/phone verification plus verified company email.
 
-**How to apply:** Do not guess missing addresses or treat company-domain ownership
-alone as employee ownership. Block absent/ambiguous trusted associations. Real
-SMTP delivery to an approved recipient must precede public registration. Preserve
-unrelated modules and the separate approved administrator bootstrap.
+**How to apply:** Preserve original hashes and use their actual existing semantics.
+Do not call the 4-digit value a national ID without source-contract evidence or
+treat the public hardcoded PEPPER as a secret/strong factor. Block incomplete or
+ambiguous ownership records. Require positive compatibility evidence and real
+SMTP delivery before public activation. Badge 41060 needs stronger independent
+owner approval; do not grant administration through public registration.
 
 Keep the new PostgreSQL implementation. Do not restore the legacy application
 or switch back to JSON authority; recovery must preserve this release direction.

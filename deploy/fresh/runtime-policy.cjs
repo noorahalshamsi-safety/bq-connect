@@ -1,5 +1,6 @@
 const { need } = require("./config.cjs");
-function transform(source, { mediaEnabled = false, emailDomains = require("./config.cjs").load().emailDomains } = {}) {
+function transform(source, { mediaEnabled = false, emailDomains = require("./config.cjs").load().emailDomains,
+  adminPolicy = { badge: require("./config.cjs").load().initialAdminBadge, approved: false, emailHash: "" } } = {}) {
   const fs = require("node:fs"), path = require("node:path");
   const begin = source.indexOf("    const code = cleanCode(body.code);");
   const end = source.indexOf('  if (req.method === "POST" && urlPath === "/api/translate")', begin);
@@ -7,12 +8,25 @@ function transform(source, { mediaEnabled = false, emailDomains = require("./con
   source = source.slice(0, begin) + fs.readFileSync(path.join(__dirname, "registration-handler.txt"), "utf8") +
     "\n" + source.slice(end);
   source = "const __freshOwnership = require(" + JSON.stringify(path.join(__dirname, "email-ownership.cjs")) +
-    ");\nconst __freshDomains = " + JSON.stringify(emailDomains) + ";\n" + source;
+    ");\nconst __freshDomains = " + JSON.stringify(emailDomains) +
+    ";\nconst __freshAdmin = " + JSON.stringify(adminPolicy) + ";\n" + source;
+  const forgot = source.indexOf('    if (urlPath === "/api/forgot") {');
+  const password = source.indexOf("    if (!auth.strongPassword(body.password)) {", forgot);
+  need(forgot > 0 && password > forgot, "fresh_recovery_source_contract_changed");
+  source = source.slice(0, forgot) + fs.readFileSync(path.join(__dirname, "recovery-handler.txt"), "utf8") +
+    source.slice(password);
+  const hash = 'return crypto.createHmac("sha256", PEPPER).update(`${key}:${code}`).digest("hex");';
+  need(source.includes(hash), "fresh_email_code_hash_contract_changed");
+  source = source.replace(hash, 'return crypto.createHmac("sha256", auth.deriveKey("fresh-email-code-v1")).update(`${key}:${code}`).digest("hex");');
+  const loginAudit = '  auth.audit("login", publicId(badge), info);';
+  need(source.includes(loginAudit), "fresh_login_notification_contract_changed");
+  source = source.replace(loginAudit, loginAudit + `
+  noticeMail(accountEmail(person), "BQ Connect login successful. If this was not you, recover your password and contact IT.");`);
   const ready = "return auth.twoFactorOn(person.badge) && Boolean(accountEmail(person));";
   need(source.includes(ready), "fresh_account_readiness_contract_changed");
   source = source.replace(ready, `const account = auth.accountOf(person.badge);
     return Boolean(account?.hash && account.freshEmailVerified === true &&
-      account.freshEmailPolicy === "directory-email-v1" && accountEmail(person));`);
+      account.freshEmailPolicy === "directory-code-mobile-email-v1" && accountEmail(person));`);
   const login = 'else send(res, 200, { needSetup: true, ticket: auth.signTicket(badge, "2fa", SETUP_TICKET_MS) });';
   need(source.includes(login), "fresh_login_source_contract_changed");
   source = source.replace(login, `else if (accountReady(person)) finishLogin(res, badge, person, info);
@@ -35,7 +49,9 @@ function transform(source, { mediaEnabled = false, emailDomains = require("./con
     ${optional}`);
   const change = '      if (email === accountEmail(person)) {';
   need(source.includes(change), "fresh_email_change_contract_changed");
-  source = source.replace(change, `if (!__freshOwnership.associated(directory, badge, email, __freshDomains)) {
+  source = source.replace(change, `if (!__freshOwnership.normalize(email, __freshDomains) ||
+      (badge === __freshAdmin.badge && crypto.createHash("sha256").update(email).digest("hex") !== __freshAdmin.emailHash) ||
+      directory.some(r => String(r.badge) !== badge && auth.accountOf(r.badge)?.email === email)) {
         send(res, 403, { error: "email_ownership_unverified" }); return;
       }
       ${change}`);
@@ -52,6 +68,13 @@ function transform(source, { mediaEnabled = false, emailDomains = require("./con
       send(res, 503, { error: "media_provider_unconfigured" }); return;`);
   }
   return source;
+}
+function transformAuth(source) {
+  const marker = "${stage}:";
+  need(source.split(marker).length === 3, "fresh_ticket_version_contract_changed");
+  // Password recovery revokes pending login/setup/email tickets as well as
+  // already-issued sessions. The original authority/epoch guard stays intact.
+  return source.replaceAll(marker, "${stage}:${Number(accountOf(badge)?.ver) || 0}:");
 }
 function providers(env) {
   function json(key) {
@@ -73,4 +96,4 @@ function providers(env) {
       port: smtp.port || env.SMTP_PORT || 465, user: smtp.user || env.SMTP_USER || "",
       pass: smtp.pass || env.SMTP_PASS || "" } };
 }
-module.exports = { transform, providers };
+module.exports = { transform, transformAuth, providers };

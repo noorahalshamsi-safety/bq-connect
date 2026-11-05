@@ -16,7 +16,7 @@ async function start(root) {
 }
 // Shared by development and staging. Performs no DDL; callers own schema state.
 // `faults` honours dev.test_faults injection points and is development-only.
-async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,minimalRelease=false,deliverMail,deliverSms,freshInstall=false,freshProviders={},freshEmailDomains,mediaEnabled=false}={}) {
+async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,minimalRelease=false,deliverMail,deliverSms,freshInstall=false,freshProviders={},freshEmailDomains,freshAdminPolicy,mediaEnabled=false}={}) {
   let poisoned=false,stopping=false,ingress=0,pending=0;
   const jobTimers=new Set();
   const timings=[];
@@ -156,10 +156,11 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
         if(source.split(marker).length!==3)throw Error("minimal_ticket_epoch_contract_changed");
         source=source.replaceAll(marker,"`ticket:"+proof.dataset+":${stage}:");
       }
+      if(freshInstall)source=require(path.resolve(__dirname,"../../../../../deploy/fresh/runtime-policy.cjs")).transformAuth(source);
       source+='\nmodule.exports.__maps={failures,mailLog,usedTickets};\nmodule.exports.__refresh=()=>{for(const k of Object.keys(accounts))delete accounts[k];Object.assign(accounts,safety.readAccounts(ACCOUNTS));loadedStamp=accountsStamp();securityCache={stamp:"",value:null};};\n';
     }
     if(file==="server.js"){
-      if(freshInstall)source=require(path.resolve(__dirname,"../../../../../deploy/fresh/runtime-policy.cjs")).transform(source,{mediaEnabled,emailDomains:freshEmailDomains});
+      if(freshInstall)source=require(path.resolve(__dirname,"../../../../../deploy/fresh/runtime-policy.cjs")).transform(source,{mediaEnabled,emailDomains:freshEmailDomains,adminPolicy:freshAdminPolicy});
       const marker="handleApi(req, res, urlPath, params).catch(";
       if(!source.includes(marker))throw Error("route_wrapper_source_changed");
       source='const setInterval=global.__bqDevInterval;\n'+source.replace(marker,"return "+marker).replaceAll('.replace(/^0+/, "")',"");

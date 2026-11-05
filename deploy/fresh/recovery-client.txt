@@ -1,0 +1,50 @@
+let freshRecoveryConfirm = false;
+const recoveryForm = document.querySelector("#forgot-form");
+function freshRecoveryField(id, type, text) {
+  const label = document.createElement("label"), span = document.createElement("span");
+  span.textContent = text;
+  const input = document.createElement("input");
+  input.id = id; input.type = type;
+  input.autocomplete = type === "password" ? "new-password" : "one-time-code";
+  input.maxLength = type === "password" ? 128 : 6;
+  label.append(span, input); label.hidden = true;
+  recoveryForm.insertBefore(label, document.querySelector("#forgot-btn"));
+  return input;
+}
+const recoveryCode = freshRecoveryField("fresh-reset-code", "text", "Email code / رمز البريد");
+const recoveryPassword = freshRecoveryField("fresh-reset-password", "password", "New password / كلمة المرور الجديدة");
+const recoveryAgain = freshRecoveryField("fresh-reset-again", "password", "Confirm password / تأكيد كلمة المرور");
+document.querySelector("#forgot-badge").addEventListener("input", () => {
+  freshRecoveryConfirm = false;
+  for (const input of [recoveryCode, recoveryPassword, recoveryAgain]) {
+    input.value = ""; input.closest("label").hidden = true;
+  }
+});
+recoveryForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  const error = document.querySelector("#forgot-error"), done = document.querySelector("#forgot-done");
+  const button = document.querySelector("#forgot-btn"), badge = cleanBadgeInput(document.querySelector("#forgot-badge").value);
+  error.textContent = ""; done.hidden = true;
+  if (!badge) { error.textContent = t("loginMissing"); return; }
+  if (freshRecoveryConfirm && (!passwordStrong(recoveryPassword.value) ||
+    recoveryPassword.value !== recoveryAgain.value)) { error.textContent = t("pwMismatch"); return; }
+  button.disabled = true;
+  try {
+    const reply = await postJson("/api/forgot", { badge,
+      ...(freshRecoveryConfirm ? { op: "confirm", code: recoveryCode.value, newPassword: recoveryPassword.value } : {}) });
+    if (!reply.ok) {
+      error.textContent = reply.status === 429 ? t("limited") : "Invalid or expired verification. / رمز غير صحيح أو منتهي.";
+      return;
+    }
+    if (reply.data.recovered) {
+      for (const input of [recoveryCode, recoveryPassword, recoveryAgain]) input.value = "";
+      freshRecoveryConfirm = false; gateCard("login"); return;
+    }
+    freshRecoveryConfirm = true;
+    for (const input of [recoveryCode, recoveryPassword, recoveryAgain]) input.closest("label").hidden = false;
+    done.textContent = "If eligible, a code was sent to your verified email. / تم إرسال رمز إلى البريد الموثق للحساب المؤهل.";
+    done.hidden = false;
+  } catch { error.textContent = t("loginFailed"); }
+  finally { button.disabled = false; }
+});
+

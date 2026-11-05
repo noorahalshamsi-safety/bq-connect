@@ -1,18 +1,35 @@
-const freshEmailInput = document.querySelector("#mobile");
+const freshMobileInput = document.querySelector("#mobile");
+freshMobileInput.type = "tel";
+freshMobileInput.autocomplete = "tel";
+freshMobileInput.inputMode = "tel";
+freshMobileInput.maxLength = 24;
+freshMobileInput.removeAttribute("data-i18n-placeholder");
+freshMobileInput.placeholder = "05xxxxxxxx";
+const mobileLabel = freshMobileInput.closest("label").querySelector("span");
+mobileLabel.removeAttribute("data-i18n");
+mobileLabel.textContent = "Registered mobile (no SMS) / رقم الجوال المسجل بدون رسالة";
+const freshEmailInput = document.createElement("input");
+freshEmailInput.id = "fresh-company-email";
 freshEmailInput.type = "email";
 freshEmailInput.autocomplete = "email";
 freshEmailInput.inputMode = "email";
 freshEmailInput.maxLength = 254;
 freshEmailInput.removeAttribute("data-i18n-placeholder");
 freshEmailInput.placeholder = "name@binquraya.com";
-const freshEmailLabel = freshEmailInput.closest("label").querySelector("span");
-freshEmailLabel.removeAttribute("data-i18n");
-freshEmailLabel.textContent = "Company email / البريد الإلكتروني للشركة";
-document.querySelector("#code").closest("label").hidden = true;
-document.querySelector("#code").disabled = true;
+const freshEmailLabel = document.createElement("label"), emailText = document.createElement("span");
+emailText.textContent = "Company email / البريد الإلكتروني للشركة";
+freshEmailLabel.append(emailText, freshEmailInput);
+freshMobileInput.closest("label").after(freshEmailLabel);
+const directoryCode = document.querySelector("#code");
+directoryCode.closest("label").hidden = false;
+directoryCode.disabled = false;
+directoryCode.maxLength = 4;
+const codeLabel = directoryCode.closest("label").querySelector("span");
+codeLabel.removeAttribute("data-i18n");
+codeLabel.textContent = "4-digit directory verification code / رمز التحقق المسجل المكون من 4 أرقام";
 const freshRegistrationNote = document.querySelector("#register-form .login-secure");
 freshRegistrationNote.removeAttribute("data-i18n");
-freshRegistrationNote.textContent = "Your company email must match your employee record. Authenticator is optional after registration. / يجب أن يطابق البريد سجل الموظف. تطبيق المصادقة اختياري بعد التسجيل.";
+freshRegistrationNote.textContent = "Verify your directory code, registered mobile and company email. No SMS. Authenticator is optional. / تحقق بالرمز المسجل والجوال والبريد. بدون رسالة جوال. المصادقة اختيارية.";
 let freshRegistrationTicket = "";
 document.querySelector("#register-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -21,12 +38,15 @@ document.querySelector("#register-form").addEventListener("submit", async (event
   const badge = cleanBadgeInput(document.querySelector("#reg-badge").value);
   const password = document.querySelector("#reg-password").value;
   const email = freshEmailInput.value.trim();
+  const code = digitsOnly(directoryCode.value), mobile = freshMobileInput.value.trim();
   error.textContent = ""; done.hidden = true;
-  if (!badge || !email || !passwordStrong(password)) { error.textContent = t("registerMissing"); return; }
+  if (!badge || !email || code.length !== 4 || !mobile || !passwordStrong(password)) {
+    error.textContent = t("registerMissing"); return;
+  }
   if (password !== document.querySelector("#reg-password2").value) { error.textContent = t("pwMismatch"); return; }
   button.disabled = true;
   try {
-    const reply = await postJson("/api/register", { badge, email, password,
+    const reply = await postJson("/api/register", { badge, code, mobile, email, password,
       emailCode: freshRegistrationTicket ? document.querySelector("#otp").value : "",
       ticket: freshRegistrationTicket, app: standaloneApp() });
     if (reply.ok && reply.data.needEmailCode) {
@@ -36,19 +56,19 @@ document.querySelector("#register-form").addEventListener("submit", async (event
       done.hidden = false; document.querySelector("#otp").focus(); return;
     }
     if (!reply.ok || !reply.data.registered) {
-      error.textContent = reply.data.error === "email_ownership_unverified" ?
-        "Email-to-badge ownership is not verified. Contact your administrator. / لم يتم إثبات ربط البريد بالرقم الوظيفي." :
+      error.textContent = reply.data.error === "ownership_unverified" ?
+        "Directory verification failed or the ownership record is incomplete. / لم تتطابق بيانات التحقق المسجلة." :
         t(reply.status === 429 ? "limited" : REGISTER_ERRORS[reply.data.error] || "loginFailed");
       return;
     }
     freshRegistrationTicket = "";
-    ["#reg-badge", "#mobile", "#otp", "#reg-password", "#reg-password2"].forEach(id => document.querySelector(id).value = "");
+    ["#reg-badge", "#code", "#mobile", "#fresh-company-email", "#otp", "#reg-password", "#reg-password2"].forEach(id => document.querySelector(id).value = "");
     document.querySelector("#otp-field").hidden = true;
     loginStep(reply.data);
   } catch { error.textContent = t("loginFailed"); }
   finally { button.disabled = false; }
 });
-for (const id of ["#reg-badge", "#mobile"]) document.querySelector(id).addEventListener("input", () => {
+for (const id of ["#reg-badge", "#code", "#mobile", "#fresh-company-email"]) document.querySelector(id).addEventListener("input", () => {
   freshRegistrationTicket = ""; document.querySelector("#otp").value = "";
   document.querySelector("#otp-field").hidden = true;
 });

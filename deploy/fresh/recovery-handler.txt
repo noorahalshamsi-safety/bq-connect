@@ -1,0 +1,34 @@
+    if (urlPath === "/api/forgot") {
+      const key = `fresh-reset:${badge}`;
+      if (ipBlocked(ip) || auth.locked(key) || forgotLimited(ip)) {
+        send(res, 429, { error: "limited" }); return;
+      }
+      const person = lookupPerson(badge), account = person && auth.accountOf(badge);
+      const eligible = account?.hash && account.freshEmailVerified === true &&
+        account.freshEmailPolicy === "directory-code-mobile-email-v1" &&
+        __freshOwnership.normalize(account.email, __freshDomains) && !isBanned(badge);
+      if (body.op === "confirm") {
+        if (!auth.strongPassword(body.newPassword)) { send(res, 400, { error: "weak" }); return; }
+        const pending = pendingEmail.get(key);
+        const taken = takeEmailCode(key, body.code);
+        if (!eligible || taken.error || taken.email !== account.email ||
+          pending?.accountVersion !== account.ver) {
+          auth.noteFailure(key); noteIpFailure(ip);
+          send(res, 400, { error: "invalid_or_expired" }); return;
+        }
+        // Existing KDF/session versioning; TOTP is preserved and never reset here.
+        await auth.setPassword(badge, String(body.newPassword));
+        auth.clearFailures(key);
+        auth.audit("password_recovered", publicId(badge), loginInfo(req, body));
+        noticeMail(account.email, "Your BQ Connect password was changed. Existing sessions were revoked.");
+        send(res, 200, { recovered: true }); return;
+      }
+      if (!auth.mailConfigured()) { send(res, 503, { error: "mail_off" }); return; }
+      if (eligible) {
+        const problem = await sendEmailCode(key, badge, account.email);
+        if (!problem) pendingEmail.get(key).accountVersion = account.ver;
+        // Same public response for unknown users and per-account send throttling.
+      }
+      send(res, 200, { sent: true }); return;
+    }
+
