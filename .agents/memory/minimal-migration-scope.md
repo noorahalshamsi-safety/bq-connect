@@ -57,3 +57,12 @@ that the running process received the values.
 entry failed from a pre-publish existence check, or ask for duplicate entries.
 Use a protected in-process comparison after an approved maintenance-only
 publication; never substitute workspace keys or print secret values.
+
+Diagnostic publication output must contain only PASS/BLOCKED statuses, not
+credentials, key values, account records, fingerprints or raw diagnostic data.
+
+**Why:** The owner explicitly restricted the diagnostic publication's output.
+
+**How to apply:** Keep diagnostics in maintenance mode on success or failure
+and project output through a fixed status allowlist; do not log arbitrary
+results or exception details.

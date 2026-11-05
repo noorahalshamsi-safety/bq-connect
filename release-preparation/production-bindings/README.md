@@ -1,13 +1,13 @@
 # Pending Production configuration — no publication or execution approval
 
-The existing VM build/run commands remain unchanged:
+The original maintenance VM build/run commands are preserved for restoration:
 
 ```
 npm ci --omit=dev
 node deploy/managed/minimal-import-runner.cjs
 ```
 
-The entrypoint forces maintenance and ignores the import operation flag.
+The original entrypoint forces maintenance and ignores the import operation flag.
 Publishing the same maintenance source is the supported way to apply the
 owner's pending Production app secrets. A saved entry or secret-existence
 response does not prove that the running deployment has received it.
@@ -23,16 +23,15 @@ neither setting has been changed here.
 The target candidate ID comes from the latest committed project configuration:
 `replit-objstore-44cb0252-dd69-42fb-8f2d-af513c735acb`.
 An authorized Replit SDK object listing succeeded with no objects returned.
-Bucket metadata read was denied, so display-name identity is not attested.
-The owner must select **bq-connect-production-control → Settings** in App
-Storage and confirm this exact ID. If it differs, correct the pending binding
-and its SHA-256 before proceeding. Do not make the control bucket the source
+The owner subsequently confirmed that **bq-connect-production-control**
+matches this exact ID; the binding confirmation is now recorded as true.
+Do not make the control bucket the source
 default, move source objects, or use a bucket's display name as its ID.
 
 ## Protected comparison prepared, not installed in the live entrypoint
 
-`verify.cjs` is a standalone read-only diagnostic for a separately authorized
-protected Production process, not a public route or an application run command:
+`verify.cjs` is a standalone read-only diagnostic for a protected Production
+process, not a public route or an application run command:
 
 ```
 node release-preparation/production-bindings/verify.cjs release-preparation/production-bindings/bindings.pending.json
@@ -41,20 +40,22 @@ node release-preparation/production-bindings/verify.cjs release-preparation/prod
 Do not run it in the workspace with copied Production authentication keys.
 Setting a deployment marker manually is not access to the actual deployment.
 It is not currently wired into startup, and no remote shell is assumed.
-If no protected Production process-execution facility is available, the supplied
-`maintenance-check.cjs` is a separate, future maintenance-only diagnostic
-launcher. It is not configured or deployed here. With operator approval the
-future Run command can be:
+The supplied `maintenance-check.cjs` is now prepared as the next-publish Run
+command, but is not yet live. The configured diagnostic Run command is:
 
 ```
 node release-preparation/production-bindings/maintenance-check.cjs
 ```
 
-It first starts the same forced-maintenance listener. A single read-only check
+It first starts the pinned forced-maintenance listener with maintenanceOnly
+unconditionally true, without invoking any importer entrypoint.
+A single read-only check
 runs only in Production with
 `BQ_MINIMAL_BINDINGS_CHECK=approved-readonly-check`. Success and failure both
-leave maintenance in place. Results go only to protected deployment logs, never
-an HTTP endpoint. Without that setting it only serves maintenance. There is no
+leave maintenance in place. Diagnostic output is projected through a fixed
+allowlist of PASS/BLOCKED statuses only. It includes no credentials, key values,
+fingerprints, endpoint strings, record data, raw errors or manifest contents.
+Without that setting it only serves maintenance. There is no
 import/activation flag or automatic retry. This allows a separately approved
 publication to apply pending secrets and perform their protected comparison
 without assuming Production SSH. Do not replace the run command with the
@@ -67,11 +68,26 @@ audit key for source/membership bindings, verifies strict TLS and a read-only
 database session, and collects schema/permission/endpoint fingerprints.
 It never imports, activates, generates keys, runs DDL or writes either bucket.
 
-Its output contains only fingerprints, nonsecret identity/capability metadata
-and aggregate counts. Keep it in protected operator custody, not a public API.
-The manifest output is deliberately incomplete and not executable: dataset,
-permission review, source-freeze/release evidence and exact approvals remain
-unset. No UUID, approval or freeze assertion is fabricated.
+The diagnostic no longer emits a manifest draft or metadata: it reports
+statuses only. The separate pending JSON is not an executable migration
+manifest. Dataset, permission review, source-freeze/release evidence and exact
+approvals remain unset. No approval or freeze assertion is fabricated.
+
+The PostgreSQL connection is initialized read-only; helpers receive only a
+single-SELECT query interface that rejects DML, DDL, SET and multi-statements.
+The source helper receives exists/download capabilities only; the target helper
+receives list only. All bucket IDs are explicit and their original/confirmed
+fingerprints are pinned, regardless of the default bucket.
+
+## Restoration after diagnostics
+
+`maintenance.before-diagnostic.replit.toml` is the exact original configuration,
+saved before changing next-publish settings. To restore maintenance-only
+operation, set Run back to `node deploy/managed/minimal-import-runner.cjs`,
+keep Build `npm ci --omit=dev`, and remove only the nonsecret Production setting
+`BQ_MINIMAL_BINDINGS_CHECK`. It was absent before preparation. Do not alter any
+of the three Production Secrets. Restoring live behavior requires a separate
+operator publication; no such publication is performed by preparation.
 
 ## Remaining gates
 

@@ -9,6 +9,8 @@ const base = path.resolve(__dirname, "../maintenance-cd5bd76/source");
 const cfg = require(path.join(base, "deploy/managed/config.cjs"));
 const schema = require(path.join(base, "deploy/managed/schema.cjs"));
 const sourceModule = require(path.join(base, "migration/minimal/source.cjs"));
+const readOnly = require("./read-only.cjs");
+const { statuses, report } = require("./status.cjs");
 
 function stop(code) { throw Object.assign(Error(code), { code }); }
 function requireContext(env, bindings) {
@@ -26,6 +28,8 @@ function requireContext(env, bindings) {
   if (endpoint.identity === bindings.developmentEndpointFingerprint)
     stop("preflight_development_endpoint_refused");
   if (!bindings.sourceBucket || !bindings.targetBucket ||
+      bindings.sourceBucketFingerprint !== "ce11c603901c2550295d04cf9a5898200348ff8d29086744a88ee73d8f8716ec" ||
+      bindings.targetBucketFingerprint !== "71b5a307f0aa650bee9a8a4359d5caa2841eb5717f590e983100951fca2dd6b2" ||
       cfg.sha(bindings.sourceBucket) !== bindings.sourceBucketFingerprint ||
       cfg.sha(bindings.targetBucket) !== bindings.targetBucketFingerprint ||
       bindings.sourceBucket === bindings.targetBucket)
@@ -35,10 +39,15 @@ function requireContext(env, bindings) {
   return endpoint;
 }
 async function verify({ env = process.env, bindings } = {}) {
+  const state = statuses({ READ_ONLY_SAFETY: "PASS" });
+  try {
   const endpoint = requireContext(env, bindings);
+  state.PRODUCTION_CONTEXT = "PASS";
+  state.PRODUCTION_SECRETS = "PASS";
   const { Client } = await import("@replit/object-storage");
-  const sourceClient = new Client({ bucketId: bindings.sourceBucket });
-  const targetClient = new Client({ bucketId: bindings.targetBucket });
+  // Always explicit IDs: never the new or current default bucket.
+  const sourceClient = readOnly.source(new Client({ bucketId: bindings.sourceBucket }));
+  const targetClient = readOnly.target(new Client({ bucketId: bindings.targetBucket }));
   const source = await sourceModule.read({
     client: sourceClient, bucketFingerprint: bindings.sourceBucketFingerprint,
     auditKey: Buffer.from(env.BQ_MINIMAL_AUDIT_KEY, "hex")
@@ -47,9 +56,11 @@ async function verify({ env = process.env, bindings } = {}) {
   if (!crypto.timingSafeEqual(Buffer.from(original.sessionKey), Buffer.from(env.BQ_MANAGED_SESSION_KEY)) ||
       !crypto.timingSafeEqual(Buffer.from(original.backupKey), Buffer.from(env.BQ_MANAGED_BACKUP_KEY)))
     stop("preflight_original_key_mismatch");
+  state.ORIGINAL_KEY_MATCH = "PASS";
   const objects = await targetClient.list({ maxResults: 1 });
   if (!objects.ok) stop("preflight_control_bucket_read_unverified");
   if (objects.value.length) stop("preflight_control_bucket_not_empty");
+  state.CONTROL_BUCKET = "PASS";
   const pool = new Pool({
     connectionString: endpoint.url.toString(),
     ssl: { rejectUnauthorized: true, servername: endpoint.url.hostname, minVersion: "TLSv1.2" },
@@ -63,47 +74,38 @@ async function verify({ env = process.env, bindings } = {}) {
     client = await pool.connect();
     if (!client.connection.stream.encrypted || !client.connection.stream.authorized)
       stop("preflight_verified_tls_required");
-    const identity = (await client.query(
+    const reads = readOnly.sql(client);
+    const identity = (await reads.query(
       "SELECT current_database() AS database_name, current_user AS role_name, current_setting('transaction_read_only') AS read_only"
     )).rows[0];
     if (identity.database_name !== "neondb" || identity.read_only !== "on")
       stop("preflight_readonly_destination_required");
-    const shape = await schema.requireSchema(client, {
+    const shape = await schema.requireSchema(reads, {
       releaseFingerprint: schema.releaseFingerprint, schemaFingerprint: bindings.schemaFingerprint
     });
     if (shape.tables !== 117) stop("preflight_schema_table_count_changed");
-    const tables = (await client.query(
+    const tables = (await reads.query(
       "SELECT tablename FROM pg_tables WHERE schemaname='dev' ORDER BY tablename"
     )).rows.map(r => r.tablename);
     if (tables.length !== 117 || tables.some(n => !/^[a-z_][a-z0-9_]*$/.test(n)))
       stop("preflight_table_identity_changed");
-    const total = (await client.query("SELECT sum(n)::text AS total FROM (" +
+    const total = (await reads.query("SELECT sum(n)::text AS total FROM (" +
       tables.map(n => "SELECT count(*) AS n FROM dev." + n).join(" UNION ALL ") + ") q")).rows[0];
     if (total.total !== "0") stop("preflight_destination_not_empty");
-    const permissions = await cfg.permissions(client);
-    return {
-      kind: "BQ_PROTECTED_BINDINGS_PREFLIGHT_V1",
-      originalKeysMatch: true, productionSecretsObserved: true,
-      database: identity, counts: source.counts,
-      manifestDraft: {
-        kind: "BQ_REPLIT_MANAGED_V1", environment: "production",
-        appFingerprint: bindings.appFingerprint, endpointFingerprint: endpoint.identity,
-        developmentEndpointFingerprint: bindings.developmentEndpointFingerprint,
-        schemaFingerprint: shape.fingerprint, releaseFingerprint: schema.releaseFingerprint,
-        permissionsFingerprint: permissions.fingerprint,
-        keys: { session: cfg.sha(original.sessionKey), backup: cfg.sha(original.backupKey) },
-        bucket: bindings.targetBucket, productionBucketFingerprint: bindings.targetBucketFingerprint,
-        minimal: { policy: "employees-accounts-only-v1", sourceBucket: bindings.sourceBucket,
-          sourceBucketFingerprint: source.bucketFingerprint, sourceFingerprint: source.fingerprint,
-          membership: source.membership, employees: source.counts.employees,
-          accounts: source.counts.accounts, freezeEvidence: null },
-        dataset: null, permissionApproval: null, approval: null, release: null
-      },
-      capabilitiesRequiringOwnerReview: permissions.capabilities,
-      sourceFrozen: false, sourceReadStableOnly: true, executionAuthorized: false,
-      sourceWritten: false, targetWritten: false, productionRowsWritten: false
-    };
+    const permissions = await cfg.permissions(reads);
+    state.PRODUCTION_DATABASE = "PASS";
+    // Observation is not owner approval of elevated runtime capabilities.
+    if (bindings.permissionReviewApproved === true &&
+        bindings.permissionsFingerprint === permissions.fingerprint)
+      state.PERMISSION_REVIEW = "PASS";
+    // No inference that other writers are frozen; no migration approval exists.
+    return statuses(state);
   } finally { if (client) client.release(); await pool.end(); }
+  } catch (error) {
+    // Never propagate credentials, records, fingerprints or arbitrary messages
+    // to either entrypoint. Only allowlisted PASS/BLOCKED statuses survive.
+    throw Object.assign(Error("diagnostic blocked"), { statuses: statuses(state) });
+  }
 }
 module.exports = { verify, requireContext };
 if (require.main === module) {
@@ -113,10 +115,8 @@ if (require.main === module) {
     if (process.env.REPLIT_DEPLOYMENT !== "1") stop("preflight_published_process_required");
     if (process.argv.length !== 3) stop("preflight_bindings_file_required");
     return verify({ bindings: JSON.parse(fs.readFileSync(process.argv[2], "utf8")) });
-  }).then(result => console.log(JSON.stringify(result))).catch(error => {
-    const code = /^(preflight_|managed_|minimal_)[a-z0-9_]+$/.test(error.code || "")
-      ? error.code : "preflight_verification_failed";
-    console.error(JSON.stringify({ error: code, executionAuthorized: false }));
+  }).then(report).catch(error => {
+    report(error.statuses);
     process.exitCode = 1;
   });
 }

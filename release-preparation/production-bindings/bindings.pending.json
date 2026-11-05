@@ -9,7 +9,7 @@
   "targetBucket": "replit-objstore-44cb0252-dd69-42fb-8f2d-af513c735acb",
   "targetBucketFingerprint": "71b5a307f0aa650bee9a8a4359d5caa2841eb5717f590e983100951fca2dd6b2",
   "targetDisplayName": "bq-connect-production-control",
-  "targetNameConfirmedByOperator": false,
+  "targetNameConfirmedByOperator": true,
   "secretsState": "PENDING",
   "freezeEvidence": null,
   "endpointFingerprint": null,
