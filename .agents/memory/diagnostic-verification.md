@@ -35,3 +35,14 @@ process received the same identity; deployment metadata did not expose it.
 expected identity, or treat the workspace Shell as Production process access.
 If protected deployed-process inspection is unavailable, report that limit
 and stop rather than requesting another speculative publication.
+
+Any alternative Production identity attestation must use independently
+authenticated deployment metadata and proof tying the running workload to
+that metadata, not a workspace ID, user-provided UUID or copied binding alone.
+
+**Why:** The owner explicitly required independent verification for alternatives,
+while retaining authentication, TLS, permissions and source/bucket authority.
+
+**How to apply:** Keep alternatives disabled until the provider trust source
+is established. A production-only binding alone is replayable and does not
+prove which workload received it.

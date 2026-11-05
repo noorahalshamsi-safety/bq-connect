@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { start } = require("./maintenance-http.cjs");
 const { statuses, report } = require("./status.cjs");
+const identity = require("./identity-probe.cjs");
 // The verifier loads in a protected worker only after HTTP is listening.
 const defaultCheck = options => require("./diagnostic-worker.cjs").runCheck(options);
 async function launch({
@@ -15,6 +16,9 @@ async function launch({
   return { ...app, diagnostic };
 }
 async function runDiagnostic({ env, check }) {
+  // Takes precedence over the broader check, even if its existing flag is set.
+  // Observe the main process, not a worker copy, and emit exactly three fields.
+  if (identity.selected(env)) return identity.report(env);
   let result = statuses({ MAINTENANCE: "PASS", READ_ONLY_SAFETY: "PASS" });
   if (env.REPLIT_DEPLOYMENT === "1" &&
       env.BQ_MINIMAL_BINDINGS_CHECK === "approved-readonly-check") {
@@ -36,5 +40,9 @@ if (require.main === module) {
   launch().then(app => {
     for (const signal of ["SIGINT", "SIGTERM"])
       process.on(signal, () => app.close().finally(() => process.exit(0)));
-  }).catch(() => { report({}); process.exitCode = 1; });
+  }).catch(() => {
+    if (identity.selected(process.env)) identity.report(process.env);
+    else report({});
+    process.exitCode = 1;
+  });
 }

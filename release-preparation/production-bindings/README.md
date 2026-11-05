@@ -1,5 +1,10 @@
 # Pending Production configuration — no publication or execution approval
 
+For the opt-in, main-process, exactly-three-field identity probe and the
+conditional (disabled) alternative-attestation design, see
+[identity-attestation.md](identity-attestation.md). Preparation does not set
+the probe-mode variable or perform a publication.
+
 The original maintenance VM build/run commands are preserved for restoration:
 
 ```
