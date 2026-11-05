@@ -79,7 +79,7 @@ run = ["node", "deploy/managed/minimal-import-runner.cjs"]
 ignorePorts = false
 
 [objectStorage]
-defaultBucketID = "replit-objstore-44cb0252-dd69-42fb-8f2d-af513c735acb"
+defaultBucketID = "replit-objstore-df2b12f8-b7e9-4f8b-bb9d-e3f13ecdeb0d"
 
 [workflows]
 runButton = "Project"

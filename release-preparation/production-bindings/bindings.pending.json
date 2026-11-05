@@ -1,0 +1,18 @@
+{
+  "kind": "BQ_PENDING_PRODUCTION_BINDINGS_V1",
+  "implementationCommit": "cd5bd760a3b1d4a663d9a41c0479a58e36f02dd9",
+  "appFingerprint": "855a8d86c25aff2d56350ac2c647e6f380a54afd108a8c60e7aa33a2150ffb9c",
+  "developmentEndpointFingerprint": "cebb1f6f76735e7b79d2783788bbb6cca27bdfbb768e19e9c5cac30096140b24",
+  "schemaFingerprint": "bb2ddae82613494ce98dba922e53eedbe98f872f9d0cfabb552db4c9dc49df76",
+  "sourceBucket": "replit-objstore-df2b12f8-b7e9-4f8b-bb9d-e3f13ecdeb0d",
+  "sourceBucketFingerprint": "ce11c603901c2550295d04cf9a5898200348ff8d29086744a88ee73d8f8716ec",
+  "targetBucket": "replit-objstore-44cb0252-dd69-42fb-8f2d-af513c735acb",
+  "targetBucketFingerprint": "71b5a307f0aa650bee9a8a4359d5caa2841eb5717f590e983100951fca2dd6b2",
+  "targetDisplayName": "bq-connect-production-control",
+  "targetNameConfirmedByOperator": false,
+  "secretsState": "PENDING",
+  "freezeEvidence": null,
+  "endpointFingerprint": null,
+  "permissionsFingerprint": null,
+  "executionAuthorized": false
+}

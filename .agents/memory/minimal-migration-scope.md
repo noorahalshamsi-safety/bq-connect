@@ -45,3 +45,15 @@ settings and actual provisioning. Confirm the effective no-copy Publishing
 plan for this project's backend before publishing. If no-copy creation cannot
 be confirmed, report BLOCKED. Maintenance approval never authorizes real-data
 import or SQL activation; those require their separate exact approvals.
+
+Treat edits in Publishing's Production app secrets as PENDING until a successful
+publication and verification inside the actual new deployment.
+
+**Why:** The owner observed the UI warning that secret changes are saved only
+after a successful publish. Secret-existence metadata alone did not establish
+that the running process received the values.
+
+**How to apply:** Do not label pending entries APPLIED, infer that operator
+entry failed from a pre-publish existence check, or ask for duplicate entries.
+Use a protected in-process comparison after an approved maintenance-only
+publication; never substitute workspace keys or print secret values.
