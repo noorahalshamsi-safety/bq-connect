@@ -1,0 +1,38 @@
+    const person = byBadge.get(badge);
+    const email = __freshOwnership.normalize(body.email, __freshDomains);
+    if (!person || !__freshOwnership.associated(directory, badge, email, __freshDomains)) {
+      auth.noteFailure(`reg:${badge}`);
+      noteIpFailure(ip);
+      send(res, tooManyAttempts(ip) ? 429 : 403, { error: "email_ownership_unverified" });
+      return;
+    }
+    if (auth.accountOf(badge)?.hash) {
+      send(res, 409, { error: "already_registered" }); return;
+    }
+    const key = `fresh-register:${badge}`;
+    if (!body.emailCode) {
+      const problem = await sendEmailCode(key, badge, email);
+      if (problem) { send(res, MAIL_ERRORS[problem], { error: problem }); return; }
+      send(res, 200, { needEmailCode: true, email: auth.maskEmail(email),
+        ticket: auth.signTicket(badge, "fresh-register", EMAIL_CODE_MS) });
+      return;
+    }
+    if (auth.readTicket(body.ticket, "fresh-register") !== badge) {
+      auth.noteFailure(`reg:${badge}`); noteIpFailure(ip);
+      send(res, 401, { error: "expired" }); return;
+    }
+    const taken = takeEmailCode(key, body.emailCode);
+    if (taken.error || taken.email !== email) {
+      auth.noteFailure(`reg:${badge}`); noteIpFailure(ip);
+      send(res, 401, { error: taken.error || "email_ownership_unverified" }); return;
+    }
+    auth.useTicket(body.ticket);
+    await auth.setPassword(badge, String(body.password), {
+      email, freshEmailVerified: true, freshEmailPolicy: "directory-email-v1"
+    });
+    auth.clearFailures(`reg:${badge}`);
+    auth.audit("register", publicId(badge), loginInfo(req, body));
+    finishLogin(res, badge, person, loginInfo(req, body), { registered: true });
+    return;
+  }
+

@@ -25,9 +25,22 @@ live-operation approvals distinct from those final business decisions.
 **Why:** The owner explicitly finalized these business selections and directed
 that they not be requested again while completing the fresh launch.
 
-**How to apply:** Reuse existing SMTP/SMS adapters, keep unverified delivery
+**How to apply:** Reuse existing SMTP adapters, keep unverified delivery
 blocked, and never invent provider credentials, recipient approvals or missing
 employee ownership information to make a readiness check pass.
+
+Fresh registration uses badge, a new password and an SMTP code to the exact
+employee's independently associated company email. Phone/SMS and mandatory TOTP
+are removed from registration; TOTP is optional afterward. The previous
+verification method was Authenticator/TOTP, not SMS.
+
+**Why:** The owner explicitly simplified fresh registration while requiring
+protection against claiming somebody else's badge with an arbitrary company email.
+
+**How to apply:** Do not guess missing addresses or treat company-domain ownership
+alone as employee ownership. Block absent/ambiguous trusted associations. Real
+SMTP delivery to an approved recipient must precede public registration. Preserve
+unrelated modules and the separate approved administrator bootstrap.
 
 Keep the new PostgreSQL implementation. Do not restore the legacy application
 or switch back to JSON authority; recovery must preserve this release direction.

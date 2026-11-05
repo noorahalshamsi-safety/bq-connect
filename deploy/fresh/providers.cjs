@@ -19,12 +19,13 @@ function review(values) {
     if (!text(sms.from) || placeholder(sms.from)) smsMissing.push("from");
   } else if (/[\r\n]/.test(text(sms.sender))) smsMissing.push("sender");
   return { smtp: { status: mailMissing.length ? "BLOCKED" : "CONFIGURATION_READY", missing: mailMissing },
-    sms: { status: smsMissing.length ? "BLOCKED" : "CONFIGURATION_READY", missing: smsMissing },
+    sms: { requiredForFreshRegistration: false,
+      status: smsMissing.length ? "BLOCKED" : "CONFIGURATION_READY", missing: smsMissing },
     delivery: "UNVERIFIED" };
 }
 function requireReady(values, env, manifest) {
   const r = review(values);
-  need(r.smtp.status === "CONFIGURATION_READY" && r.sms.status === "CONFIGURATION_READY",
+  need(r.smtp.status === "CONFIGURATION_READY",
     "fresh_real_provider_configuration_required");
   // Explicit operator assertion after controlled real adapter tests. This is
   // not an automatic measurement or proof inferred from configuration.

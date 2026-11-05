@@ -94,6 +94,18 @@ async function main() {
     environment: "production", appFingerprint: sha("different-pinned-id") } }),
   error => error.code === "managed_app_identity_mismatch");
   stage = "provider activation gates";
+  const vm = require("node:vm");
+  const originalServer = fs.readFileSync(path.join(base, "server.js"), "utf8");
+  const takeSource = originalServer.slice(originalServer.indexOf("function takeEmailCode("),
+    originalServer.indexOf("const MAIL_ERRORS"));
+  const pendingEmail = new Map(), emailCodeHash = (key, value) => sha(key + ":" + value);
+  const take = vm.runInNewContext(takeSource + ";takeEmailCode", { pendingEmail, emailCodeHash, crypto, Buffer });
+  pendingEmail.set("expired", { exp: Date.now() - 1, tries: 0, hash: emailCodeHash("expired", "123456") });
+  assert.equal(take("expired", "123456").error, "code_expired");
+  pendingEmail.set("attempts", { exp: Date.now() + 60000, tries: 4,
+    hash: emailCodeHash("attempts", "123456") });
+  assert.equal(take("attempts", "654321").error, "bad_code");
+  assert.equal(take("attempts", "123456").error, "code_expired");
   const providerPolicy = require("../../deploy/fresh/providers.cjs");
   const providerFixture = { "smtp.json": { host: "smtp.company.test", port: 465,
     user: "operator@company.test", pass: "InventedPasswordOnly2026" },
@@ -110,6 +122,8 @@ async function main() {
   assert.throws(() => providerPolicy.requireReady({}, {}, proposed));
   assert.throws(() => providerPolicy.requireReady(providerFixture, {}, proposed));
   providerPolicy.requireReady(providerFixture, {
+    BQ_FRESH_DELIVERY_APPROVAL: "delivery-tested:" + sha(canonical(proposed)) }, proposed);
+  providerPolicy.requireReady({ "smtp.json": providerFixture["smtp.json"] }, {
     BQ_FRESH_DELIVERY_APPROVAL: "delivery-tested:" + sha(canonical(proposed)) }, proposed);
   assert.equal(providerPolicy.review({ ...providerFixture,
     "smtp.json": { ...providerFixture["smtp.json"], port: 587 } }).smtp.status, "BLOCKED");
@@ -148,8 +162,12 @@ async function main() {
     const badge = String(i + 101), h = v => crypto.createHmac("sha256", "bq-rd-ideas-2026").update(v).digest("hex");
     return { badge, id: "synthetic-" + badge, name: "Synthetic Employee " + badge,
       department: "Synthetic Engineering", position: "Engineer", extra: { preserved: true },
+      email: `synthetic${badge}@binquraya.com`,
       check: h(`${badge}:1234`), phone: h(`phone:${badge}:512345678`) };
   });
+  delete people[0].check; delete people[0].phone;
+  delete people[2].email;
+  people[3].email = people[4].email; // Ambiguous directory ownership must fail closed.
   people[5].badge = "00106";
   people[5].check = crypto.createHmac("sha256", "bq-rd-ideas-2026").update("00106:1234").digest("hex");
   people[5].phone = crypto.createHmac("sha256", "bq-rd-ideas-2026").update("phone:00106:512345678").digest("hex");
@@ -161,7 +179,7 @@ async function main() {
   assert.throws(() => S.validate(JSON.stringify(duplicateId)));
   assert.throws(() => S.validate('{"accounts":{}}'));
   const manifest = { employees: 6311, directorySha256: source.sha256, initialAdminBadge: "101",
-    emailDomains: ["example.invalid"] };
+    emailDomains: ["binquraya.com"] };
   stage = "employee-only initialization";
   const c = await repo.pool.connect();
   try {
@@ -182,35 +200,62 @@ async function main() {
   finally { premature.release(); }
   stage = "registration ownership guard";
   await boot(true);
-  ok(await request("/api/register", { badge: "101", code: "1234", mobile: "512345678",
+  ok(await request("/api/register", { badge: "101", email: "synthetic101@binquraya.com",
     password: "FreshSynthetic!Password2026" }, { anonymous: true }), 503);
   assert.equal((await repo.pool.query("SELECT count(*)::int AS n FROM dev.accounts")).rows[0].n, 0);
   await stop(); events.length = 0;
   stage = "verified registration";
   await boot();
-  const body = { badge: "101", code: "1234", mobile: "512345678",
+  const clientJs = await (await fetch(`http://127.0.0.1:${port}/js/secure.js`)).text();
+  assert(clientJs.includes("freshRegistrationTicket"));
+  new vm.Script(clientJs);
+  const body = { badge: "101", email: "synthetic101@binquraya.com",
     password: "FreshSynthetic!Password2026", admin: true, role: "admin" };
-  const smsStart = events.length;
-  assert(ok(await request("/api/register", body, { anonymous: true })).needOtp);
-  const sms = await event("sms", smsStart);
-  const otp = (new URLSearchParams(sms.body).get("Body") || sms.body).match(/\b\d{6}\b/)?.[0];
-  assert(otp);
-  const reg = ok(await request("/api/register", { ...body, otp }, { anonymous: true }));
-  assert(reg.registered);
+  for (const attack of [
+    { ...body, email: "arbitrary@binquraya.com" },
+    { ...body, email: "synthetic102@binquraya.com" },
+    { ...body, email: "synthetic101@binquraya.com.evil.test" },
+    { ...body, badge: "103", email: "synthetic103@binquraya.com" },
+    { ...body, badge: "104", email: people[3].email }
+  ]) ok(await request("/api/register", attack, { anonymous: true, ip: "192.0.2.93" }), 403);
+  assert.equal((await repo.pool.query("SELECT count(*)::int AS n FROM dev.accounts")).rows[0].n, 0);
+  const mailStart = events.length;
+  const challenge = ok(await request("/api/register", body, { anonymous: true }));
+  assert(challenge.needEmailCode && !challenge.token && !challenge.needSetup);
+  const mail = await event("mail", mailStart), mailOtp = mail.text.match(/\b\d{6}\b/)?.[0]; assert(mailOtp);
+  assert.equal(mail.to, body.email);
+  assert(!events.some(e => e.kind === "sms"));
+  // Pending email codes and their rate limits must survive a process restart.
+  await stop(); events.length = 0; await boot();
+  const wrongCode = mailOtp === "000000" ? "000001" : "000000";
+  ok(await request("/api/register", { ...body, emailCode: wrongCode, ticket: challenge.ticket },
+    { anonymous: true }), 401);
+  const concurrent = await Promise.all([1, 2].map(() => request("/api/register",
+    { ...body, emailCode: mailOtp, ticket: challenge.ticket }, { anonymous: true })));
+  assert.deepEqual(concurrent.map(r => r.status).sort(), [200, 409]);
+  const reg = ok(concurrent.find(r => r.status === 200));
+  assert(reg.registered && reg.token && !reg.needSetup && !reg.needTotp);
+  token = reg.token;
+  ok(await request("/api/register", { ...body, emailCode: mailOtp, ticket: challenge.ticket },
+    { anonymous: true }), 409);
+  assert(!events.some(e => e.kind === "sms"));
   const securityClient = await repo.pool.connect();
   try { assert.deepEqual((await repo.load(securityClient, ["security.json"])).get("security.json").value.admins, []); }
   finally { securityClient.release(); }
-  const setup = ok(await request("/api/login-2fa", { op: "setup", ticket: reg.ticket }, { anonymous: true }));
+  assert(ok(await request("/api/login", { badge: "101", password: body.password }, { anonymous: true })).token);
+  ok(await request("/api/terms", { accepted: true }));
+  ok(await request("/api/session"));
+  ok(await request("/api/social", { action: "admin-summary" }), 403);
+  // Administrator escalation still requires the existing stronger MFA gate.
+  const beforeMfa = await repo.pool.connect();
+  try { await assert.rejects(require("../../deploy/fresh/admin.cjs").bootstrap({
+    c: beforeMfa, proof, manifest,
+    approval: "bootstrap:" + sha(canonical([sha(canonical(manifest)), "101"])) })); }
+  finally { beforeMfa.release(); }
+  const setup = ok(await request("/api/2fa", { op: "setup", password: body.password }));
   const totp = unbase32(setup.secret);
-  const enrolled = ok(await request("/api/login-2fa", { op: "enroll", ticket: reg.ticket,
-    code: code(totp) }, { anonymous: true }));
-  assert(enrolled.needEmail);
-  const mailStart = events.length;
-  ok(await request("/api/login-2fa", { op: "email", ticket: enrolled.ticket,
-    email: "synthetic101@example.invalid" }, { anonymous: true }));
-  const mail = await event("mail", mailStart), mailOtp = mail.text.match(/\b\d{6}\b/)?.[0]; assert(mailOtp);
-  token = ok(await request("/api/login-2fa", { op: "email-confirm", ticket: enrolled.ticket, code: mailOtp },
-    { anonymous: true })).token; assert(token);
+  const enrolled = ok(await request("/api/2fa", { op: "enroll", password: body.password, code: code(totp) }));
+  assert(enrolled.status.enabled);
   stage = "real login and permissions";
   assert(ok(await request("/api/login", { badge: "101", password: body.password }, { anonymous: true })).needTotp);
   const failed = await request("/api/login", { badge: "101", password: "incorrect" }, { anonymous: true });
@@ -241,7 +286,7 @@ async function main() {
   ok(await request("/api/media", {}), 503);
   let limited = false;
   for (let i = 0; i < 12; i++) {
-    const r = await request("/api/register", { ...body, badge: "102", code: "0000" },
+    const r = await request("/api/register", { ...body, badge: "102", email: body.email },
       { anonymous: true, ip: "192.0.2.80" });
     if (r.status === 429) { limited = true; break; }
   }
@@ -249,7 +294,7 @@ async function main() {
   stage = "restart and durable account";
   await stop(); events.length = 0; await boot();
   assert(ok(await request("/api/login", { badge: "101", password: body.password }, { anonymous: true })).needTotp);
-  ok(await request("/api/register", { ...body, badge: "102", code: "0000" },
+  ok(await request("/api/register", { ...body, badge: "102", email: body.email },
     { anonymous: true, ip: "192.0.2.80" }), 429);
   const account = (await repo.pool.query("SELECT attrs FROM dev.accounts WHERE entry_key=$1", ["101"])).rows[0].attrs;
   assert(account.hash && !JSON.stringify(account).includes(body.password));
@@ -258,11 +303,18 @@ async function main() {
   finally { client.release(); }
   console.log(JSON.stringify({ result: "PASS", employees: 6311, initialAccounts: 0,
     employeeOnlyImport: "PASS", idempotency: "PASS", ownership: "PASS", realRegistration: "PASS",
-    mfaEmail: "PASS", login: "PASS", bootstrapConsumed: "PASS", directory: "PASS",
+    optionalTotp: "PASS", emailToBadgeOwnership: "PASS", smsNotRequired: "PASS",
+    singleUseEmailCode: "PASS", emailExpiryAndAttempts: "PASS",
+    pendingChallengeRestart: "PASS", concurrentUniqueRegistration: "PASS", clientServingAndSyntax: "PASS",
+    login: "PASS", bootstrapConsumed: "PASS", directory: "PASS",
     post: "PASS", restart: "PASS", rateLimitingAcrossRestart: "PASS",
     unavailableProvidersRefused: "PASS", newBindingAndOriginalGuard: "PASS",
     activationProviderGate: "PASS", smtpAuthWithoutMessage: "PASS", companyEmailAdminGate: "PASS",
     ownerKeyGenerationRefusedInWorkspace: "PASS", productionAccess: false }));
+  if (process.argv.includes("--preview")) {
+    console.log(JSON.stringify({ previewPort: port }));
+    await new Promise(resolve => process.once("SIGTERM", resolve));
+  }
 }
 main().catch(error => {
   console.error(JSON.stringify({ result: "BLOCKED", stage, error: String(error.message).slice(0, 180), root }));

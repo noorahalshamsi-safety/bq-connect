@@ -45,8 +45,8 @@ The following technical binding fields remain unapproved:
   role capabilities and set approval to `reviewed-managed-runtime-capabilities`.
 The final owner business selections are already applied: initial administrator
 badge `41060` and company email domain `binquraya.com`. Do not request
-reconfirmation. The administrator was found in the designated directory with
-both identity-check and phone-ownership material.
+reconfirmation. The administrator is present, but eligibility now depends on an
+explicit, unique company email in the trusted employee directory, not phone/KBA.
 
 The latest supported Production catalog results and exact permission fingerprint
 are documented in `production-permission-review.md`. The observed role and
@@ -139,15 +139,25 @@ applies them, and APPLIED is not established until observed in the new process.
 
 ## Ownership and providers
 
-New registration requires the imported employee's badge, hashed identity check,
-matching phone and SMS OTP; there is **no** fresh-install KBA-only bypass when
-SMS is unavailable or a record lacks phone ownership material. Existing
-per-badge/IP rate limits, MFA and email verification remain enforced. Failed
-attempt state survives application restart.
+Fresh registration policy `directory-email-v1` requires a directory badge, a new
+strong password and a one-time code sent to that employee's **explicit email**
+in the designated trusted directory. It must be uniquely linked to that badge
+and belong to `binquraya.com`. Arbitrary company emails, guessed badge/name
+addresses, absent/ambiguous email associations and caller-supplied mappings
+are refused before sending. No public account is created until code confirmation.
+There is no phone, identity-number or SMS OTP step. TOTP is optional after
+registration through authenticated security settings; enabling it requires
+password reauthentication. Subsequent logins enforce TOTP when enabled.
+Per-badge/IP rate limits, expiring five-attempt single-use email codes, password
+hashing, SQL transaction authority, sessions and roles remain enforced. Failed
+attempt/challenge state survives application restart.
+`POST /api/register` accepts `{badge,password,email}`, returning
+`{needEmailCode,ticket}`; repeat with `emailCode` and that ticket to register
+and obtain a session. No role input is honored.
 
 Configure existing providers through Production Secrets:
 
-- `BQ_FRESH_SMS_CONFIG`: JSON in the existing SMS format (for example Twilio's
+- OPTIONAL `BQ_FRESH_SMS_CONFIG`: JSON in the existing SMS format (for example Twilio's
   provider/sid/token/from fields, or the already-supported provider's fields).
 - `BQ_FRESH_SMTP_CONFIG`: JSON in the existing SMTP host/port/user/pass/fromName
   format, using actual Production delivery configuration.
@@ -160,8 +170,8 @@ SMS_TOKEN/TWILIO_SID/TWILIO_FROM Production-secret fallbacks are also preserved.
 Presence-only metadata did not report those names as configured, either; no
 existing Production service credential was read, changed or fabricated.
 
-Missing SMS returns 503 and creates no account. Missing SMTP prevents verified
-email onboarding. SMS/mail outbox acknowledgement means queued, not delivered;
+Missing SMS does not affect fresh registration. Missing SMTP prevents verified
+email onboarding. Mail outbox acknowledgement means queued, not delivered;
 delivery receipts require a real successful provider response. Web Push is
 explicitly unavailable (503), not falsely acknowledged. In-app SQL
 notifications remain available.
@@ -178,30 +188,32 @@ writes, Production database operations or message sends. The SMTP probe reuses
 the existing implicit-TLS/AUTH LOGIN protocol and stops before MAIL FROM,
 RCPT TO or DATA.
 
-Observed: 6,311 employees, unchanged checksum, approved administrator present
-with ownership material, 6,255 records with both required ownership hashes.
-The other 56 remain unable to register until a separately reviewed legitimate
-ownership solution exists; no information or verification bypass is invented.
+Observed under the new policy: 6,311 employees, unchanged checksum, approved
+administrator present, but **zero** eligible unique explicit company-email
+associations (including administrator 41060). Public registration is therefore
+blocked for every current record. Trusted email-to-badge association evidence
+must be supplied and reviewed; this implementation does not guess addresses,
+accept self-attestation or silently authorize a mapping file.
+Do not edit the designated source or synthesize missing addresses.
 
 Existing SMTP configuration authenticated successfully with verified TLS.
 Actual message delivery was not tested and is not claimed VERIFIED.
-Existing SMS configuration lacks `token`, `sid` and `from` for its Twilio
-adapter. Do not infer a functioning SMS account from the settings object's
-existence. Reuse actual existing service credentials; do not invent new ones.
-Neither provider JSON configuration has been transferred to Production.
+SMS is not a fresh launch prerequisite. Its existing adapters and unrelated
+modules remain available and unchanged; no SMS delivery approval is required.
+SMTP configuration has not been transferred to Production by this preparation.
 
 ### Controlled delivery review before activation
 
-1. Securely populate the fresh Production provider JSON secrets from the actual
+1. Securely populate the fresh Production SMTP JSON secret from the actual
    existing service configuration/owner credential store, not synthetic values.
-2. Obtain explicit permission for **one** company-email delivery and **one**
-   SMS to owner-approved recipients. The company domain alone does not approve
+2. Obtain explicit permission for **one** company-email delivery to an
+   owner-approved recipient. The company domain alone does not approve
    a particular recipient. Keep recipients and credentials out of logs/chat.
 3. Use the existing real adapters and configured credentials through an approved
-   execution facility. Confirm actual receipt of both messages and provider
+   execution facility. Confirm actual receipt of the email and provider
    outcomes, not merely queue acknowledgement or a configuration flag. No
    live send is authorized or implemented by the read-only command above.
-4. No approved recipient pair or actual Production execution facility was
+4. No approved recipient or actual Production execution facility was
    established in this preparation. This live test remains an operator
    prerequisite, not a claimed successful check or an available Shell command.
 5. Only after real controlled tests, the operator may set:
@@ -213,7 +225,7 @@ BQ_FRESH_DELIVERY_APPROVAL=delivery-tested:<final reviewed manifest digest>
 This is an explicit operator assertion, **not machine-generated delivery
 evidence**. Do not set it on the basis of source configuration, SMTP AUTH alone
 or invented recipients. The fresh startup guard refuses incomplete/placeholder
-providers, missing delivery approval, or unsuccessful SMTP authentication;
+SMTP configuration, missing delivery approval, or unsuccessful SMTP authentication;
 it cannot turn those failures into a live application. If provider credentials
 change, repeat their controlled verification before reapproving activation.
 
@@ -286,8 +298,10 @@ or missing database never authorizes reinitialization. Failure keeps readiness
 
 ## Initial administrator — no default password
 
-The owner-selected `initialAdminBadge` employee must first register normally and
-verify phone ownership, MFA and company email. No public registration request can
+The owner-selected `initialAdminBadge` employee must first register normally with
+the uniquely associated verified company email. The separate privileged bootstrap
+retains its stronger MFA requirement: enroll optional TOTP before operator
+elevation. This is not a registration prerequisite. No public registration request can
 assign administrator privileges. There are initially zero administrators.
 
 Only after this account has completed verification and the operator authorizes
@@ -323,7 +337,9 @@ node scripts/managed/diagnostic-publication-check.cjs
 The integration test uses a private temporary PostgreSQL instance, the real
 repository/runtime/auth HTTP handlers, 6,311 invented employees and synthetic
 provider sinks. It tests zero initial accounts, idempotency, explicit new
-binding, ownership, real registration/MFA/email/login, authorization,
+binding, exact email-to-badge ownership, registration without phone/SMS/TOTP,
+optional post-registration TOTP, email-code expiry/attempt limits, persistent
+challenges, concurrent unique registration, login, authorization,
 one-use admin bootstrap, directory lookup, new posts and restart. It never
 connects to Production or uses source account/key material.
 

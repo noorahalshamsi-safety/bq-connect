@@ -8,11 +8,11 @@ async function verifyCurrent({ smtpAuth = false } = {}) {
     manifest.sourceBucket !== manifest.bucket, "fresh_source_binding_required");
   const { Client } = await import("@replit/object-storage");
   const client = new Client({ bucketId: manifest.sourceBucket });
-  const allowed = new Set(["data/employees.json", "data/smtp.json", "data/sms.json"]);
+  const allowed = new Set(["data/employees.json", "data/smtp.json"]);
   const download = async name => { need(allowed.has(name)); return client.downloadAsText(name); };
   const directory = await require("./directory.cjs").read({ downloadAsText: download });
   const settings = {}, unavailable = [];
-  for (const file of ["smtp.json", "sms.json"]) {
+  for (const file of ["smtp.json"]) {
     try {
       const result = await download("data/" + file);
       if (!result?.ok || typeof result.value !== "string") throw Error("unavailable");
@@ -28,8 +28,8 @@ async function verifyCurrent({ smtpAuth = false } = {}) {
   return { directory: { employees: directory.rows.length,
     checksum: directory.sha256 === manifest.directorySha256 ? "MATCH" : "CHANGED",
     approvedAdministrator: administrator ? "PRESENT" : "ABSENT",
-    administratorOwnershipMaterial: administrator?.check && administrator?.phone ? "PRESENT" : "ABSENT",
-    ownershipMaterial: directory.rows.filter(r => r.check && r.phone).length },
+    emailAssociation: require("./email-ownership.cjs").readiness(directory.rows,
+      manifest.emailDomains, manifest.initialAdminBadge) },
     providers, unavailableProviderObjects: unavailable, source: "READ_ONLY",
     productionSecretTransfer: "NOT_EXECUTED", messagesSent: 0 };
 }
@@ -46,6 +46,7 @@ async function prepare({ readSource = false } = {}) {
   }
   return { kind: "BQ_FRESH_INSTALL_V1", mode: "fresh-install",
     dataset: "managed-production-" + crypto.randomUUID(), employees: 6311, legacyAccounts: 0,
+    registrationPolicy: "directory-email-v1",
     sourceBucket: pins.sourceBucket, bucket: pins.targetBucket, directorySha256,
     endpoint: { hostname: null, port: "5432", database: "neondb", role: null, schema: "dev" },
     schemaFingerprint: pins.schemaFingerprint,

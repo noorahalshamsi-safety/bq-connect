@@ -16,7 +16,7 @@ async function start(root) {
 }
 // Shared by development and staging. Performs no DDL; callers own schema state.
 // `faults` honours dev.test_faults injection points and is development-only.
-async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,minimalRelease=false,deliverMail,deliverSms,freshInstall=false,freshProviders={},mediaEnabled=false}={}) {
+async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,minimalRelease=false,deliverMail,deliverSms,freshInstall=false,freshProviders={},freshEmailDomains,mediaEnabled=false}={}) {
   let poisoned=false,stopping=false,ingress=0,pending=0;
   const jobTimers=new Set();
   const timings=[];
@@ -159,7 +159,7 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
       source+='\nmodule.exports.__maps={failures,mailLog,usedTickets};\nmodule.exports.__refresh=()=>{for(const k of Object.keys(accounts))delete accounts[k];Object.assign(accounts,safety.readAccounts(ACCOUNTS));loadedStamp=accountsStamp();securityCache={stamp:"",value:null};};\n';
     }
     if(file==="server.js"){
-      if(freshInstall)source=require(path.resolve(__dirname,"../../../../../deploy/fresh/runtime-policy.cjs")).transform(source,{mediaEnabled});
+      if(freshInstall)source=require(path.resolve(__dirname,"../../../../../deploy/fresh/runtime-policy.cjs")).transform(source,{mediaEnabled,emailDomains:freshEmailDomains});
       const marker="handleApi(req, res, urlPath, params).catch(";
       if(!source.includes(marker))throw Error("route_wrapper_source_changed");
       source='const setInterval=global.__bqDevInterval;\n'+source.replace(marker,"return "+marker).replaceAll('.replace(/^0+/, "")',"");
@@ -185,6 +185,7 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
     } else if(!fs.existsSync(dest))fs.symlinkSync(path.join(workspace,"public",item),dest);
   }
   fs.writeFileSync(path.join(publicDir,"synthetic-request.js"),`(()=>{const native=window.fetch.bind(window);window.fetch=async(input,options)=>{const r=new Request(input,options);if(new URL(r.url).origin!==location.origin||!["POST","PATCH","DELETE"].includes(r.method))return native(r);const h=new Headers(r.headers);if(!h.has("Idempotency-Key"))h.set("Idempotency-Key",crypto.randomUUID());const request=new Request(r,{headers:h}),retry=request.clone();try{return await native(request);}catch(error){return native(retry);}};})();`);
+  if(freshInstall)require(path.resolve(__dirname,"../../../../../deploy/fresh/client-policy.cjs")).prepare(publicDir,workspace);
   const virtual=install(proof,()=>context);
   global.__bqRequireTransaction=()=>{if(!context?.client)throw Error("transaction_context_required");};
   global.__bqNativePerson={

@@ -38,7 +38,8 @@ async function start({ env = process.env, manifest = load(env) } = {}) {
     process.env.BQ_STORAGE_SYNC = "0"; process.env.BQ_TRANSLATE = "0";
     const running = await require(path.join(base, "development/postgres/runtime.cjs")).serve(proof, repo, {
       nativeEnabled: true, minimalRelease: true, freshInstall: true,
-      freshProviders, mediaEnabled: env.BQ_FRESH_MEDIA_ENABLED === "1"
+      freshProviders, freshEmailDomains: manifest.emailDomains,
+      mediaEnabled: env.BQ_FRESH_MEDIA_ENABLED === "1"
     });
     return { ...running, close: async () => {
       try { await running.close(); } finally { fs.rmSync(root, { recursive: true, force: true }); }

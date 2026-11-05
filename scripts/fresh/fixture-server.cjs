@@ -8,6 +8,7 @@ const repo = new Repository(proof);
 const configured = process.argv[3] !== "providers-off";
 require(path.join(base, "development/postgres/runtime.cjs")).serve(proof, repo, {
   minimalRelease: true, freshInstall: true,
+  freshEmailDomains: ["binquraya.com"],
   freshProviders: configured ? {
     "smtp.json": { host: "synthetic.invalid", port: 465, user: "synthetic@example.invalid",
       pass: "SYNTHETIC-ONLY", fromName: "Synthetic BQ" },

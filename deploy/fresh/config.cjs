@@ -37,6 +37,7 @@ function authorize({ env, manifest: m }) {
     m.releaseFingerprint === require(path.join(base, "deploy/managed/schema.cjs")).releaseFingerprint &&
     m.permissionApproval === "reviewed-managed-runtime-capabilities", "fresh_schema_permission_review_required");
   need(/^\d{1,16}$/.test(m.initialAdminBadge || "") &&
+    m.registrationPolicy === "directory-email-v1" &&
     Array.isArray(m.emailDomains) && m.emailDomains.length > 0 &&
     m.emailDomains.every(d => typeof d === "string" && /^[a-z0-9.-]+\.[a-z]{2,}$/.test(d)),
   "fresh_registration_policy_required");
