@@ -1,5 +1,4 @@
-// FUTURE protected Production-process diagnostic only. Not a run command,
-// not imported by the current maintenance entrypoint, and no public endpoint.
+// Protected Production-process diagnostic only. No public diagnostic endpoint.
 // Never invokes the importer, runtime activation, DDL or a storage-write method.
 const fs = require("node:fs");
 const path = require("node:path");
@@ -13,35 +12,61 @@ const readOnly = require("./read-only.cjs");
 const { statuses, report } = require("./status.cjs");
 
 function stop(code) { throw Object.assign(Error(code), { code }); }
-function requireContext(env, bindings) {
-  if (env.REPLIT_DEPLOYMENT !== "1") stop("preflight_published_process_required");
-  if (bindings?.kind !== "BQ_PENDING_PRODUCTION_BINDINGS_V1" ||
-      bindings.implementationCommit !== "cd5bd760a3b1d4a663d9a41c0479a58e36f02dd9")
-    stop("preflight_pinned_bindings_required");
-  if (!env.REPL_ID || cfg.sha(env.REPL_ID) !== bindings.appFingerprint)
-    stop("preflight_app_identity_mismatch");
-  if (!/^[a-f0-9]{96}$/.test(env.BQ_MANAGED_SESSION_KEY || "") ||
-      !/^[a-f0-9]{64}$/.test(env.BQ_MANAGED_BACKUP_KEY || "") ||
-      !/^[a-f0-9]{64}$/.test(env.BQ_MINIMAL_AUDIT_KEY || ""))
+function guard(state, name, condition, code) {
+  state[name] = condition ? "PASS" : "BLOCKED";
+  if (!condition) stop(code);
+}
+function requireContext(env, bindings, state = statuses()) {
+  guard(state, "PUBLISHED_PROCESS", env.REPLIT_DEPLOYMENT === "1", "preflight_published_process_required");
+  guard(state, "PINNED_BINDINGS", bindings?.kind === "BQ_PENDING_PRODUCTION_BINDINGS_V1" &&
+    bindings.implementationCommit === "cd5bd760a3b1d4a663d9a41c0479a58e36f02dd9",
+    "preflight_pinned_bindings_required");
+  guard(state, "APP_IDENTITY", !!env.REPL_ID && cfg.sha(env.REPL_ID) === bindings.appFingerprint,
+    "preflight_app_identity_mismatch");
+  for (const [name, key, length] of [
+    ["SESSION", "BQ_MANAGED_SESSION_KEY", 96],
+    ["BACKUP", "BQ_MANAGED_BACKUP_KEY", 64],
+    ["AUDIT", "BQ_MINIMAL_AUDIT_KEY", 64]
+  ]) {
+    state[name + "_KEY_PRESENT"] = typeof env[key] === "string" && env[key].length ? "PASS" : "BLOCKED";
+    state[name + "_KEY_FORMAT"] = new RegExp("^[a-f0-9]{" + length + "}$").test(env[key] || "") ? "PASS" : "BLOCKED";
+  }
+  if (["SESSION", "BACKUP", "AUDIT"].some(name => state[name + "_KEY_FORMAT"] !== "PASS"))
     stop("preflight_applied_production_secrets_required");
+  state.PRODUCTION_SECRETS = "PASS"; // presence/format only, NOT original-key equality
+  guard(state, "ENDPOINT_PRESENT", !!env.DATABASE_URL, "managed_connection_missing");
+  let url;
+  try { url = new URL(env.DATABASE_URL); } catch { stop("managed_connection_invalid"); }
+  guard(state, "ENDPOINT_SYNTAX", ["postgres:", "postgresql:"].includes(url.protocol) &&
+    !!url.hostname && !!url.pathname.slice(1), "managed_connection_invalid");
+  guard(state, "ENDPOINT_DESTINATION",
+    !["helium", "localhost", "127.0.0.1", "::1", "[::1]"].includes(url.hostname),
+    "managed_production_endpoint_refused");
+  guard(state, "ENDPOINT_ALLOWED_OPTIONS",
+    [...url.searchParams.keys()].every(key => ["sslmode", "channel_binding"].includes(key)),
+    "managed_connection_option_unreviewed");
+  guard(state, "ENDPOINT_TLS_POLICY",
+    !["disable", "no-verify", "allow", "prefer"].includes(url.searchParams.get("sslmode")),
+    "managed_tls_downgrade_refused");
+  // Retain the original pinned validator as the authority, not a permissive
+  // replacement. Subchecks above expose only which existing guard failed.
   const endpoint = cfg.endpoint(env, "production");
-  if (endpoint.identity === bindings.developmentEndpointFingerprint)
-    stop("preflight_development_endpoint_refused");
-  if (!bindings.sourceBucket || !bindings.targetBucket ||
-      bindings.sourceBucketFingerprint !== "ce11c603901c2550295d04cf9a5898200348ff8d29086744a88ee73d8f8716ec" ||
-      bindings.targetBucketFingerprint !== "71b5a307f0aa650bee9a8a4359d5caa2841eb5717f590e983100951fca2dd6b2" ||
-      cfg.sha(bindings.sourceBucket) !== bindings.sourceBucketFingerprint ||
-      cfg.sha(bindings.targetBucket) !== bindings.targetBucketFingerprint ||
-      bindings.sourceBucket === bindings.targetBucket)
-    stop("preflight_distinct_bucket_binding_required");
-  if (bindings.targetNameConfirmedByOperator !== true)
-    stop("preflight_control_bucket_name_confirmation_required");
+  guard(state, "ENDPOINT_NOT_DEVELOPMENT", endpoint.identity !== bindings.developmentEndpointFingerprint,
+    "preflight_development_endpoint_refused");
+  guard(state, "BUCKET_BINDING", !!bindings.sourceBucket && !!bindings.targetBucket &&
+    bindings.sourceBucketFingerprint === "ce11c603901c2550295d04cf9a5898200348ff8d29086744a88ee73d8f8716ec" &&
+    bindings.targetBucketFingerprint === "71b5a307f0aa650bee9a8a4359d5caa2841eb5717f590e983100951fca2dd6b2" &&
+    cfg.sha(bindings.sourceBucket) === bindings.sourceBucketFingerprint &&
+    cfg.sha(bindings.targetBucket) === bindings.targetBucketFingerprint &&
+    bindings.sourceBucket !== bindings.targetBucket, "preflight_distinct_bucket_binding_required");
+  guard(state, "CONTROL_BUCKET_CONFIRMATION", bindings.targetNameConfirmedByOperator === true,
+    "preflight_control_bucket_name_confirmation_required");
   return endpoint;
 }
 async function verify({ env = process.env, bindings } = {}) {
   const state = statuses({ READ_ONLY_SAFETY: "PASS" });
   try {
-  const endpoint = requireContext(env, bindings);
+  const endpoint = requireContext(env, bindings, state);
   state.PRODUCTION_CONTEXT = "PASS";
   state.PRODUCTION_SECRETS = "PASS";
   const { Client } = await import("@replit/object-storage");
@@ -74,6 +99,7 @@ async function verify({ env = process.env, bindings } = {}) {
     client = await pool.connect();
     if (!client.connection.stream.encrypted || !client.connection.stream.authorized)
       stop("preflight_verified_tls_required");
+    state.DATABASE_TLS = "PASS";
     const reads = readOnly.sql(client);
     const identity = (await reads.query(
       "SELECT current_database() AS database_name, current_user AS role_name, current_setting('transaction_read_only') AS read_only"

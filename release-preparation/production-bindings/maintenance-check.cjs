@@ -1,14 +1,20 @@
 // Diagnostic-only maintenance command. No import/activation entrypoint is used.
 const fs = require("node:fs");
 const path = require("node:path");
-const { launch: maintenance } = require("../maintenance-cd5bd76/source/deploy/managed/minimal-bootstrap.cjs");
-const { verify } = require("./verify.cjs");
+const { start } = require("./maintenance-http.cjs");
 const { statuses, report } = require("./status.cjs");
-const startForcedMaintenance = ({ port } = {}) => maintenance({ port, maintenanceOnly: true });
+// The verifier loads in a protected worker only after HTTP is listening.
+const defaultCheck = options => require("./diagnostic-worker.cjs").runCheck(options);
 async function launch({
-  env = process.env, port, startMaintenance = startForcedMaintenance, check = verify
+  env = process.env, port, startMaintenance = start, check = defaultCheck
 } = {}) {
-  const app = await startMaintenance({ port, maintenanceOnly: true });
+  const app = await startMaintenance({ env, port });
+  // Return the listener immediately: slow/failed diagnostics cannot delay
+  // liveness or signal-handler registration. No diagnostic result activates it.
+  const diagnostic = runDiagnostic({ env, check });
+  return { ...app, diagnostic };
+}
+async function runDiagnostic({ env, check }) {
   let result = statuses({ MAINTENANCE: "PASS", READ_ONLY_SAFETY: "PASS" });
   if (env.REPLIT_DEPLOYMENT === "1" &&
       env.BQ_MINIMAL_BINDINGS_CHECK === "approved-readonly-check") {
@@ -18,12 +24,12 @@ async function launch({
       result = statuses({ ...(await check({ env, bindings })),
         MAINTENANCE: "PASS", DIAGNOSTIC_REQUEST: "PASS", READ_ONLY_SAFETY: "PASS" });
     } catch (error) {
-      result = statuses({ ...error.statuses, MAINTENANCE: "PASS",
+      result = statuses({ ...error?.statuses, MAINTENANCE: "PASS",
         DIAGNOSTIC_REQUEST: "PASS", READ_ONLY_SAFETY: "PASS" });
     }
   }
   report(result);
-  return app;
+  return result;
 }
 module.exports = { launch };
 if (require.main === module) {

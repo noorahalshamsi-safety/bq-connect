@@ -47,8 +47,9 @@ command, but is not yet live. The configured diagnostic Run command is:
 node release-preparation/production-bindings/maintenance-check.cjs
 ```
 
-It first starts the pinned forced-maintenance listener with maintenanceOnly
-unconditionally true, without invoking any importer entrypoint.
+It first starts a separate HTTP-only maintenance listener, without importing
+the pinned runtime or any importer entrypoint. It binds 0.0.0.0 using PORT,
+with a 4173 fallback matching Publishing's local4173→external80 mapping.
 A single read-only check
 runs only in Production with
 `BQ_MINIMAL_BINDINGS_CHECK=approved-readonly-check`. Success and failure both
@@ -78,6 +79,36 @@ single-SELECT query interface that rejects DML, DDL, SET and multi-statements.
 The source helper receives exists/download capabilities only; the target helper
 receives list only. All bucket IDs are explicit and their original/confirmed
 fingerprints are pinned, regardless of the default bucket.
+
+## Diagnostic health and blocked-context interpretation
+
+GET/HEAD `/` (including query strings) and `/health/live` return 200 with
+maintenance content. `/health/ready` and application routes return 503 with
+`ready:false` regardless of diagnostic success, failure or pending I/O.
+The launcher returns the listener before awaiting diagnostics. The verifier
+loads in a worker only after listening: dependency loading, crypto and remote
+I/O cannot block the HTTP event loop. Worker stdout/stderr are discarded;
+only the allowlisted status message is forwarded. Worker errors are statuses,
+not exception messages. No result can attach or activate an application.
+
+The original aggregate `PRODUCTION_CONTEXT:BLOCKED` discarded its failing
+guard. It does not prove a missing secret, wrong endpoint, TLS failure or wrong
+bucket. New allowlisted subchecks identify the first blocked prerequisite:
+published-process marker, pinned release/bindings, app identity, each secret's
+presence/format, endpoint presence/syntax/destination/options/TLS policy and
+Development identity exclusion, then explicit bucket binding/confirmation.
+Checks not reached remain BLOCKED. `PRODUCTION_SECRETS:PASS` means observed
+presence/format in the verified app context, not original-key equality.
+Only `ORIGINAL_KEY_MATCH:PASS` establishes equality.
+
+No validation is relaxed: the pinned endpoint validator, original bucket
+fingerprints, in-memory key equality, verified database TLS, schema check and
+permission-review requirements remain enforced. An unreviewed URL option
+remains blocked, rather than being silently removed to obtain a PASS.
+
+Focused local tests use only owned ephemeral listeners (never the workspace's
+active4173 service). They verify the configured default4173 listen argument
+separately and exercise HTTP responses under context failure and pending I/O.
 
 ## Restoration after diagnostics
 
