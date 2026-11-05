@@ -93,6 +93,54 @@ async function main() {
   assert.throws(() => cfg.verify({ env, manifest: { kind: "BQ_REPLIT_MANAGED_V1",
     environment: "production", appFingerprint: sha("different-pinned-id") } }),
   error => error.code === "managed_app_identity_mismatch");
+  stage = "provider activation gates";
+  const providerPolicy = require("../../deploy/fresh/providers.cjs");
+  const providerFixture = { "smtp.json": { host: "smtp.company.test", port: 465,
+    user: "operator@company.test", pass: "InventedPasswordOnly2026" },
+    "sms.json": { provider: "twilio", sid: "AC" + "1".repeat(32),
+      token: "InventedTokenOnly2026", from: "+15550000000" } };
+  assert.equal(providerPolicy.review(providerFixture).smtp.status, "CONFIGURATION_READY");
+  const existingProviderFallback = require("../../deploy/fresh/runtime-policy.cjs").providers({
+    SMTP_HOST: providerFixture["smtp.json"].host, SMTP_PORT: "465",
+    SMTP_USER: providerFixture["smtp.json"].user, SMTP_PASS: providerFixture["smtp.json"].pass,
+    SMS_TOKEN: providerFixture["sms.json"].token, TWILIO_SID: providerFixture["sms.json"].sid,
+    TWILIO_FROM: providerFixture["sms.json"].from });
+  assert.equal(providerPolicy.review(existingProviderFallback).smtp.status, "CONFIGURATION_READY");
+  assert.equal(providerPolicy.review(existingProviderFallback).sms.status, "CONFIGURATION_READY");
+  assert.throws(() => providerPolicy.requireReady({}, {}, proposed));
+  assert.throws(() => providerPolicy.requireReady(providerFixture, {}, proposed));
+  providerPolicy.requireReady(providerFixture, {
+    BQ_FRESH_DELIVERY_APPROVAL: "delivery-tested:" + sha(canonical(proposed)) }, proposed);
+  assert.equal(providerPolicy.review({ ...providerFixture,
+    "smtp.json": { ...providerFixture["smtp.json"], port: 587 } }).smtp.status, "BLOCKED");
+  assert.equal(providerPolicy.review({ ...providerFixture,
+    "sms.json": { ...providerFixture["sms.json"], provider: "mock" } }).sms.status, "BLOCKED");
+  const writes = [];
+  function smtpSocket(refuse = false) {
+    return options => {
+      assert(options.rejectUnauthorized && options.minVersion === "TLSv1.2");
+      const socket = new (require("node:events").EventEmitter)();
+      socket.authorized = true;
+      const responses = ["250 accepted", "334 username", "334 password",
+        refuse ? "535 rejected" : "235 accepted"];
+      socket.destroy = () => {};
+      socket.write = value => { writes.push(value); setImmediate(() => socket.emit("data",
+        Buffer.from(responses.shift() + "\r\n"))); };
+      socket.end = value => writes.push(value);
+      setImmediate(() => { socket.emit("secureConnect"); socket.emit("data", Buffer.from("220 ready\r\n")); });
+      return socket;
+    };
+  }
+  assert.equal((await providerPolicy.probeSmtp(providerFixture["smtp.json"], smtpSocket())).status,
+    "AUTHENTICATED_NO_MESSAGE");
+  assert.equal((await providerPolicy.probeSmtp(providerFixture["smtp.json"], smtpSocket(true))).reason, "AUTH");
+  assert(writes.every(v => !/^(MAIL FROM|RCPT TO|DATA)/.test(v)));
+  const generator = require("node:child_process").spawnSync("python3",
+    [path.resolve(__dirname, "../../deploy/fresh/owner-key-clipboard.py"), "BQ_FRESH_SESSION_KEY"],
+    { env: { PATH: process.env.PATH, REPL_ID: "synthetic-workspace" }, encoding: "utf8" });
+  assert.equal(generator.status, 1);
+  assert(generator.stderr.includes("trusted owner workstation"));
+  assert.equal(generator.stdout, "");
   stage = "isolated schema";
   proof = prepare(root); repo = new Repository(proof);
   for (const statement of schema.statements) await repo.pool.query(statement);
@@ -177,9 +225,14 @@ async function main() {
   const approval = "bootstrap:" + sha(canonical([sha(canonical(manifest)), "101"]));
   try {
     await assert.rejects(bootstrap({ c: adminClient, proof, manifest, approval: "wrong" }));
+    const otherDomain = { ...manifest, emailDomains: ["other.invalid"] };
+    await assert.rejects(bootstrap({ c: adminClient, proof, manifest: otherDomain,
+      approval: "bootstrap:" + sha(canonical([sha(canonical(otherDomain)), "101"])) }),
+    error => error.code === "fresh_admin_must_register_verify_company_email_and_mfa");
     await bootstrap({ c: adminClient, proof, manifest, approval });
     await assert.rejects(bootstrap({ c: adminClient, proof, manifest, approval }));
   } finally { adminClient.release(); }
+  ok(await request("/api/social", { action: "admin-summary" }));
   stage = "directory lookup and new post";
   ok(await request("/api/social", { action: "person", pid: profile.person.pid }));
   ok(await request("/api/ideas", { type: "post", text: "Synthetic fresh SQL post" }), 201);
@@ -207,7 +260,9 @@ async function main() {
     employeeOnlyImport: "PASS", idempotency: "PASS", ownership: "PASS", realRegistration: "PASS",
     mfaEmail: "PASS", login: "PASS", bootstrapConsumed: "PASS", directory: "PASS",
     post: "PASS", restart: "PASS", rateLimitingAcrossRestart: "PASS",
-    unavailableProvidersRefused: "PASS", newBindingAndOriginalGuard: "PASS", productionAccess: false }));
+    unavailableProvidersRefused: "PASS", newBindingAndOriginalGuard: "PASS",
+    activationProviderGate: "PASS", smtpAuthWithoutMessage: "PASS", companyEmailAdminGate: "PASS",
+    ownerKeyGenerationRefusedInWorkspace: "PASS", productionAccess: false }));
 }
 main().catch(error => {
   console.error(JSON.stringify({ result: "BLOCKED", stage, error: String(error.message).slice(0, 180), root }));

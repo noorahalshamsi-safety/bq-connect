@@ -18,6 +18,8 @@
   "releaseFingerprint": "3c93e9cdcee602f95ffbadd453c4aac885d8d973b634c409531af580c4aee768",
   "permissionsFingerprint": "fcfdb753f0653791e34b6f98c7f86eb3df53afccc9dc7ff32c3fa6dcd681943f",
   "permissionApproval": null,
-  "initialAdminBadge": null,
-  "emailDomains": []
+  "initialAdminBadge": "41060",
+  "emailDomains": [
+    "binquraya.com"
+  ]
 }

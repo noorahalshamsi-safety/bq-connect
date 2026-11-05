@@ -28,6 +28,13 @@ function providers(env) {
     need(result && typeof result === "object" && !Array.isArray(result), "fresh_provider_configuration_invalid");
     return result;
   }
-  return { "sms.json": json("BQ_FRESH_SMS_CONFIG"), "smtp.json": json("BQ_FRESH_SMTP_CONFIG") };
+  const sms = json("BQ_FRESH_SMS_CONFIG"), smtp = json("BQ_FRESH_SMTP_CONFIG");
+  // Preserve the original adapters' existing Production-secret fallbacks.
+  // These are service credentials, never old account/session signing keys.
+  return { "sms.json": { ...sms, token: sms.token || env.SMS_TOKEN || "",
+    sid: sms.sid || env.TWILIO_SID || "", from: sms.from || env.TWILIO_FROM || "" },
+    "smtp.json": { ...smtp, host: smtp.host || env.SMTP_HOST || "smtp.gmail.com",
+      port: smtp.port || env.SMTP_PORT || 465, user: smtp.user || env.SMTP_USER || "",
+      pass: smtp.pass || env.SMTP_PASS || "" } };
 }
 module.exports = { transform, providers };

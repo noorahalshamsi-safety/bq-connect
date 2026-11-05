@@ -83,7 +83,8 @@ Official references consulted:
 2. Explicitly accept the documented broad capabilities, or separately authorize
    a least-privilege plan; only then set
    `permissionApproval: "reviewed-managed-runtime-capabilities"`.
-3. Supply `initialAdminBadge` and company `emailDomains`. Neither was invented.
+3. The owner's final `initialAdminBadge` and company `emailDomains` selections
+   are now applied in the manifest; do not request reconfirmation.
 4. Finish fresh Production Secrets/provider configuration and the final
    manifest-digest review. Changes to Production app secrets stay pending
    until the owner-approved publication applies them.

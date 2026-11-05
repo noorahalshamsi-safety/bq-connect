@@ -17,6 +17,18 @@ verified employee ownership for registration and owner-only initial admin
 bootstrap. No first-registrant administration or default password. Do not import
 real employees into Development, write Production, or Republish automatically.
 
+Do not repeatedly request already-approved administrator, email-domain, launch
+audience or existing-provider reuse decisions; consult the current approved
+manifest instead. Keep genuinely unavailable technical evidence and separate
+live-operation approvals distinct from those final business decisions.
+
+**Why:** The owner explicitly finalized these business selections and directed
+that they not be requested again while completing the fresh launch.
+
+**How to apply:** Reuse existing SMTP/SMS adapters, keep unverified delivery
+blocked, and never invent provider credentials, recipient approvals or missing
+employee ownership information to make a readiness check pass.
+
 Keep the new PostgreSQL implementation. Do not restore the legacy application
 or switch back to JSON authority; recovery must preserve this release direction.
 

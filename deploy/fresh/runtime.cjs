@@ -2,6 +2,8 @@ const fs = require("node:fs"), os = require("node:os"), path = require("node:pat
 const { base, load, need, sha, canonical } = require("./config.cjs");
 async function start({ env = process.env, manifest = load(env) } = {}) {
   need(env.BQ_FRESH_ACTIVATE_APPROVAL === "activate:" + sha(canonical(manifest)), "fresh_activation_approval_required");
+  const policy = require("./runtime-policy.cjs"), freshProviders = policy.providers(env);
+  require("./providers.cjs").requireReady(freshProviders, env, manifest);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bq-fresh-"));
   fs.chmodSync(root, 0o700);
   const app = path.join(root, "app"), objects = path.join(root, "objects");
@@ -10,6 +12,8 @@ async function start({ env = process.env, manifest = load(env) } = {}) {
   try {
     const cfg = require(path.join(base, "deploy/managed/config.cjs"));
     const proof = cfg.verifyFresh({ env, manifest, paths: { root, app, objects } });
+    need((await require("./providers.cjs").probeSmtp(freshProviders["smtp.json"])).status ===
+      "AUTHENTICATED_NO_MESSAGE", "fresh_smtp_authentication_required");
     const { Client } = await import("@replit/object-storage");
     const { ImmutableStore } = require(path.join(base, "deploy/staging/object-store.cjs"));
     const store = new ImmutableStore(new Client({ bucketId: manifest.bucket }), { dataset: proof.dataset, managedProof: proof });
@@ -32,10 +36,9 @@ async function start({ env = process.env, manifest = load(env) } = {}) {
     // Existing repository restores only SQL-authorized media; no source storage.
     await store.restore(media, objects);
     process.env.BQ_STORAGE_SYNC = "0"; process.env.BQ_TRANSLATE = "0";
-    const policy = require("./runtime-policy.cjs");
     const running = await require(path.join(base, "development/postgres/runtime.cjs")).serve(proof, repo, {
       nativeEnabled: true, minimalRelease: true, freshInstall: true,
-      freshProviders: policy.providers(env), mediaEnabled: env.BQ_FRESH_MEDIA_ENABLED === "1"
+      freshProviders, mediaEnabled: env.BQ_FRESH_MEDIA_ENABLED === "1"
     });
     return { ...running, close: async () => {
       try { await running.close(); } finally { fs.rmSync(root, { recursive: true, force: true }); }

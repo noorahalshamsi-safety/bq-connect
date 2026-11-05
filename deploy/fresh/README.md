@@ -36,21 +36,22 @@ downloaded only `data/employees.json` through an explicit original bucket client
 validated exactly 6,311 records, and retained only its SHA-256 in the draft.
 No source records were saved to the workspace or copied into Development.
 
-The following draft fields intentionally remain unapproved:
+The following technical binding fields remain unapproved:
 
-- `endpoint.hostname` and `endpoint.role`: owner must verify against the
-  existing **Production** database's connection information. Do not paste a
-  connection password into the manifest.
+- `endpoint.hostname`: verify against the existing **Production** database's
+  connection information. The observed role is already `neondb_owner`.
+  Do not paste a connection password into the manifest.
 - `permissionsFingerprint` and `permissionApproval`: review actual Production
   role capabilities and set approval to `reviewed-managed-runtime-capabilities`.
-- `initialAdminBadge`: owner-selected existing directory employee, not a
-  fabricated administrator.
-- `emailDomains`: approved company email domain(s), lowercase, without `@`.
+The final owner business selections are already applied: initial administrator
+badge `41060` and company email domain `binquraya.com`. Do not request
+reconfirmation. The administrator was found in the designated directory with
+both identity-check and phone-ownership material.
 
 The latest supported Production catalog results and exact permission fingerprint
 are documented in `production-permission-review.md`. The observed role and
-fingerprint are now populated in the draft, but owner privilege approval,
-application hostname/TLS and owner policy selections remain pending.
+fingerprint are now populated in the draft, but explicit owner acceptance of
+the broad privileges and the application's hostname/TLS remain pending.
 
 Do not change the dataset after initialization or edit an already active
 installation manifest casually; its hash and key seal are installation identity.
@@ -106,6 +107,36 @@ secrets was established. This preparation **does not claim they exist**.
 Publishing UI edits remain pending until an owner-approved successful publish.
 The application refuses startup/initialization if any fresh key is missing.
 
+### Exact operator-only generation and entry
+
+There is no authorized secure Agent-to-Production secret-writing API available.
+Control-plane checks did not report any of the three fresh key names as present;
+this is not an observation of secret values or of the running process.
+
+On a trusted owner workstation with Python 3 and `pbcopy`, `wl-copy` or `xclip`,
+save the provided `owner-key-clipboard.py` script locally and run:
+
+```sh
+python3 owner-key-clipboard.py BQ_FRESH_SESSION_KEY
+python3 owner-key-clipboard.py BQ_FRESH_BACKUP_KEY
+python3 owner-key-clipboard.py BQ_FRESH_INSTALL_KEY
+```
+
+**Run one command at a time.** After each:
+1. Open Replit Publishing → Production app secrets.
+2. Add the exact printed **name**, paste the clipboard value into its secret
+   value field, and save that entry. Do not paste into chat, a report or a file.
+3. Clear clipboard and clipboard history before generating the next key.
+4. Do not regenerate or overwrite an already-populated key without explicit
+   rotation approval. Leave legacy `BQ_MANAGED_*` and other existing secrets alone.
+
+The script generates 48/32/32 random bytes, prints only the name, copies the key
+directly to the local clipboard, writes no key file and refuses Replit execution.
+If no supported local clipboard is available, use an approved cryptographic
+password manager with the exact table formats; do not work around this by
+printing keys. Entries remain PENDING until an owner-approved successful publish
+applies them, and APPLIED is not established until observed in the new process.
+
 ## Ownership and providers
 
 New registration requires the imported employee's badge, hashed identity check,
@@ -124,12 +155,67 @@ Configure existing providers through Production Secrets:
 They are overlaid only in process-local SQL transaction views, not seeded as
 plaintext SQL settings. No legacy settings files are imported. Provider
 credentials are never returned by the preparation commands.
+The original SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS and
+SMS_TOKEN/TWILIO_SID/TWILIO_FROM Production-secret fallbacks are also preserved.
+Presence-only metadata did not report those names as configured, either; no
+existing Production service credential was read, changed or fabricated.
 
 Missing SMS returns 503 and creates no account. Missing SMTP prevents verified
 email onboarding. SMS/mail outbox acknowledgement means queued, not delivered;
 delivery receipts require a real successful provider response. Web Push is
 explicitly unavailable (503), not falsely acknowledged. In-app SQL
 notifications remain available.
+
+### Current secure provider/directory checks
+
+```sh
+node deploy/fresh/prepare.cjs --verify-current --smtp-auth
+```
+
+This reads only the original employees.json and the two explicitly designated
+provider settings objects, prints value-free states and performs no source
+writes, Production database operations or message sends. The SMTP probe reuses
+the existing implicit-TLS/AUTH LOGIN protocol and stops before MAIL FROM,
+RCPT TO or DATA.
+
+Observed: 6,311 employees, unchanged checksum, approved administrator present
+with ownership material, 6,255 records with both required ownership hashes.
+The other 56 remain unable to register until a separately reviewed legitimate
+ownership solution exists; no information or verification bypass is invented.
+
+Existing SMTP configuration authenticated successfully with verified TLS.
+Actual message delivery was not tested and is not claimed VERIFIED.
+Existing SMS configuration lacks `token`, `sid` and `from` for its Twilio
+adapter. Do not infer a functioning SMS account from the settings object's
+existence. Reuse actual existing service credentials; do not invent new ones.
+Neither provider JSON configuration has been transferred to Production.
+
+### Controlled delivery review before activation
+
+1. Securely populate the fresh Production provider JSON secrets from the actual
+   existing service configuration/owner credential store, not synthetic values.
+2. Obtain explicit permission for **one** company-email delivery and **one**
+   SMS to owner-approved recipients. The company domain alone does not approve
+   a particular recipient. Keep recipients and credentials out of logs/chat.
+3. Use the existing real adapters and configured credentials through an approved
+   execution facility. Confirm actual receipt of both messages and provider
+   outcomes, not merely queue acknowledgement or a configuration flag. No
+   live send is authorized or implemented by the read-only command above.
+4. No approved recipient pair or actual Production execution facility was
+   established in this preparation. This live test remains an operator
+   prerequisite, not a claimed successful check or an available Shell command.
+5. Only after real controlled tests, the operator may set:
+
+```
+BQ_FRESH_DELIVERY_APPROVAL=delivery-tested:<final reviewed manifest digest>
+```
+
+This is an explicit operator assertion, **not machine-generated delivery
+evidence**. Do not set it on the basis of source configuration, SMTP AUTH alone
+or invented recipients. The fresh startup guard refuses incomplete/placeholder
+providers, missing delivery approval, or unsuccessful SMTP authentication;
+it cannot turn those failures into a live application. If provider credentials
+change, repeat their controlled verification before reapproving activation.
 
 Media upload defaults to 503. Enable `BQ_FRESH_MEDIA_ENABLED=1` only after
 reviewing the bound control bucket's actual media read/write access. Existing
@@ -204,7 +290,9 @@ The owner-selected `initialAdminBadge` employee must first register normally and
 verify phone ownership, MFA and company email. No public registration request can
 assign administrator privileges. There are initially zero administrators.
 
-Calculate the nonsecret explicit one-time bootstrap approval:
+Only after this account has completed verification and the operator authorizes
+elevation, calculate the nonsecret explicit one-time bootstrap approval
+(it has deliberately not been generated during preparation):
 
 ```sh
 node -e 'const m=require("./deploy/fresh/production.json"),c=require("./deploy/fresh/config.cjs");console.log("bootstrap:"+c.sha(c.canonical([c.sha(c.canonical(m)),m.initialAdminBadge])))'
