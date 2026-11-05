@@ -19,6 +19,15 @@ resetting the published app, exposing credentials, importing real records into
 Development, or live migration/resource changes/Republish without verified
 destination/key continuity/cutover behavior and exact owner approval.
 
+Keep the new PostgreSQL implementation. Do not restore the legacy application
+or switch back to JSON authority; recovery must preserve this release direction.
+
+**Why:** The owner explicitly ruled out legacy rollback while finalizing the
+PostgreSQL release.
+
+**How to apply:** Keep failures in maintenance and require reviewed forward
+recovery, not an application-authority fallback or a destructive reset.
+
 Keep original authenticated-session, recovery and TOTP domains during this
 handoff, but exclude unfinished pre-cutover challenge tickets.
 
