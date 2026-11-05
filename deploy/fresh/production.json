@@ -1,0 +1,23 @@
+{
+  "kind": "BQ_FRESH_INSTALL_V1",
+  "mode": "fresh-install",
+  "dataset": "managed-production-43f65ac4-9a49-40bf-83f1-9e6ae96649b5",
+  "employees": 6311,
+  "legacyAccounts": 0,
+  "sourceBucket": "replit-objstore-df2b12f8-b7e9-4f8b-bb9d-e3f13ecdeb0d",
+  "bucket": "replit-objstore-44cb0252-dd69-42fb-8f2d-af513c735acb",
+  "directorySha256": "46f7929e592f245e613b027bd25c4b143148d6dc53e7de2f96eda8ce6ebe75be",
+  "endpoint": {
+    "hostname": null,
+    "port": "5432",
+    "database": "neondb",
+    "role": null,
+    "schema": "dev"
+  },
+  "schemaFingerprint": "bb2ddae82613494ce98dba922e53eedbe98f872f9d0cfabb552db4c9dc49df76",
+  "releaseFingerprint": "3c93e9cdcee602f95ffbadd453c4aac885d8d973b634c409531af580c4aee768",
+  "permissionsFingerprint": null,
+  "permissionApproval": null,
+  "initialAdminBadge": null,
+  "emailDomains": []
+}

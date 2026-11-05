@@ -1,23 +1,21 @@
 ---
-name: Minimal migration scope
-description: Owner-approved account-only scope and authentication handoff constraints for BQ Connect.
+name: Fresh PostgreSQL launch scope
+description: Current directory-only fresh-install scope; supersedes the earlier eight-account migration requirement.
 ---
 
-For the current production migration, preserve only the 6,311 employee-directory
-records and eight registered accounts from the currently configured App Storage,
-their credentials, roles/security, original authentication secrets, factors and
-essential relationships. The Workspace three-account copy is never authoritative.
-If the source counts change, stop and report rather than discard records.
+The current release is a fresh PostgreSQL installation: exactly 6,311 employees
+from only the designated original bucket's employees.json and ZERO legacy
+accounts, credentials, roles, signing keys, sessions, TOTP or social content.
+Preserve source storage unchanged. Stop if source counts change.
 
-**Why:** The owner said BQ Connect is experimental, historical social content is
-not required, and explicitly stopped full historical migration/backup investigations.
+**Why:** The owner explicitly changed from preserving eight accounts to a clean
+launch with new registrations and fresh Production-only security keys.
 
-**How to apply:** Use the owner's designated source rather than reopening broad
-source/Vault/media investigations. New social tables may start empty. Dropping
-history from migration scope never permits deleting or overwriting the source,
-resetting the published app, exposing credentials, importing real records into
-Development, or live migration/resource changes/Republish without verified
-destination/key continuity/cutover behavior and exact owner approval.
+**How to apply:** Do not reopen legacy key continuity, Vault or historical
+migration investigations. Require explicit fresh-install authority, new keys,
+verified employee ownership for registration and owner-only initial admin
+bootstrap. No first-registrant administration or default password. Do not import
+real employees into Development, write Production, or Republish automatically.
 
 Keep the new PostgreSQL implementation. Do not restore the legacy application
 or switch back to JSON authority; recovery must preserve this release direction.
@@ -28,17 +26,16 @@ PostgreSQL release.
 **How to apply:** Keep failures in maintenance and require reviewed forward
 recovery, not an application-authority fallback or a destructive reset.
 
-Keep original authenticated-session, recovery and TOTP domains during this
-handoff, but exclude unfinished pre-cutover challenge tickets.
+The old identity mismatch remains unresolved and the old identity guard must
+remain intact. A separately reviewed new-installation environment/database/bucket
+binding may authorize the fresh path; it is not proof that the old identity matches.
 
-**Why:** The old process's used-challenge ledger is not in App Storage. Reusing
-its old challenge domain without that ledger could permit an already-consumed
-challenge to be accepted again; rotating the original session key would instead
-break the account continuity the owner requires.
+**Why:** The owner authorized a clean launch, not fabrication of an old runtime
+identity or another attestation framework.
 
-**How to apply:** Scope new challenge signatures to the destination dataset,
-keep that scope stable across restarts, and let users restart unfinished
-challenges without replacing their account credentials or factor secrets.
+**How to apply:** Keep new-install authority and approvals explicit and separate
+from legacy migration/adoption. Normal startup must never auto-provision an
+empty database or fall back to JSON authority.
 
 The owner selected Publishing's “Create production database” ON and “Set up
 production database with current development data” OFF. The owner approved a

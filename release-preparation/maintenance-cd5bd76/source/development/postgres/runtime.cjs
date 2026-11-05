@@ -16,7 +16,7 @@ async function start(root) {
 }
 // Shared by development and staging. Performs no DDL; callers own schema state.
 // `faults` honours dev.test_faults injection points and is development-only.
-async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,minimalRelease=false,deliverMail,deliverSms}={}) {
+async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,minimalRelease=false,deliverMail,deliverSms,freshInstall=false,freshProviders={},mediaEnabled=false}={}) {
   let poisoned=false,stopping=false,ingress=0,pending=0;
   const jobTimers=new Set();
   const timings=[];
@@ -28,8 +28,14 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
     try{
       const media=nativeRead?{rows:[]}:await t.client.query("SELECT * FROM dev.media WHERE state IN('ready','retained')");
       await repo.ensureMedia(media.rows);
-      return {...t,nativeProfile:nativeRead,buffers:new Map([...t.files].map(([f,r])=>[f,Buffer.from(JSON.stringify(r.value))])),
+      const hydrated={...t,nativeProfile:nativeRead,buffers:new Map([...t.files].map(([f,r])=>[f,Buffer.from(JSON.stringify(r.value))])),
         changed:new Set(),temps:new Map(),events:[],media:new Map(media.rows.map(row=>[row.legacy_path,{...row,legacy:row.legacy_path,object:path.join(proof.objects,row.id)}])),actor:""};
+      // Production provider secrets are process-local overlays, not SQL settings.
+      if(freshInstall)for(const [name,value]of Object.entries(freshProviders)){
+        hydrated.buffers.set(name,Buffer.from(JSON.stringify(value)));
+        if(hydrated.files.has(name))hydrated.files.set(name,{...hydrated.files.get(name),value});
+      }
+      return hydrated;
     }catch(e){await t.client.query("ROLLBACK").catch(()=>{});t.client.release(e);throw e;}
   }
   async function refresh() {
@@ -153,6 +159,7 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
       source+='\nmodule.exports.__maps={failures,mailLog,usedTickets};\nmodule.exports.__refresh=()=>{for(const k of Object.keys(accounts))delete accounts[k];Object.assign(accounts,safety.readAccounts(ACCOUNTS));loadedStamp=accountsStamp();securityCache={stamp:"",value:null};};\n';
     }
     if(file==="server.js"){
+      if(freshInstall)source=require(path.resolve(__dirname,"../../../../../deploy/fresh/runtime-policy.cjs")).transform(source,{mediaEnabled});
       const marker="handleApi(req, res, urlPath, params).catch(";
       if(!source.includes(marker))throw Error("route_wrapper_source_changed");
       source='const setInterval=global.__bqDevInterval;\n'+source.replace(marker,"return "+marker).replaceAll('.replace(/^0+/, "")',"");
@@ -347,7 +354,12 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
     server.listen=(...params)=>{
       const callback=typeof params.at(-1)==="function"?params.pop():()=>{};
       return listen(...params,async()=>{
-        try{await callback();await finish(boot,true);boot=null;readyResolve();}
+        try{
+          // Modules have now exported their maps. Restore fresh-install SQL
+          // security state before boot's first persist, or restarts erase locks.
+          if(freshInstall)await refresh();
+          await callback();await finish(boot,true);boot=null;readyResolve();
+        }
         catch(e){console.error("Synthetic activation refused:",e.message);if(context===boot)await finish(boot,false).catch(()=>{});boot=null;process.exitCode=1;server.close();}
       });
     };

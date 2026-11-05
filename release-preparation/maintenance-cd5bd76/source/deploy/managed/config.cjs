@@ -55,6 +55,14 @@ function verify({env=process.env,manifest,paths={},approvalRoot=__dirname}={}){
     statement_timeout:20000,lock_timeout:12000,application_name:`bq-managed-${profile}`});
   return proof;
 }
+// Explicit new-install authority. The legacy verify() identity/adoption guard
+// above is unchanged; fresh verification never supplies a fake REPL_ID.
+function verifyFresh({env=process.env,manifest,paths={}}={}){
+  const fresh=require(path.resolve(__dirname,"../../../../../deploy/fresh/config.cjs"));
+  const checked=fresh.authorize({env,manifest});
+  const proof=Object.freeze({...checked.proof,root:paths.root,app:paths.app,objects:paths.objects});
+  issued.set(proof,checked.pool);return proof;
+}
 function assertProof(proof){if(!issued.has(proof)||!Object.isFrozen(proof))fail("managed_verified_proof_required");}
 function poolOptions(proof){assertProof(proof);return {...issued.get(proof)};}
 async function permissions(client){
@@ -72,4 +80,4 @@ async function verifyDatabase(client,proof){
   if(p.fingerprint!==proof.permissionsFingerprint)fail("managed_permissions_changed");
   return p;
 }
-module.exports={verify,poolOptions,assertProof,endpoint,permissions,verifyDatabase,sha,canonical,fail};
+module.exports={verify,verifyFresh,poolOptions,assertProof,endpoint,permissions,verifyDatabase,sha,canonical,fail};

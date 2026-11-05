@@ -5,5 +5,5 @@
 - [Memory evidence boundaries](memory-evidence-boundaries.md) — lower post-GC live heap does not establish bounded RSS or successful full-feed capacity.
 - [Feed pagination approval](feed-pagination-approval.md) — private paging tests are not approval to change the full-feed API/UI or claim full-application capacity.
 - [Release destination](release-destination.md) — PostgreSQL preparation targets the existing BQ Connect app, not a new employee-facing product.
-- [Minimal migration scope](minimal-migration-scope.md) — owner selected configured App Storage's 6,311 employees/eight accounts; stop historical audits and retain original authentication.
+- [Fresh PostgreSQL launch](minimal-migration-scope.md) — 6,311 directory employees, zero legacy accounts; fresh keys/new registration supersede eight-account migration.
 - [Diagnostic verification](diagnostic-verification.md) — aggregate blockers do not prove missing keys; use stage-only evidence and owned ephemeral HTTP test listeners.
