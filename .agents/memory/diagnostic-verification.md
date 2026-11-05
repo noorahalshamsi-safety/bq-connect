@@ -57,3 +57,13 @@ not provide an explicit runtime-to-project identity contract.
 **How to apply:** Require explicit provider semantics and authenticated mapping
 before approving a distinct Production binding; never infer them from a
 fingerprint mismatch or from environment isolation alone.
+
+An explicit Git commit in authenticated build logs identifies the recorded
+source revision, not necessarily every byte in the published snapshot.
+
+**Why:** Available build records exposed a Git revision but no retrievable
+per-file artifact manifest or deployed binding digest.
+
+**How to apply:** Compare the recorded Git tree when available, but label that
+comparison as source-tree evidence. Without snapshot-bound provenance, report
+the actual deployed binding hash as UNKNOWN rather than inferring MATCH.
