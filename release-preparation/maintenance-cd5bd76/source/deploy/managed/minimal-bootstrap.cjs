@@ -38,8 +38,16 @@ async function launch({port=Number(process.env.PORT)||5000,startRuntime=start,re
         "fresh_bucket_binding_mismatch",
         "fresh_registration_policy_required"
       ]);
-      const reason = allowed.has(error?.code)
-        ? error.code : "OTHER_BLOCKER";
+      const code = String(error?.code || "");
+      const reason = (
+        allowed.has(code) ||
+        /^fresh_[a-z_]+$/.test(code)
+      ) ? code : (
+        ["ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND",
+         "ECONNRESET", "EAI_AGAIN"].includes(code)
+          ? "NETWORK_" + code
+          : "OTHER_BLOCKER"
+      );
       if (!stopping) {
         if (reason !== lastReason) {
           console.log(JSON.stringify({
