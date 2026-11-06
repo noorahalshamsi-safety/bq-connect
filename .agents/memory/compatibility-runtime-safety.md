@@ -26,3 +26,15 @@ background jobs must not compete with the boot transaction.
 **How to apply:** Preserve maintenance until successful commit, bound startup,
 and use value-free stage diagnostics. When testing remote-SQL startup, account
 for per-row network round trips, not just fast local PostgreSQL timings.
+
+A coarse startup phase timeout does not identify the awaited operation that
+stalled. A read-only replica cannot attest live application lock or pool waits.
+
+**Why:** Production startup evidence exposed only an aggregate hydration
+deadline. Local success and replica metadata were insufficient to establish
+whether the live process was waiting for a connection, lock, protocol read,
+decoding or storage.
+
+**How to apply:** Keep those sub-stages separately timed, distinguish synthetic
+latency measurements from Production root-cause evidence, and coalesce test
+readiness probes so slow serialized reads do not create a probe flood.

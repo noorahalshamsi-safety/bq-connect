@@ -5,7 +5,23 @@ const { base } = require("../../deploy/fresh/config.cjs");
 const proof = require(path.join(base, "development/postgres/isolation.cjs")).verify(process.argv[2]);
 const { Repository } = require(path.join(base, "development/postgres/repository.cjs"));
 const repo = new Repository(proof);
+if(process.env.BQ_TEST_LOAD_MODE){
+  const load=process.env.BQ_TEST_LOAD_MODE==="serial"
+    ?require("./hydrate-reference.cjs").referenceLoad:repo.load.bind(repo);
+  repo.load=(client,...args)=>load({query:async(...query)=>{
+    await new Promise(r=>setTimeout(r,20));
+    return client.query(...query);
+  }},...args);
+}
 const fault=process.env.BQ_TEST_STARTUP_FAULT;
+if(fault==="lock")repo.pool.on("connect",client=>{
+  const query=client.query.bind(client);
+  client.query=(sql,...args)=>{
+    if(sql?.text==="SELECT pg_advisory_xact_lock(1793705963)")
+      sql={...sql,query_timeout:1000};
+    return query(sql,...args);
+  };
+});
 if(fault) {
   const originalBegin=repo.begin.bind(repo);
   let first=true;
@@ -56,13 +72,16 @@ require(path.join(base,"deploy/managed/minimal-bootstrap.cjs")).launch({
   startRuntime:serve
 }).then(app => {
   process.send({kind:"gateway",port:app.server.address().port});
+  let probing=false;
   const poll=setInterval(async()=>{
+    if(probing)return;
+    probing=true;
     try{
-      const r=await fetch(`http://127.0.0.1:${app.server.address().port}/health/ready`,{signal:AbortSignal.timeout(1000)});
+      const r=await fetch(`http://127.0.0.1:${app.server.address().port}/health/ready`,{signal:AbortSignal.timeout(10000)});
       if(r.status!==200)return;
       clearInterval(poll);
   process.send({ kind: "ready", port: app.server.address().port });
-    }catch{}
+    }catch{}finally{probing=false;}
   },50);
   poll.unref();
   process.on("SIGTERM", () => app.close().finally(() => process.exit(0)));

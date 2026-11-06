@@ -3,6 +3,7 @@ const fs=require("node:fs"),path=require("node:path"),crypto=require("node:crypt
 const codec=require("./codec.cjs");
 const {vault}=require("./sealed.cjs");
 const hash=value=>crypto.createHash("sha256").update(value).digest("hex");
+const sourceFingerprint=hash(fs.readFileSync(__filename));
 const fileTables=new Map();
 function codecFileTables(file){
   if(!fileTables.has(file)){
@@ -136,53 +137,85 @@ class Repository {
       receipt(this.proof,"committed");
     } catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
   }
-  async load(c,selected) {
+  async load(c,selected,observe) {
     const files=await c.query("SELECT * FROM dev.files ORDER BY name"),records=new Map();
-    for(const table of codec.tables.keys()) {
-      if(selected&&!selected.some(file=>codecFileTables(file).has(table)))continue;
-      const r=await c.query(`SELECT id,file_name,parent,entry_key,ordinal,attrs,shape FROM dev.${table}`);
+    const tables=[...codec.tables.keys()].filter(table=>
+      !selected||selected.some(file=>codecFileTables(file).has(table)));
+    // All codec relations share these columns. A single UNION ALL preserves
+    // every row and table tag without >100 serial network round trips.
+    // Table identifiers come only from the static codec, never a request.
+    const tableSet=new Set(tables);
+    if(tables.length){
+      const r=await c.query(tables.map(table=>
+        `SELECT '${table}'::text AS codec_table,id,file_name,parent,entry_key,ordinal,attrs,shape FROM dev.${table}`
+      ).join(" UNION ALL "));
       // Driver rows are owned by this load, not shared with another request.
       // Transfer them into file buckets rather than cloning every row and
       // repeatedly filtering the complete social graph for each entity.
       for(const row of r.rows){
-        row.table=table;
+        if(!tableSet.has(row.codec_table))throw Error("unexpected_codec_relation");
+        row.table=row.codec_table;delete row.codec_table;
         if(!records.has(row.file_name))records.set(row.file_name,[]);
         records.get(row.file_name).push(row);
       }
     }
+    const decoding=performance.now();
+    observe?.({operation:"DECODE",status:"STARTED",elapsedMs:0});
     const result=new Map();
     for(const file of files.rows)if(!selected||selected.includes(file.name)){
       result.set(file.name,{value:codec.decode(file.name,records.get(file.name)||[]),revision:Number(file.revision)});
       records.delete(file.name);
     }
     result.allRevisions=new Map(files.rows.map(f=>[f.name,{revision:Number(f.revision)}]));
+    result.loadQueryCount=1+(tables.length?1:0);
+    observe?.({operation:"DECODE",status:"PASS",elapsedMs:Math.round(performance.now()-decoding)});
     return result;
   }
   async save(c,file,value,revision) {
     return saveFile(c,file,value,revision);
   }
-  async begin(selected) {
+  async begin(selected,{observe}={}) {
+    async function step(operation,fn){
+      const at=performance.now();
+      observe?.({operation,status:"STARTED",elapsedMs:0});
+      try{
+        const value=await fn();
+        observe?.({operation,status:"PASS",elapsedMs:Math.round(performance.now()-at)});
+        return value;
+      }catch(error){
+        observe?.({operation,status:"BLOCKED",elapsedMs:Math.round(performance.now()-at),
+          category:["55P03","57014","53300","08006","57P01"].includes(error.code)?error.code:"OTHER"});
+        throw error;
+      }
+    }
     const started=performance.now();
-    const c=await this.pool.connect();
+    const c=await step("POOL",()=>this.pool.connect());
+    // Bound read/protocol waits as well as PostgreSQL execution. A frontend
+    // timeout does not cancel a query, so any failure destroys this connection
+    // rather than awaiting ROLLBACK behind an unresponsive protocol stream.
+    const read={query:(text,values)=>c.query({text,values,query_timeout:20000})};
     const queryStart=c.__bqQueries;
     const acquired=performance.now();
     try {
-      await c.query("BEGIN");
-      await c.query("SELECT pg_advisory_xact_lock(1793705963)");
+      await step("BEGIN",()=>read.query("BEGIN"));
+      await step("ADVISORY_LOCK",()=>read.query("SELECT pg_advisory_xact_lock(1793705963)"));
       const locked=performance.now();
-      await this.verify(c);
+      await step("AUTHORITY",()=>this.verify(read));
       // Compatibility code has process-local object graphs. Serialize requests
       // across app processes, then refresh every graph from these locked rows.
-      await c.query("SELECT name FROM dev.files ORDER BY name FOR UPDATE");
-      const loading=performance.now(),files=await this.load(c,selected);
+      await step("FILE_LOCK",()=>read.query("SELECT name FROM dev.files ORDER BY name FOR UPDATE"));
+      const loading=performance.now(),files=await step("LOAD",()=>this.load({
+        query:(text,values)=>step(text.startsWith("SELECT * FROM dev.files")?"FILE_INDEX":"RELATIONS",
+          ()=>read.query(text,values))
+      },selected,observe));
       // A placeholder may lack credentials; an authenticated session may not.
       // Preserve legacy KDF records, but never treat lost credential columns as
       // an unregistered account while its session children still exist.
       for(const row of Object.values(files.get("accounts.json")?.value||{})){
         if(row.sessions?.length&&(!row.hash||!row.salt))throw Error("critical_accounts_session_credentials");
       }
-      return {client:c,files,started,queryStart,metrics:{poolWaitMs:acquired-started,advisoryWaitMs:locked-acquired,loadMs:performance.now()-loading,loadQueries:selected?new Set(selected.flatMap(f=>[...codecFileTables(f)])).size:codec.tables.size}};
-    } catch(e){await c.query("ROLLBACK").catch(()=>{});c.release(e);throw e;}
+      return {client:c,files,started,queryStart,metrics:{poolWaitMs:acquired-started,advisoryWaitMs:locked-acquired,loadMs:performance.now()-loading,loadQueries:files.loadQueryCount}};
+    } catch(e){c.release(e);throw e;}
   }
   async importSynthetic(files) {
     if(!files||typeof files!=="object")throw Error("synthetic_fixture_required");
@@ -273,4 +306,4 @@ class Repository {
     }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
   }
 }
-module.exports={Repository,hash,controlDdl,saveFile};
+module.exports={Repository,hash,controlDdl,saveFile,sourceFingerprint};

@@ -403,6 +403,30 @@ After the operator-approved Republish, verify `SQL_STARTUP: READY / PASS`,
 `/health/ready` HTTP 200 and actual application content at `/`. A listener URL
 alone is not evidence of committed readiness.
 
+HYDRATE is traced separately for pool acquisition, BEGIN, the advisory lock,
+authority verification, file locks, the file index, relation reads, decoding,
+media index/cache restore and buffer creation. Successful sub-stages report
+elapsed milliseconds; fixed SQLSTATE categories distinguish recognized lock,
+statement and connection failures without printing query values or messages.
+SOURCE reports only hashes of the actually loaded runtime/repository code,
+so an operator can compare the published code with the approved candidate.
+Generated-module creation and compilation occur **after** HYDRATE.
+
+The relation projection now uses one UNION ALL read instead of one network
+request per codec table. It still reads every authorized relation under the
+same transaction/advisory/file locks and decodes the same original values.
+Read/protocol operations have a 20-second frontend deadline in addition to
+the existing PostgreSQL statement/lock limits. A failed acquisition destroys
+its checked-out connection, allowing PostgreSQL to roll back, rather than
+queueing a potentially unbounded ROLLBACK behind a stalled protocol read.
+The overall startup deadline remains 120 seconds.
+
+The integration suite compares old and new projections, full and selected,
+then measures cold children with 6,311 invented employees and identical
+20ms-per-read simulated network latency. It also holds the real PostgreSQL
+advisory lock in a second session to prove a blocked acquisition is reported
+and refused without activating the public gateway.
+
 Partial initialization or lost independent evidence requires reviewed forward
 recovery. Do not delete intents, reset populated tables or restore the legacy
 application/JSON authority to make a retry pass.

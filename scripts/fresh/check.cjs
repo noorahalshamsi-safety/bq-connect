@@ -19,7 +19,7 @@ function unbase32(s) {
   let bits = ""; for (const ch of s.toUpperCase().replace(/=+$/, "")) bits += alphabet.indexOf(ch).toString(2).padStart(5, "0");
   return Buffer.from((bits.match(/.{8}/g) || []).map(b => parseInt(b, 2))).toString("hex");
 }
-async function boot(off = false, adminApproved = true, fault = "") {
+async function boot(off = false, adminApproved = true, fault = "", loadMode = "") {
   const reservation = net.createServer();
   await new Promise(r => reservation.listen(0, "127.0.0.1", r));
   port = reservation.address().port; await new Promise(r => reservation.close(r));
@@ -27,6 +27,7 @@ async function boot(off = false, adminApproved = true, fault = "") {
   child = fork(path.join(__dirname, "fixture-server.cjs"), [root, off ? "providers-off" : "providers-on"], {
     env: { ...proof.childEnv, PORT: String(port), HOST: "127.0.0.1",
       BQ_TEST_STARTUP_FAULT:fault,
+      BQ_TEST_LOAD_MODE:loadMode,
       BQ_TEST_ADMIN_POLICY: JSON.stringify({ ...adminPolicy, approved: adminApproved && adminPolicy.approved }) }, silent: true });
   child.stdout.on("data", b => logs.push(b.toString()));
   child.stderr.on("data", b => logs.push(b.toString()));
@@ -52,13 +53,21 @@ async function boot(off = false, adminApproved = true, fault = "") {
     return;
   }
   for (let i = 0; i < 300; i++) {
-    if (events.some(m => m.kind === "ready" && m.port === port)) return;
+    if (events.some(m => m.kind === "ready" && m.port === port)) {
+      const stages=logs.join("").split("\n").flatMap(line=>{try{return[JSON.parse(line)];}catch{return[];}});
+      const hydration=stages.find(s=>s.SQL_STARTUP==="HYDRATE"&&s.status==="PASS"&&!s.operation);
+      assert(hydration&&Number.isFinite(hydration.elapsedMs),"completed_hydrate_timing_required");
+      const ready=stages.find(s=>s.SQL_STARTUP==="READY"&&s.status==="PASS");
+      assert(ready&&Number.isFinite(ready.elapsedMs));
+      return{hydrateMs:hydration.elapsedMs,startupMs:ready.elapsedMs};
+    }
     if (child.exitCode !== null || events.some(m => m.kind === "blocked")) {
       fs.writeFileSync(path.join(root, "fixture-error.log"), logs.join(""), { mode: 0o600 });
       throw Error("fixture_start_failed");
     }
     await delay(100);
   }
+  fs.writeFileSync(path.join(root,"fixture-error.log"),logs.join(""),{mode:0o600});
   throw Error("fixture_start_timeout");
 }
 async function stop() {
@@ -229,6 +238,24 @@ async function main() {
     approval: "bootstrap:" + sha(canonical([sha(canonical(manifest)), "101"])) })); }
   finally { premature.release(); }
   stage = "registration ownership guard";
+  const snapshotClient=await repo.pool.connect();
+  try{
+    await snapshotClient.query("BEGIN READ ONLY");
+    const reference=require("./hydrate-reference.cjs").referenceLoad;
+    for(const selected of [undefined,["employees.json","accounts.json"],[]]){
+      const before=await reference(snapshotClient,selected),after=await repo.load(snapshotClient,selected);
+      assert.deepEqual([...after],[...before],"batched_hydration_must_preserve_every_projection");
+      assert.deepEqual([...after.allRevisions],[...before.allRevisions]);
+      assert(after.loadQueryCount<=2);
+    }
+  }finally{await snapshotClient.query("ROLLBACK");snapshotClient.release();}
+  // Same real SQL data, same cold child/runtime, same 20ms read round-trip
+  // delay. No mock readiness and no Production network or storage.
+  const serialHydrateMs=await boot(false,true,"","serial");
+  await stop();events.length=0;
+  const batchedHydrateMs=await boot(false,true,"","batched");
+  await stop();events.length=0;
+  assert(serialHydrateMs.hydrateMs>batchedHydrateMs.hydrateMs+1000,"hydrate_must_remove_serial_round_trips");
   const beforeFailedBoot=sha(canonical(await repo.exportSynthetic()));
   const beforeRuntimeState=(await repo.pool.query("SELECT count(*)::int AS n FROM dev.runtime_state")).rows[0].n;
   for(const fault of ["syntax","refresh","persist","commit","timeout"]){
@@ -239,6 +266,12 @@ async function main() {
     assert.equal(sha(canonical(await repo.exportSynthetic())),beforeFailedBoot,"failed_boot_must_roll_back_all_entities");
     assert.equal((await repo.pool.query("SELECT count(*)::int AS n FROM dev.runtime_state")).rows[0].n,beforeRuntimeState);
   }
+  const blocker=await repo.pool.connect();
+  try{
+    await blocker.query("BEGIN");await blocker.query("SELECT pg_advisory_xact_lock(1793705963)");
+    await boot(false,true,"lock");await stop();events.length=0;
+  }finally{await blocker.query("ROLLBACK");blocker.release();}
+  assert.equal(sha(canonical(await repo.exportSynthetic())),beforeFailedBoot);
   await boot(true);
   ok(await request("/api/register", { badge: "101", code: "1234", mobile: "512345678",
     email: "synthetic101@binquraya.com",
@@ -397,6 +430,9 @@ async function main() {
     optionalTotp: "PASS", originalCodeMobileHashes: "PASS", ownerGatedAdmin: "PASS",
     loginEmailNotifications: "PASS", smsNotRequired: "PASS",
     gatewayStartupAndReadiness:"PASS",generatedModuleSyntaxFailure:"PASS",
+    hydrateSerialReferenceMs:serialHydrateMs.hydrateMs,hydrateBatchedMs:batchedHydrateMs.hydrateMs,
+    coldStartupSerialReferenceMs:serialHydrateMs.startupMs,coldStartupBatchedMs:batchedHydrateMs.startupMs,
+    hydrateReadLatencyMs:20,advisoryLockWaitBoundedAndRefused:"PASS",
     bootRefreshPersistCommitFailure:"PASS",startupDeadlineRetiresWorker:"PASS",
     failedStartupMaintenanceAndRollback:"PASS",
     emailRecovery: "PASS", recoverySingleUseAndRestart: "PASS",

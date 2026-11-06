@@ -23,11 +23,12 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
   const timings=[];
   let context=null,queue=Promise.resolve(),auth,app,readyResolve,readyReject;
   let boot,virtual,realHttps,outboxTimer,internalServer,bootComplete=false;
+  const startupAt=performance.now();
   const realCreate=http.createServer;
   let startupStage="HYDRATE";
-  function stage(name,status="STARTED",error) {
+  function stage(name,status="STARTED",error,elapsedMs) {
     startupStage=name;
-    console.log(JSON.stringify({SQL_STARTUP:name,status,...(error?{
+    console.log(JSON.stringify({SQL_STARTUP:name,status,...(elapsedMs!==undefined?{elapsedMs}:{}),...(error?{
       errorType:["Error","TypeError","ReferenceError","SyntaxError","RangeError"].includes(error.name)?error.name:"OTHER"
     }:{})}));
   }
@@ -44,13 +45,29 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
   },startupTimeoutMs);
   startupTimer.unref();
   try {
+  console.log(JSON.stringify({SQL_STARTUP:"SOURCE",status:"PASS",
+    repositorySha256:require("./repository.cjs").sourceFingerprint,
+    runtimeSha256:hash(fs.readFileSync(__filename))}));
   stage("HYDRATE");
   const serial=fn=>{const work=queue.then(fn,fn);queue=work.catch(()=>{});return work;};
   const responseScope=c=>scope(new Map([...(c.files.allRevisions||c.files),...c.files]));
   async function hydrate(t,nativeRead=false) {
+    const observe=bootComplete?undefined:async(operation,fn)=>{
+      const at=performance.now();stage("HYDRATE_"+operation);
+      try{
+        const result=await fn();stage("HYDRATE_"+operation,"PASS",undefined,Math.round(performance.now()-at));
+        return result;
+      }catch(error){
+        stage("HYDRATE_"+operation,"BLOCKED",error,Math.round(performance.now()-at));throw error;
+      }
+    };
+    const run=(name,fn)=>observe?observe(name,fn):fn();
     try{
-      const media=nativeRead?{rows:[]}:await t.client.query("SELECT * FROM dev.media WHERE state IN('ready','retained')");
-      await repo.ensureMedia(media.rows);
+      const media=nativeRead?{rows:[]}:await run("MEDIA_INDEX",()=>t.client.query({
+        text:"SELECT * FROM dev.media WHERE state IN('ready','retained')",query_timeout:20000
+      }));
+      await run("MEDIA_RESTORE",()=>repo.ensureMedia(media.rows));
+      const at=performance.now();if(!bootComplete)stage("HYDRATE_BUFFERS");
       const hydrated={...t,nativeProfile:nativeRead,buffers:new Map([...t.files].map(([f,r])=>[f,Buffer.from(JSON.stringify(r.value))])),
         changed:new Set(),temps:new Map(),events:[],media:new Map(media.rows.map(row=>[row.legacy_path,{...row,legacy:row.legacy_path,object:path.join(proof.objects,row.id)}])),actor:""};
       // Production provider secrets are process-local overlays, not SQL settings.
@@ -58,8 +75,9 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
         hydrated.buffers.set(name,Buffer.from(JSON.stringify(value)));
         if(hydrated.files.has(name))hydrated.files.set(name,{...hydrated.files.get(name),value});
       }
+      if(!bootComplete)stage("HYDRATE_BUFFERS","PASS",undefined,Math.round(performance.now()-at));
       return hydrated;
-    }catch(e){await t.client.query("ROLLBACK").catch(()=>{});t.client.release(e);throw e;}
+    }catch(e){t.client.release(e);throw e;}
   }
   async function refresh() {
     auth?.__refresh();
@@ -157,7 +175,12 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
     };
     const timer=setInterval(invoke,ms);jobTimers.add(timer);timer.unref();return timer;
   };
-  boot=context=await hydrate(await repo.begin());
+  const hydrateAt=performance.now();
+  boot=context=await hydrate(await repo.begin(undefined,{observe:entry=>{
+    startupStage="HYDRATE_"+entry.operation;
+    console.log(JSON.stringify({SQL_STARTUP:"HYDRATE",...entry}));
+  }}));
+  stage("HYDRATE","PASS",undefined,Math.round(performance.now()-hydrateAt));
   stage("GENERATE");
   const files=["auth.js","server.js","backup.js","push.js","moderation.js","spark-agent.js","translate.js","persistence-safety.js"];
   // Transform only the isolated copies. The production source remains unchanged.
@@ -321,7 +344,7 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
         try{
           if(nativeRead&&!await nativeProfile.safe(transaction)){
             const fallbackAt=performance.now();
-            transaction.files=await repo.load(transaction.client);transaction.metrics.loadQueries+=107;transaction.metrics.loadMs+=performance.now()-fallbackAt;nativeRead=false;
+            transaction.files=await repo.load(transaction.client);transaction.metrics.loadQueries+=transaction.files.loadQueryCount;transaction.metrics.loadMs+=performance.now()-fallbackAt;nativeRead=false;
           }
         }catch(e){await transaction.client.query("ROLLBACK").catch(()=>{});transaction.client.release(e);throw e;}
         c=context=await hydrate(transaction,nativeRead);await refresh();
@@ -401,7 +424,7 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
           if(freshInstall){stage("BOOT_REFRESH");await refresh();}
           stage("BOOT_CALLBACK");
           await callback();await finish(boot,true);boot=null;
-          bootComplete=true;clearTimeout(startupTimer);stage("READY","PASS");readyResolve();
+          bootComplete=true;clearTimeout(startupTimer);stage("READY","PASS",undefined,Math.round(performance.now()-startupAt));readyResolve();
         }
         catch(e){readyReject(e);}
       });
