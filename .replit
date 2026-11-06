@@ -75,7 +75,7 @@ externalPort = 4200
 [deployment]
 deploymentTarget = "vm"
 build = ["npm", "ci", "--omit=dev"]
-run = ["node", "release-preparation/production-bindings/maintenance-check.cjs"]
+run = ["node", "deploy/fresh/initialize.cjs"]
 ignorePorts = false
 
 [objectStorage]
