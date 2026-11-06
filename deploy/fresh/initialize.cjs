@@ -26,6 +26,26 @@ if (require.main === module) {
   require("../../release-preparation/production-bindings/maintenance-http.cjs").start().then(async app => {
     for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => app.close().finally(() => process.exit(0)));
     try { const r = await execute(); console.log(JSON.stringify({ FRESH_INSTALL: "PASS", ...r, mode: "maintenance" })); }
-    catch { console.log('{"FRESH_INSTALL":"BLOCKED","mode":"maintenance"}'); }
+    catch (err) {
+      const allowed = new Set([
+        "fresh_initialization_approval_required",
+        "fresh_configuration_required",
+        "fresh_owner_binding_required",
+        "fresh_production_secrets_required",
+        "fresh_production_database_required",
+        "fresh_tls_required",
+        "fresh_destination_binding_mismatch",
+        "fresh_bucket_binding_mismatch",
+        "fresh_reviewed_contract_required",
+        "fresh_schema_permission_review_required",
+        "fresh_registration_policy_required"
+      ]);
+      const code = allowed.has(err?.code) ? err.code : "OTHER_BLOCKER";
+      console.log(JSON.stringify({
+        FRESH_INSTALL: "BLOCKED",
+        reason: code,
+        mode: "maintenance"
+      }));
+    }
   }).catch(() => { console.error('{"FRESH_INSTALL":"BLOCKED"}'); process.exitCode = 1; });
 }
