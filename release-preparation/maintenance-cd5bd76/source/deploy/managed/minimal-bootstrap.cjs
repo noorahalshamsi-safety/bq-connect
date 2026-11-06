@@ -38,7 +38,13 @@ async function launch({port=Number(process.env.PORT)||5000,startRuntime=start,re
         "fresh_bucket_binding_mismatch",
         "fresh_registration_policy_required"
       ]);
-      const code = String(error?.code || "");
+      const rawCode = typeof error?.code === "string" ? error.code : "";
+      const rawMessage = typeof error?.message === "string" ? error.message : "";
+      const code = /^fresh_[a-z_]+$/.test(rawCode)
+        ? rawCode
+        : /^fresh_[a-z_]+$/.test(rawMessage)
+          ? rawMessage
+          : rawCode;
       const reason = (
         allowed.has(code) ||
         /^fresh_[a-z_]+$/.test(code)
@@ -52,7 +58,10 @@ async function launch({port=Number(process.env.PORT)||5000,startRuntime=start,re
         if (reason !== lastReason) {
           console.log(JSON.stringify({
             FRESH_RUNTIME: "BLOCKED",
-            reason
+            reason,
+            errorType: ["Error", "TypeError", "ReferenceError", "SyntaxError", "RangeError"].includes(error?.name)
+              ? error.name : "OTHER",
+            codePresent: typeof error?.code === "string"
           }));
           lastReason = reason;
         }
