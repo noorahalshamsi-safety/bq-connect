@@ -79,7 +79,12 @@ function transformAuth(source) {
 function providers(env) {
   function json(key) {
     if (!env[key]) return {};
-    const result = JSON.parse(env[key]);
+    let result;
+    try {
+      result = JSON.parse(env[key]);
+    } catch {
+      need(false, "fresh_provider_configuration_invalid");
+    }
     need(result && typeof result === "object" && !Array.isArray(result), "fresh_provider_configuration_invalid");
     return result;
   }
