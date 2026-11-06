@@ -18,6 +18,7 @@ async function launch({port=Number(process.env.PORT)||5000,startRuntime=start,re
     req.pipe(upstream);
   });
   await new Promise((resolve,reject)=>{server.once("error",reject);server.listen(port,"0.0.0.0",resolve);});
+  let lastReason = null;
   async function attempt(){
     if(stopping)return;
     // The app binds loopback only; the maintenance/public listener stays open
@@ -26,7 +27,31 @@ async function launch({port=Number(process.env.PORT)||5000,startRuntime=start,re
     internal=reservation.address().port;await new Promise(r=>reservation.close(r));
     process.env.PORT=String(internal);process.env.HOST="127.0.0.1";
     try{running=await startRuntime();if(stopping){await running.close();return;}backend=internal;}
-    catch{if(!stopping){timer=setTimeout(attempt,retryMs);timer.unref();}}
+    catch(error){
+      const allowed = new Set([
+        "fresh_activation_approval_required",
+        "fresh_controlled_delivery_verification_required",
+        "fresh_smtp_authentication_required",
+        "fresh_production_secrets_required",
+        "fresh_owner_binding_required",
+        "fresh_destination_binding_mismatch",
+        "fresh_bucket_binding_mismatch",
+        "fresh_registration_policy_required"
+      ]);
+      const reason = allowed.has(error?.code)
+        ? error.code : "OTHER_BLOCKER";
+      if (!stopping) {
+        if (reason !== lastReason) {
+          console.log(JSON.stringify({
+            FRESH_RUNTIME: "BLOCKED",
+            reason
+          }));
+          lastReason = reason;
+        }
+        timer = setTimeout(attempt, retryMs);
+        timer.unref();
+      }
+    }
   }
   const initial=maintenanceOnly?undefined:setTimeout(attempt,50);initial?.unref();
   return {server,close:async()=>{stopping=true;clearTimeout(initial);clearTimeout(timer);await new Promise(r=>server.close(r));if(running)await running.close();}};
