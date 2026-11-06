@@ -369,6 +369,7 @@ Publishing was used for bootstrap.
 
 ```sh
 node scripts/fresh/check.cjs
+node scripts/fresh/startup-persistence-check.cjs
 node scripts/managed/diagnostic-publication-check.cjs
 ```
 
@@ -380,6 +381,27 @@ optional post-registration TOTP, email-code expiry/attempt limits, persistent
 challenges, concurrent unique registration, login, authorization,
 one-use admin bootstrap, directory lookup, new posts and restart. It never
 connects to Production or uses source account/key material.
+
+Startup also tests the real public maintenance gateway, generated-module syntax,
+refresh/persist/commit failures, complete transaction rollback and fail-stop on
+a startup deadline. No scheduler runs before the boot transaction commits.
+`SQL_STARTUP` logs contain fixed stages/statuses and an allowlisted error class,
+not exception messages, generated source, provider configuration or records.
+The startup deadline is 120 seconds; an uncancellable timed-out worker retires
+rather than retrying with overlapping mutable contexts.
+
+Department membership persistence uses bounded, parent-before-child SQL batches
+within the existing revision-locked transaction. The round-trip regression
+test compares every projected value for 6,311 synthetic members.
+
+For an already initialized installation, publish the corrected source with the
+existing `npm ci --omit=dev` build and `node deploy/fresh/start.cjs` Run command.
+Keep existing Production secrets, manifest and approvals. **Never rerun
+initialize** to deploy a startup repair. The gateway remains maintenance-only
+until the internal startup transaction commits and runtime readiness resolves.
+After the operator-approved Republish, verify `SQL_STARTUP: READY / PASS`,
+`/health/ready` HTTP 200 and actual application content at `/`. A listener URL
+alone is not evidence of committed readiness.
 
 Partial initialization or lost independent evidence requires reviewed forward
 recovery. Do not delete intents, reset populated tables or restore the legacy

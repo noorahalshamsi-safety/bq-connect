@@ -1,6 +1,7 @@
 // Separate development process; never imported by start.js or production auth.
 const fs=require("node:fs"),path=require("node:path"),http=require("node:http"),https=require("node:https");
 const crypto=require("node:crypto"),{Writable,Readable}=require("node:stream");
+const {Script}=require("node:vm");
 const {verify}=require("./isolation.cjs"),{Repository,hash}=require("./repository.cjs");
 const {install}=require("./virtual-fs.cjs");
 const {staticRequest,originAllowed,bufferRequest}=require("./ingress.cjs");
@@ -16,12 +17,34 @@ async function start(root) {
 }
 // Shared by development and staging. Performs no DDL; callers own schema state.
 // `faults` honours dev.test_faults injection points and is development-only.
-async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,minimalRelease=false,deliverMail,deliverSms,freshInstall=false,freshProviders={},freshEmailDomains,freshAdminPolicy,mediaEnabled=false}={}) {
+async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,minimalRelease=false,deliverMail,deliverSms,freshInstall=false,freshProviders={},freshEmailDomains,freshAdminPolicy,mediaEnabled=false,startupTimeoutMs=120000}={}) {
   let poisoned=false,stopping=false,ingress=0,pending=0;
   const jobTimers=new Set();
   const timings=[];
-  let context=null,queue=Promise.resolve(),auth,app,readyResolve;
-  const ready=new Promise(resolve=>readyResolve=resolve);
+  let context=null,queue=Promise.resolve(),auth,app,readyResolve,readyReject;
+  let boot,virtual,realHttps,outboxTimer,internalServer,bootComplete=false;
+  const realCreate=http.createServer;
+  let startupStage="HYDRATE";
+  function stage(name,status="STARTED",error) {
+    startupStage=name;
+    console.log(JSON.stringify({SQL_STARTUP:name,status,...(error?{
+      errorType:["Error","TypeError","ReferenceError","SyntaxError","RangeError"].includes(error.name)?error.name:"OTHER"
+    }:{})}));
+  }
+  const ready=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
+  // A synchronous generated-module error can precede the final await.
+  ready.catch(()=>{});
+  const startupTimer=setTimeout(()=>{
+    poisoned=true;stopping=true;
+    stage(startupStage,"BLOCKED",Error());
+    readyReject(Object.assign(Error("fresh_startup_timeout"),{code:"fresh_startup_timeout"}));
+    // Promise rejection cannot cancel a pending SQL operation or legacy
+    // callback. Retire, never retry in this mutable worker after a deadline.
+    setTimeout(()=>process.exit(1),100).unref();
+  },startupTimeoutMs);
+  startupTimer.unref();
+  try {
+  stage("HYDRATE");
   const serial=fn=>{const work=queue.then(fn,fn);queue=work.catch(()=>{});return work;};
   const responseScope=c=>scope(new Map([...(c.files.allRevisions||c.files),...c.files]));
   async function hydrate(t,nativeRead=false) {
@@ -62,6 +85,7 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
   async function finish(c,commit) {
     let discard;
     try {if(commit){
+      if(c===boot)stage("BOOT_PERSIST");
       await persist(c);
       if(c.replayRecord){
         const r=c.replayRecord,policy=sensitive.has(c.path)||r.response.length>262144?"no-response":"encrypted";
@@ -82,7 +106,10 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
         try{for(let i=0;i<50;i++){const seen=await witness.query("SELECT 1 FROM dev.requests WHERE actor=$1 AND request_key=$2",[c.replayRecord.actor,c.replayRecord.key]);if(seen.rowCount)break;await new Promise(r=>setTimeout(r,10));}}
         finally{witness.release();}
         stream.destroy(Error("synthetic_commit_outcome_unknown"));await committing;
-      } else await c.client.query("COMMIT");
+      } else {
+        if(c===boot)stage("BOOT_COMMIT");
+        await c.client.query("COMMIT");
+      }
     }else await c.client.query("ROLLBACK");}
     catch(e){discard=e;await c.client.query("ROLLBACK").catch(()=>{});throw e;}
     finally{
@@ -102,7 +129,7 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
   };
   async function job(fn,label) {
     return serial(async()=>{
-      if(poisoned||stopping)return {committed:false,skipped:true};
+      if(!bootComplete||poisoned||stopping)return {committed:false,skipped:true};
       let c,timer;
       try {
         c=context=await hydrate(await repo.begin());
@@ -130,7 +157,8 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
     };
     const timer=setInterval(invoke,ms);jobTimers.add(timer);timer.unref();return timer;
   };
-  let boot=context=await hydrate(await repo.begin());
+  boot=context=await hydrate(await repo.begin());
+  stage("GENERATE");
   const files=["auth.js","server.js","backup.js","push.js","moderation.js","spark-agent.js","translate.js","persistence-safety.js"];
   // Transform only the isolated copies. The production source remains unchanged.
   for(const file of files) {
@@ -173,6 +201,10 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
     }
     fs.writeFileSync(path.join(proof.app,file),source,{mode:0o600});
   }
+  stage("COMPILE_MODULES");
+  // Parse the complete generated copies, not just their source templates.
+  // Never report their source text or raw SyntaxError messages.
+  for(const file of files)new Script(fs.readFileSync(path.join(proof.app,file),"utf8"),{filename:file});
   const publicDir=path.join(proof.app,"public");
   // Read-only links preserve existing assets; only the isolated HTML gains a
   // transport shim assigning one stable request key across a network retry.
@@ -187,12 +219,13 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
   }
   fs.writeFileSync(path.join(publicDir,"synthetic-request.js"),`(()=>{const native=window.fetch.bind(window);window.fetch=async(input,options)=>{const r=new Request(input,options);if(new URL(r.url).origin!==location.origin||!["POST","PATCH","DELETE"].includes(r.method))return native(r);const h=new Headers(r.headers);if(!h.has("Idempotency-Key"))h.set("Idempotency-Key",crypto.randomUUID());const request=new Request(r,{headers:h}),retry=request.clone();try{return await native(request);}catch(error){return native(retry);}};})();`);
   if(freshInstall)require(path.resolve(__dirname,"../../../../../deploy/fresh/client-policy.cjs")).prepare(publicDir,workspace);
-  const virtual=install(proof,()=>context);
+  virtual=install(proof,()=>context);
   global.__bqRequireTransaction=()=>{if(!context?.client)throw Error("transaction_context_required");};
   global.__bqNativePerson={
     active:()=>Boolean(context?.nativeProfile),
     read:(body,viewer,res)=>{context.response=res;return nativeProfile.person(context,body,viewer,app.__profileReads);}
   };
+  stage("LOAD_AUTH");
   auth=require(path.join(proof.app,"auth.js"));
   const realMail=auth.sendMail.bind(auth);
   auth.sendMail=(to,subject,text)=>{
@@ -226,7 +259,7 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
     return()=>backup.createBackup();
   };
   // HTTP SMS provider boundary is an explicit fixture transport, never internet.
-  const realHttps=https.request;
+  realHttps=https.request;
   https.request=(url,options,callback)=>{
     const host=typeof url==="string"?new URL(url).hostname:url.hostname;
     if(!(minimalRelease?/^(api\.twilio\.com|api\.taqnyat\.sa|el\.cloud\.unifonic\.com)$/:/^(api\.twilio\.com|api\.taqnyat\.sa)$/).test(host||"")){
@@ -254,7 +287,11 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
   };
   async function handle(listener,req,res) {
     if(req.url==="/health/live"){res.writeHead(200,{"Content-Type":"application/json"});res.end('{"live":true}');return;}
-    await ready;
+    if(!bootComplete||poisoned||stopping){
+      const live=req.url==="/"&&["GET","HEAD"].includes(req.method);
+      res.writeHead(live?200:503,{"Content-Type":"application/json","Cache-Control":"no-store"});
+      res.end('{"live":true,"ready":false,"error":"runtime_starting"}');return;
+    }
     if(minimalRelease&&["/api/push"].includes((req.url||"").split("?")[0])){
       res.writeHead(503,{"Content-Type":"application/json","Cache-Control":"no-store"});
       res.end('{"error":"not_enabled_in_existing_accounts_release"}');return;
@@ -349,26 +386,31 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
       }
     }).finally(()=>pending--);
   }
-  const realCreate=http.createServer;
   http.createServer=function(...args){
     const listener=args.pop(),server=realCreate.call(http,...args,(req,res)=>handle(listener,req,res).catch(()=>res.destroy()));
+    internalServer=server;
+    server.once("error",readyReject);
     const listen=server.listen.bind(server);
     server.listen=(...params)=>{
       const callback=typeof params.at(-1)==="function"?params.pop():()=>{};
       return listen(...params,async()=>{
         try{
+          stage("LISTEN");
           // Modules have now exported their maps. Restore fresh-install SQL
           // security state before boot's first persist, or restarts erase locks.
-          if(freshInstall)await refresh();
-          await callback();await finish(boot,true);boot=null;readyResolve();
+          if(freshInstall){stage("BOOT_REFRESH");await refresh();}
+          stage("BOOT_CALLBACK");
+          await callback();await finish(boot,true);boot=null;
+          bootComplete=true;clearTimeout(startupTimer);stage("READY","PASS");readyResolve();
         }
-        catch(e){console.error("Synthetic activation refused:",e.message);if(context===boot)await finish(boot,false).catch(()=>{});boot=null;process.exitCode=1;server.close();}
+        catch(e){readyReject(e);}
       });
     };
     return server;
   };
-  app=require(path.join(proof.app,"server.js"));
-  http.createServer=realCreate;
+  stage("LOAD_SERVER");
+  try{app=require(path.join(proof.app,"server.js"));}
+  finally{http.createServer=realCreate;}
   // Production mail is queued in the request transaction and delivered only by
   // a later committed job. SMTP is at-least-once; unknown acknowledgement can
   // cause a duplicate message, never a fabricated provider-success receipt.
@@ -387,9 +429,21 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
       await c.query("UPDATE dev.outbox SET attempts=attempts+1,delivered_at=CASE WHEN $2 THEN clock_timestamp() ELSE NULL END,fixture_receipt=$3::jsonb WHERE id=$1",[row.id,sent,JSON.stringify(receipt)]);
     }
   },"minimal-mail-outbox");
-  const outboxTimer=setInterval(()=>{if(!poisoned&&!stopping)(minimalRelease?deliver():repo.drainFixtureOutbox()).catch(()=>{});},1000);outboxTimer.unref();
+  outboxTimer=setInterval(()=>{if(bootComplete&&!poisoned&&!stopping)(minimalRelease?deliver():repo.drainFixtureOutbox()).catch(()=>{});},1000);outboxTimer.unref();
   await ready;
   return {repo,proof,server:app.__server,close:async()=>{stopping=true;clearInterval(outboxTimer);for(const timer of jobTimers)clearInterval(timer);await new Promise(r=>app.__server.close(r));await queue;await repo.pool.end();virtual.restore();https.request=realHttps;}};
+  } catch(error) {
+    clearTimeout(startupTimer);poisoned=true;stopping=true;
+    stage(startupStage,"BLOCKED",error);
+    clearInterval(outboxTimer);for(const timer of jobTimers)clearInterval(timer);
+    http.createServer=realCreate;if(realHttps)https.request=realHttps;
+    internalServer?.closeAllConnections();internalServer?.close();
+    // Destroy the boot connection: the server rolls back uncommitted work.
+    // Do not persist an unsuccessful boot or reuse its mutable context.
+    if(boot&&context===boot){boot.client.release(error);context=null;boot=null;}
+    virtual?.restore();
+    throw error;
+  }
 }
 if(require.main===module)start(process.argv[2]).catch(e=>{console.error("Synthetic PostgreSQL application refused:",e.code||e.message);process.exit(1);});
 module.exports={start,serve};

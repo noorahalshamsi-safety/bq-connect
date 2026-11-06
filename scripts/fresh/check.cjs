@@ -19,17 +19,38 @@ function unbase32(s) {
   let bits = ""; for (const ch of s.toUpperCase().replace(/=+$/, "")) bits += alphabet.indexOf(ch).toString(2).padStart(5, "0");
   return Buffer.from((bits.match(/.{8}/g) || []).map(b => parseInt(b, 2))).toString("hex");
 }
-async function boot(off = false, adminApproved = true) {
+async function boot(off = false, adminApproved = true, fault = "") {
   const reservation = net.createServer();
   await new Promise(r => reservation.listen(0, "127.0.0.1", r));
   port = reservation.address().port; await new Promise(r => reservation.close(r));
   const logs = [];
   child = fork(path.join(__dirname, "fixture-server.cjs"), [root, off ? "providers-off" : "providers-on"], {
     env: { ...proof.childEnv, PORT: String(port), HOST: "127.0.0.1",
+      BQ_TEST_STARTUP_FAULT:fault,
       BQ_TEST_ADMIN_POLICY: JSON.stringify({ ...adminPolicy, approved: adminApproved && adminPolicy.approved }) }, silent: true });
   child.stdout.on("data", b => logs.push(b.toString()));
   child.stderr.on("data", b => logs.push(b.toString()));
   child.on("message", m => events.push(m));
+  if(fault){
+    for(let i=0;i<100&&!events.some(m=>m.kind==="gateway"&&m.port===port);i++)await delay(20);
+    for(let i=0;i<200&&!logs.join("").includes('"status":"BLOCKED"');i++)await delay(25);
+    assert(logs.join("").includes('"status":"BLOCKED"'),"startup_failure_must_be_bounded");
+    assert(!logs.join("").includes("SYNTHETIC_PRIVATE_VALUE_MUST_NOT_APPEAR"));
+    assert(!logs.join("").includes("private_synthetic_value"));
+    if(fault==="timeout"){
+      for(let i=0;i<100&&child.exitCode===null;i++)await delay(25);
+      assert.equal(child.exitCode,1,"timed_out_worker_must_retire");
+    }else{
+      const response=await fetch(`http://127.0.0.1:${port}/`,{signal:AbortSignal.timeout(2000)});
+      assert.equal(response.status,200);assert.equal((await response.json()).ready,false);
+      const health=await fetch(`http://127.0.0.1:${port}/health/ready`,{signal:AbortSignal.timeout(2000)});
+      assert.equal(health.status,503);assert.equal((await health.json()).ready,false);
+      const api=await fetch(`http://127.0.0.1:${port}/api/register`,{method:"POST",signal:AbortSignal.timeout(2000)});
+      assert.equal(api.status,503);
+      assert(logs.join("").includes('"FRESH_RUNTIME":"BLOCKED"'),"failure_must_reach_gateway");
+    }
+    return;
+  }
   for (let i = 0; i < 300; i++) {
     if (events.some(m => m.kind === "ready" && m.port === port)) return;
     if (child.exitCode !== null || events.some(m => m.kind === "blocked")) {
@@ -208,6 +229,16 @@ async function main() {
     approval: "bootstrap:" + sha(canonical([sha(canonical(manifest)), "101"])) })); }
   finally { premature.release(); }
   stage = "registration ownership guard";
+  const beforeFailedBoot=sha(canonical(await repo.exportSynthetic()));
+  const beforeRuntimeState=(await repo.pool.query("SELECT count(*)::int AS n FROM dev.runtime_state")).rows[0].n;
+  for(const fault of ["syntax","refresh","persist","commit","timeout"]){
+    await boot(false,true,fault);
+    await stop();events.length=0;
+    assert.equal((await repo.pool.query("SELECT count(*)::int AS n FROM dev.accounts")).rows[0].n,0);
+    assert.equal((await repo.pool.query("SELECT count(*)::int AS n FROM dev.employees")).rows[0].n,6311);
+    assert.equal(sha(canonical(await repo.exportSynthetic())),beforeFailedBoot,"failed_boot_must_roll_back_all_entities");
+    assert.equal((await repo.pool.query("SELECT count(*)::int AS n FROM dev.runtime_state")).rows[0].n,beforeRuntimeState);
+  }
   await boot(true);
   ok(await request("/api/register", { badge: "101", code: "1234", mobile: "512345678",
     email: "synthetic101@binquraya.com",
@@ -365,6 +396,9 @@ async function main() {
     employeeOnlyImport: "PASS", idempotency: "PASS", ownership: "PASS", realRegistration: "PASS",
     optionalTotp: "PASS", originalCodeMobileHashes: "PASS", ownerGatedAdmin: "PASS",
     loginEmailNotifications: "PASS", smsNotRequired: "PASS",
+    gatewayStartupAndReadiness:"PASS",generatedModuleSyntaxFailure:"PASS",
+    bootRefreshPersistCommitFailure:"PASS",startupDeadlineRetiresWorker:"PASS",
+    failedStartupMaintenanceAndRollback:"PASS",
     emailRecovery: "PASS", recoverySingleUseAndRestart: "PASS",
     recoveryRevokesSessionsAndPendingTickets: "PASS", recoveryPreservesTotp: "PASS",
     recoveryDoesNotEmailPasswords: "PASS",

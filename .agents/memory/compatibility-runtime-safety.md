@@ -14,3 +14,15 @@ Apply that fail-stop rule to scheduled callbacks too. Catch acquisition, attesta
 **Why:** A request-only deadline does not protect the shared context from an uncancelled scheduled callback. A disconnected client can also fail before a transaction context exists, so catching only the callback is insufficient.
 
 **How to apply:** Keep timer ownership explicit, stop triggers before draining on shutdown, and distinguish successful commit, rollback and skipped duplicate triggers. Do not acknowledge an unfinished callback or treat an abandoned promise as cancellation.
+
+Treat a listening socket and committed application readiness as separate
+states. Startup failure must settle the readiness waiter, and uncancellable
+startup work must retire the worker rather than overlap another attempt.
+
+**Why:** A listener can open before boot persistence finishes. Swallowing a
+post-listen failure leaves the public maintenance gateway waiting indefinitely;
+background jobs must not compete with the boot transaction.
+
+**How to apply:** Preserve maintenance until successful commit, bound startup,
+and use value-free stage diagnostics. When testing remote-SQL startup, account
+for per-row network round trips, not just fast local PostgreSQL timings.

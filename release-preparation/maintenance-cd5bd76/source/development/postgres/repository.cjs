@@ -29,8 +29,27 @@ async function saveFile(c,file,value,revision) {
     if(r.rowCount!==1)throw Error("stale_entity_revision");
     await c.query(`DELETE FROM dev.${codec.specs[file].table} WHERE file_name=$1`,[file]);
   }
-  for(const row of codec.encode(file,value))await c.query(`INSERT INTO dev.${row.table}(id,file_name,parent,entry_key,ordinal,attrs,shape) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb)`,
-    [row.id,file,row.parent,row.entry_key,row.ordinal,JSON.stringify(row.attrs),JSON.stringify(row.shape)]);
+  // Parent tables precede their children in the codec's traversal. Preserve
+  // that FK ordering, but avoid one remote round trip per employee/member at
+  // startup (department groups alone contain all 6,311 directory members).
+  // Every batch remains inside the caller's original revision-locked tx.
+  const grouped=new Map();
+  for(const row of codec.encode(file,value)){
+    if(!grouped.has(row.table))grouped.set(row.table,[]);
+    grouped.get(row.table).push(row);
+  }
+  for(const table of codec.tables.keys()){
+    const rows=grouped.get(table)||[];
+    for(let offset=0;offset<rows.length;offset+=250){
+      const values=[],tuples=[];
+      for(const row of rows.slice(offset,offset+250)){
+        const n=values.length;
+        tuples.push(`($${n+1},$${n+2},$${n+3},$${n+4},$${n+5},$${n+6}::jsonb,$${n+7}::jsonb)`);
+        values.push(row.id,file,row.parent,row.entry_key,row.ordinal,JSON.stringify(row.attrs),JSON.stringify(row.shape));
+      }
+      await c.query(`INSERT INTO dev.${table}(id,file_name,parent,entry_key,ordinal,attrs,shape) VALUES${tuples.join(",")}`,values);
+    }
+  }
 }
 class Repository {
   // Without `staging` this is the local development repository behind the
