@@ -75,7 +75,7 @@ externalPort = 4200
 [deployment]
 deploymentTarget = "vm"
 build = ["npm", "ci", "--omit=dev"]
-run = ["node", "deploy/fresh/initialize.cjs"]
+run = ["node", "deploy/fresh/start.cjs"]
 ignorePorts = false
 
 [objectStorage]
