@@ -67,11 +67,21 @@ diagnostic.report(manifest, env, line => lines.push(line));
 assert.equal(lines.length, 1);
 const logged = JSON.parse(lines[0]);
 assert.deepEqual(Object.keys(logged), ["FRESH_ADMIN_DIAGNOSTIC"]);
+assert.equal(logged.FRESH_ADMIN_DIAGNOSTIC.adminEmailReferenceAvailable, true,
+  "owner_approved_reference_must_be_pinned_before_publication");
+assert.equal(logged.FRESH_ADMIN_DIAGNOSTIC.adminEmailMatchesApproved, false,
+  "invented_test_email_must_not_match_owner_reference");
 for (const value of Object.values(logged.FRESH_ADMIN_DIAGNOSTIC))
   assert(value === null || typeof value === "boolean" || typeof value === "number");
 for (const forbidden of [email, env.BQ_FRESH_ADMIN_EMAIL, env.BQ_FRESH_ADMIN_REGISTRATION_APPROVAL,
   reference.normalizedAdminEmailSha256, reference.manifestFingerprint])
   assert(!lines[0].includes(forbidden));
+const localManifest = JSON.parse(fs.readFileSync(
+  path.resolve(__dirname, "../../deploy/fresh/production.json"), "utf8"));
+const baseline = diagnostic.compare(localManifest, {});
+assert.equal(baseline.manifestFingerprintMatches, true);
+assert.equal(baseline.initialAdminBadgeMatches, true);
+assert.equal(baseline.initialAdminBadgeTypeMatches, true);
 // Inspect wiring without invoking start() or touching any runtime dependency.
 const runtime = fs.readFileSync(path.resolve(__dirname, "../../deploy/fresh/runtime.cjs"), "utf8");
 assert(runtime.indexOf('require("./admin-startup-diagnostic.cjs").report(manifest, env);') <

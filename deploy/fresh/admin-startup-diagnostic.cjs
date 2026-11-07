@@ -7,7 +7,7 @@ const approved = Object.freeze({
   initialAdminBadge: "41060",
   // Must come from an independent owner-approved reference, never from the
   // same runtime BQ_FRESH_ADMIN_EMAIL being diagnosed. Do not publish unpinned.
-  normalizedAdminEmailSha256: null
+  normalizedAdminEmailSha256: "11b3c1e760336a07111bb685eb78e7761b5f19f28b8a5a95869d47fe279059a6"
 });
 function compare(manifest, env, reference = approved) {
   const email = ownership.normalize(env.BQ_FRESH_ADMIN_EMAIL, manifest.emailDomains);
