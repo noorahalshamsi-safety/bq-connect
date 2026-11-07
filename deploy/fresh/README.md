@@ -430,3 +430,36 @@ and refused without activating the public gateway.
 Partial initialization or lost independent evidence requires reviewed forward
 recovery. Do not delete intents, reset populated tables or restore the legacy
 application/JSON authority to make a retry pass.
+
+### Registration and background mail waits
+
+Keep the compatibility transaction queue serialized: generated application
+modules retain shared mutable state. Mail-outbox ticks are coalesced while
+queued or active, with a 60-second backoff after a failed job. Scheduled ticks
+cannot accumulate once per second behind a stalled transaction.
+
+An HTTP request waiting for admission receives `503 queue_busy` after five
+seconds and cannot subsequently execute. Once admitted, a 25-second watchdog
+covers acquisition, hydration, refresh, handler, persistence and commit.
+Background jobs have the same full-operation watchdog. An uncancellable
+deadline destroys the active connection and retires the worker; it never
+reuses shared state or releases a lock to permit overlapping handlers.
+The HTTP watchdog sends `503 transaction_deadline`, not a fabricated success.
+An ambiguous commit still requires an idempotent retry or ordinary login.
+
+`SQL_RUNTIME` logs contain only fixed operation/status labels, allowlisted
+failure categories and timings/status codes. Acquisition failures distinguish
+recognized SQLSTATEs and `READ_TIMEOUT` without logging query text or values.
+SMTP acceptance is labelled provider acceptance, not proof of delivery.
+Registration queues its encrypted mail and pending OTP state in the same SQL
+transaction; mail is sent only by a later job. SMTP retries reuse the existing
+event/code. SMTP remains at-least-once: loss of an acknowledgement or database
+commit after provider acceptance can resend the same message. No claim of
+exactly-once SMTP delivery is made.
+
+The isolated integration suite uses real PostgreSQL and a loopback TLS SMTP
+server with an ephemeral test CA. It checks authentication, OTP delivery,
+SMTP refusal/retry, database cancellation and lock contention, admission and
+full-operation deadlines, duplicate idempotency keys, interrupted committed
+registration recovery by login, and persistence across restart. None of these
+tests connects to Production or changes Production configuration.

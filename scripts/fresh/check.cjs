@@ -1,7 +1,7 @@
 // Real HTTP + PostgreSQL, invented data only, private temporary socket/database.
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const assert = require("node:assert/strict"), crypto = require("node:crypto"), net = require("node:net");
-const { fork } = require("node:child_process");
+const { fork, spawnSync } = require("node:child_process");
 const { base, canonical, sha } = require("../../deploy/fresh/config.cjs");
 const I = require("../../deploy/fresh/installation.cjs"), S = require("../../deploy/fresh/directory.cjs");
 const { prepare } = require("../../development/postgres/isolation.cjs");
@@ -26,6 +26,7 @@ async function boot(off = false, adminApproved = true, fault = "", loadMode = ""
   const logs = [];
   child = fork(path.join(__dirname, "fixture-server.cjs"), [root, off ? "providers-off" : "providers-on"], {
     env: { ...proof.childEnv, PORT: String(port), HOST: "127.0.0.1",
+      NODE_EXTRA_CA_CERTS:path.join(root,"smtp-test.crt"),
       BQ_TEST_STARTUP_FAULT:fault,
       BQ_TEST_LOAD_MODE:loadMode,
       BQ_TEST_ADMIN_POLICY: JSON.stringify({ ...adminPolicy, approved: adminApproved && adminPolicy.approved }) }, silent: true });
@@ -80,7 +81,7 @@ async function stop() {
 }
 async function request(url, body = {}, options = {}) {
   const r = await fetch(`http://127.0.0.1:${port}${url}`, { method: "POST",
-    headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID(),
+    headers: { "Content-Type": "application/json", "Idempotency-Key": options.key||crypto.randomUUID(),
       "X-Forwarded-For": options.ip || "192.0.2.31" },
     body: JSON.stringify({ ...(options.anonymous ? {} : token ? { token } : {}), ...body }),
     signal: AbortSignal.timeout(30000) });
@@ -190,6 +191,12 @@ async function main() {
   assert.equal(generator.stdout, "");
   stage = "isolated schema";
   proof = prepare(root); repo = new Repository(proof);
+  const certificate=spawnSync("openssl",["req","-x509","-newkey","rsa:2048","-nodes","-days","1",
+    "-subj","/CN=localhost","-addext","subjectAltName=DNS:localhost",
+    "-keyout",path.join(root,"smtp-test.key"),"-out",path.join(root,"smtp-test.crt")],
+    {stdio:"ignore",env:{PATH:process.env.PATH}});
+  assert.equal(certificate.status,0,"isolated_smtp_certificate_required");
+  fs.chmodSync(path.join(root,"smtp-test.key"),0o600);
   for (const statement of schema.statements) await repo.pool.query(statement);
   const people = Array.from({ length: 6311 }, (_, i) => {
     const badge = String(i + 101), h = v => crypto.createHmac("sha256", "bq-rd-ideas-2026").update(v).digest("hex");
@@ -290,6 +297,53 @@ async function main() {
   new vm.Script(clientJs);
   const body = { badge: "101", code: "1234", mobile: "512345678", email: "synthetic101@binquraya.com",
     password: "FreshSynthetic!Password2026", admin: true, role: "admin" };
+  stage="outbox acquisition SQL failure and recovery";
+  let from=events.length;
+  child.send({kind:"runtime-fault",begin:"sql"});
+  await event("fault-armed",from);await event("fault-active",from);
+  await delay(250);
+  // This fails inside PostgreSQL (57014), not a mocked mail response. The
+  // outbox job must release its transaction and must not poison registration.
+  ok(await request("/api/register",{...body,badge:"108",code:"0000"},{anonymous:true,ip:"192.0.2.98"}),403);
+  assert.equal((await repo.pool.query("SELECT count(*)::int AS n FROM dev.accounts")).rows[0].n,0);
+  await stop();events.length=0;await boot();
+  stage="bounded queue admission under real advisory lock contention";
+  const blocking=await repo.pool.connect();
+  try{
+    await blocking.query("BEGIN");
+    await blocking.query("SELECT pg_advisory_xact_lock(1793705963)");
+    // One outbox tick is now waiting for the database; later ticks coalesce.
+    await delay(1300);
+    const at=performance.now();
+    const busy=await request("/api/register",body,{anonymous:true});
+    ok(busy,503);assert.equal(busy.json.error,"queue_busy");
+    assert(performance.now()-at<7500,"queue_response_must_be_bounded");
+  }finally{await blocking.query("ROLLBACK");blocking.release();}
+  await delay(250);
+  ok(await request("/api/register",{...body,badge:"108",code:"0000"},{anonymous:true,ip:"192.0.2.98"}),403);
+  await stop();events.length=0;await boot();
+  stage="background deadline includes database acquisition";
+  from=events.length;child.send({kind:"runtime-fault",begin:"hang"});
+  await event("fault-armed",from);await event("fault-active",from);
+  const backgroundBusy=await request("/api/register",body,{anonymous:true});
+  ok(backgroundBusy,503);assert.equal(backgroundBusy.json.error,"queue_busy");
+  for(let i=0;i<900&&child.exitCode===null;i++)await delay(25);
+  assert.equal(child.exitCode,1,"uncancellable_background_acquisition_must_retire");
+  await stop();events.length=0;await boot();
+  stage="HTTP deadline includes database acquisition";
+  from=events.length;child.send({kind:"runtime-fault",begin:"hang"});
+  await event("fault-armed",from);
+  // Admit immediately, before the one-second outbox tick.
+  const deadlineAt=performance.now();
+  const deadline=await request("/api/register",body,{anonymous:true});
+  ok(deadline,503);assert.equal(deadline.json.error,"transaction_deadline");
+  assert(performance.now()-deadlineAt<28000);
+  for(let i=0;i<100&&child.exitCode===null;i++)await delay(25);
+  assert.equal(child.exitCode,1);
+  assert.equal((await repo.pool.query("SELECT count(*)::int AS n FROM dev.accounts")).rows[0].n,0);
+  assert.equal((await repo.pool.query("SELECT count(*)::int AS n FROM dev.outbox WHERE topic='mail'")).rows[0].n,0);
+  await stop();events.length=0;await boot();
+  stage="verified registration";
   for (const attack of [
     { ...body, code: "0000" },
     { ...body, mobile: "500000000" },
@@ -300,9 +354,28 @@ async function main() {
   ]) ok(await request("/api/register", attack, { anonymous: true, ip: "192.0.2.93" }), 403);
   assert.equal((await repo.pool.query("SELECT count(*)::int AS n FROM dev.accounts")).rows[0].n, 0);
   const mailStart = events.length;
-  const challenge = ok(await request("/api/register", body, { anonymous: true }));
+  from=events.length;child.send({kind:"runtime-fault",mailFailures:1});
+  await event("fault-armed",from);
+  const registrationKey=crypto.randomUUID();
+  const challenge = ok(await request("/api/register", body, { anonymous: true,key:registrationKey }));
+  const duplicateChallenge=await request("/api/register",body,{anonymous:true,key:registrationKey});
+  ok(duplicateChallenge,409);
+  assert.equal(duplicateChallenge.json.error,"already_committed_reauthenticate");
   assert(challenge.needEmailCode && !challenge.token && !challenge.needSetup);
+  await event("mail-failed",mailStart);
+  for(let i=0;i<100;i++){
+    if((await repo.pool.query("SELECT attempts FROM dev.outbox WHERE topic='mail'")).rows[0]?.attempts===1)break;
+    await delay(25);
+  }
+  const failedMail=(await repo.pool.query("SELECT id,attempts,delivered_at,payload FROM dev.outbox WHERE topic='mail'")).rows;
+  assert.equal(failedMail.length,1);assert.equal(failedMail[0].attempts,1);assert.equal(failedMail[0].delivered_at,null);
+  // Simulate the retry time elapsing in the isolated database only. Reuse the
+  // existing encrypted event/code, never resubmit registration to send a code.
+  await repo.pool.query("UPDATE dev.outbox SET fixture_receipt=jsonb_set(fixture_receipt,'{retryAfter}',to_jsonb('2000-01-01T00:00:00Z'::text)) WHERE id=$1",[failedMail[0].id]);
   const mail = await event("mail", mailStart), mailOtp = mail.text.match(/\b\d{6}\b/)?.[0]; assert(mailOtp);
+  const deliveredMail=(await repo.pool.query("SELECT id,payload FROM dev.outbox WHERE topic='mail'")).rows;
+  assert.equal(deliveredMail.length,1);assert.equal(deliveredMail[0].id,failedMail[0].id);
+  assert.deepEqual(deliveredMail[0].payload,failedMail[0].payload);
   assert.equal(mail.to, body.email);
   assert(!events.some(e => e.kind === "sms"));
   // Pending email codes and their rate limits must survive a process restart.
@@ -375,8 +448,21 @@ async function main() {
   const secondMailStart = events.length;
   const secondChallenge = ok(await request("/api/register", second, { anonymous: true }));
   const secondMail = await event("mail", secondMailStart, e => /\b\d{6}\b/.test(e.text));
-  const secondRegistered = ok(await request("/api/register", { ...second,
-    ticket: secondChallenge.ticket, emailCode: secondMail.text.match(/\b\d{6}\b/)[0] }, { anonymous: true }));
+  const interruptedKey=crypto.randomUUID();
+  await repo.pool.query("INSERT INTO dev.test_faults(request_key,point) VALUES($1,'after_commit_drop')",[interruptedKey]);
+  const verifiedSecond={ ...second,ticket:secondChallenge.ticket,
+    emailCode:secondMail.text.match(/\b\d{6}\b/)[0] };
+  const interrupted=await request("/api/register",verifiedSecond,
+    {anonymous:true,key:interruptedKey}).catch(()=>null);
+  // The public maintenance gateway may translate the upstream connection
+  // drop into 503 rather than propagate a browser-level network rejection.
+  assert(!interrupted||interrupted.status===503,"interrupted_response_must_not_claim_success");
+  ok(await request("/api/register",verifiedSecond,{anonymous:true,key:interruptedKey}),409);
+  assert.equal((await repo.pool.query("SELECT count(*)::int AS n FROM dev.accounts WHERE entry_key=$1",[second.badge])).rows[0].n,1);
+  // The committed credential exists even though its response was lost. Never
+  // replay authentication material; recover by ordinary verified login.
+  const secondRegistered=ok(await request("/api/login",
+    {badge:second.badge,password:second.password},{anonymous:true}));
   assert(secondRegistered.token);
   const secondSetup = ok(await request("/api/2fa", { token: secondRegistered.token,
     op: "setup", password: second.password }));
@@ -440,6 +526,9 @@ async function main() {
     recoveryDoesNotEmailPasswords: "PASS",
     singleUseEmailCode: "PASS", emailExpiryAndAttempts: "PASS",
     pendingChallengeRestart: "PASS", concurrentUniqueRegistration: "PASS", clientServingAndSyntax: "PASS",
+    outboxSqlFailureRecovery:"PASS",outboxSmtpFailureSameEventRetry:"PASS",
+    boundedQueueAdmissionUnderDatabaseLock:"PASS",httpDeadlineIncludesAcquisition:"PASS",
+    backgroundDeadlineIncludesAcquisition:"PASS",interruptedRegistrationNoDuplicateAccount:"PASS",
     login: "PASS", bootstrapConsumed: "PASS", directory: "PASS",
     post: "PASS", restart: "PASS", rateLimitingAcrossRestart: "PASS",
     unavailableProvidersRefused: "PASS", newBindingAndOriginalGuard: "PASS",

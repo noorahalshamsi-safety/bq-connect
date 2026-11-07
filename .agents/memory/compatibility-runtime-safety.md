@@ -38,3 +38,17 @@ decoding or storage.
 **How to apply:** Keep those sub-stages separately timed, distinguish synthetic
 latency measurements from Production root-cause evidence, and coalesce test
 readiness probes so slow serialized reads do not create a probe flood.
+
+Bound the whole serialized operation, not just its handler, and coalesce
+outbox ticks while queued as well as while active. Queue-admission expiry must
+also revoke the queued callback's right to execute.
+
+**Why:** A callback-only timeout excludes acquisition, hydration and commit.
+An uncoalesced periodic job can accumulate behind those waits, leaving HTTP
+requests pending before their own timeout even starts.
+
+**How to apply:** Keep a separate admission deadline and full-operation
+watchdog. Retire uncancellable active work rather than reusing its mutable
+scope. Test queue expiry, stalled acquisition, and ambiguous committed
+registration recovery; encrypted challenge-state presence alone does not
+establish whether a pending registration exists.

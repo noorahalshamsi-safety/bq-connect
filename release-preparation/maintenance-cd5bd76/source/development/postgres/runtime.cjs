@@ -50,6 +50,18 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
     runtimeSha256:hash(fs.readFileSync(__filename))}));
   stage("HYDRATE");
   const serial=fn=>{const work=queue.then(fn,fn);queue=work.catch(()=>{});return work;};
+  const failureCategory=e=>["55P03","57014","53300","08006","57P01"].includes(e.code)?e.code:
+    e.message==="Query read timeout"?"READ_TIMEOUT":"OTHER";
+  function retire(c) {
+    poisoned=true;stopping=true;
+    // Destroy, never reuse a connection whose operation may still be running.
+    c?.client.connection?.stream?.destroy(Error("runtime_deadline"));
+    setTimeout(()=>process.exit(1),100).unref();
+  }
+  const acquisitionLog=label=>entry=>{
+    if(entry.status==="BLOCKED"||(entry.status==="PASS"&&entry.elapsedMs>=1000))
+      console.error(JSON.stringify({SQL_RUNTIME:label,...entry}));
+  };
   const responseScope=c=>scope(new Map([...(c.files.allRevisions||c.files),...c.files]));
   async function hydrate(t,nativeRead=false) {
     const observe=bootComplete?undefined:async(operation,fn)=>{
@@ -103,6 +115,7 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
   async function finish(c,commit) {
     let discard;
     try {if(commit){
+      if(poisoned)throw Error("worker_retired");
       if(c===boot)stage("BOOT_PERSIST");
       await persist(c);
       if(c.replayRecord){
@@ -150,18 +163,22 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
       if(!bootComplete||poisoned||stopping)return {committed:false,skipped:true};
       let c,timer;
       try {
-        c=context=await hydrate(await repo.begin());
-        const work=(async()=>{await refresh();await fn();})();
-        const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>{poisoned=true;reject(Error("background_deadline"));},25000);});
+        // Include acquisition, hydration, refresh, persistence and COMMIT,
+        // not just the callback. A timeout is fail-stop, not cancellation.
+        const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>{
+          retire(c);reject(Error("background_deadline"));
+        },25000);});
+        const work=(async()=>{
+          c=context=await hydrate(await repo.begin(undefined,{observe:acquisitionLog(label)}));
+          if(poisoned)throw Error("worker_retired");
+          await refresh();await fn();await finish(c,true);
+        })();
         await Promise.race([work,deadline]);
-        clearTimeout(timer); // Commit uses the existing bounded SQL operations.
-        await finish(c,true);
         return {committed:true};
       }catch(e){
-        if(c&&context===c)await finish(c,false).catch(()=>{});
+        if(!poisoned&&c&&context===c)await finish(c,false).catch(()=>{});
         const frames=(e.stack||"").split("\n").slice(1,4).map(l=>l.match(/[\w.-]+\.(?:c?js):\d+:\d+/)?.[0]).filter(Boolean);
-        console.error("Synthetic PostgreSQL job refused:",JSON.stringify({job:label||fn.name||"scheduled",category:e.name,code:e.code||null,frames}));
-        if(poisoned)setTimeout(()=>process.exit(1),100).unref();
+        console.error("PostgreSQL job refused:",JSON.stringify({job:label||fn.name||"scheduled",category:failureCategory(e),frames}));
         return {committed:false};
       }finally{clearTimeout(timer);}
     });
@@ -330,24 +347,45 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
     if(pending>=32){res.writeHead(503,{"Content-Type":"application/json"});res.end('{"error":"queue_busy"}');return;}
     pending++;
     const queuedAt=performance.now();
+    let admitted=false,expired=false;
+    // Queued work has no transaction or mutable state to cancel. Remove its
+    // right to execute when admission expires; return a bounded retry response.
+    const admissionTimer=setTimeout(()=>{
+      if(admitted)return;expired=true;
+      if(!res.headersSent){res.writeHead(503,{"Content-Type":"application/json","Cache-Control":"no-store"});
+        res.end('{"error":"queue_busy"}');}
+    },5000);
     return serial(async()=>{
+      admitted=true;clearTimeout(admissionTimer);
+      if(expired||res.destroyed||res.writableEnded)return;
       if(poisoned){res.writeHead(503);res.end();return;}
-      let c,timer;
+      let c,timer,watchdog,operation="ACQUIRE";
       const original={writeHead:res.writeHead.bind(res),write:res.write.bind(res),end:res.end.bind(res)};
       const chunks=[];let endedResolve,ended=false,status=200;
       const ending=new Promise(resolve=>endedResolve=resolve);
       function restore(){Object.assign(res,original);}
       try {
+        watchdog=setTimeout(()=>{
+          retire(c);restore();
+          if(!res.headersSent){
+            for(const k of res.getHeaderNames())res.removeHeader(k);
+            original.writeHead(503,{"Content-Type":"application/json","Cache-Control":"no-store"});
+            original.end('{"error":"transaction_deadline"}');
+          }
+          console.error(JSON.stringify({SQL_RUNTIME:"HTTP",operation,status:"BLOCKED",category:"DEADLINE"}));
+        },25000);
         const queueWaitMs=performance.now()-queuedAt;
         let nativeRead=nativeEnabled&&nativeProfile.eligible(req,captured.bytes);
-        const transaction=await repo.begin(nativeRead?nativeProfile.dependencies:undefined);
+        const transaction=await repo.begin(nativeRead?nativeProfile.dependencies:undefined,{observe:acquisitionLog("HTTP")});
+        if(poisoned){transaction.client.release(Error("worker_retired"));throw Error("worker_retired");}
         try{
           if(nativeRead&&!await nativeProfile.safe(transaction)){
             const fallbackAt=performance.now();
             transaction.files=await repo.load(transaction.client);transaction.metrics.loadQueries+=transaction.files.loadQueryCount;transaction.metrics.loadMs+=performance.now()-fallbackAt;nativeRead=false;
           }
         }catch(e){await transaction.client.query("ROLLBACK").catch(()=>{});transaction.client.release(e);throw e;}
-        c=context=await hydrate(transaction,nativeRead);await refresh();
+        operation="HYDRATE";c=context=await hydrate(transaction,nativeRead);
+        operation="REFRESH";await refresh();
         c.path=req.url.split("?")[0];c.label=`${req.method} ${c.path}`;c.queueWaitMs=queueWaitMs;
         try{c.metrics.action=JSON.parse(captured.bytes).action||null;}catch{}
         if(!["accounts.json","employees.json","ideas.json"].every(f=>c.files.allRevisions.has(f)))throw Error("critical_entity_missing");
@@ -385,29 +423,35 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
         res.write=(chunk,encoding,cb)=>{if(chunk)chunks.push(Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk,typeof encoding==="string"?encoding:undefined));if(typeof cb==="function")cb();return true;};
         res.end=(chunk,encoding,cb)=>{if(ended)chunks.length=0;if(chunk)chunks.push(Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk,typeof encoding==="string"?encoding:undefined));ended=true;endedResolve();if(typeof cb==="function")cb();return res;};
         const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error("request_transaction_timeout")),25000);});
+        operation="HANDLER";
         // The original HTTP callback must return handleApi's Promise; otherwise
         // its early res.end (e.g. forgot password) precedes later awaited writes.
         await Promise.race([(async()=>{if(c.fault==="handler_timeout")await new Promise(()=>{});await listener(req,res);await ending;})(),timeout]);
         clearTimeout(timer);
         const response=Buffer.concat(chunks);
         if(key&&["POST","PATCH","DELETE"].includes(req.method)&&status>=200&&status<300)c.replayRecord={actor,key,digest,status,headers:res.getHeaders(),response};
-        await finish(c,status<500);restore();
+        operation="PERSIST_COMMIT";await finish(c,status<500);restore();
         if(c.fault==="after_commit_drop"){res.destroy();return;}
         // A killed/ambiguous connection here is recoverable with the same key.
         original.writeHead(status);original.end(response);
+        if(c.path==="/api/register")console.log(JSON.stringify({
+          SQL_RUNTIME:"REGISTER",status:"COMMITTED",httpStatus:status,
+          queueMs:Math.round(queueWaitMs),elapsedMs:Math.round(performance.now()-queuedAt)
+        }));
       }catch(e){
         clearTimeout(timer);
         // Legacy module maps cannot be cancelled safely. Never run a new scope
         // after a timed-out async handler: fail-stop this development worker.
         if(e.message==="request_transaction_timeout")poisoned=true;
-        if(context&&c)await finish(c,false).catch(()=>{});
+        if(!poisoned&&context&&c)await finish(c,false).catch(()=>{});
         restore();
         if(!res.headersSent){for(const k of res.getHeaderNames())res.removeHeader(k);const conflict=e.message==="idempotency_input_mismatch"||e.message==="stale_entity_revision";
           original.writeHead(conflict?409:503,{"Content-Type":"application/json","Cache-Control":"no-store"});original.end(JSON.stringify({error:conflict?"conflict":"database_unavailable"}));}
-        console.error("Synthetic HTTP transaction refused:",e.code||e.message);
+        console.error(JSON.stringify({SQL_RUNTIME:"HTTP",operation,status:"BLOCKED",category:failureCategory(e)}));
         if(poisoned)setTimeout(()=>process.exit(1),100).unref();
       }
-    }).finally(()=>pending--);
+      finally{clearTimeout(watchdog);clearTimeout(timer);}
+    }).finally(()=>{clearTimeout(admissionTimer);pending--;});
   }
   http.createServer=function(...args){
     const listener=args.pop(),server=realCreate.call(http,...args,(req,res)=>handle(listener,req,res).catch(()=>res.destroy()));
@@ -443,16 +487,28 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
     const rows=(await c.query("SELECT id,topic,payload FROM dev.outbox WHERE topic IN('mail','sms') AND delivered_at IS NULL AND (fixture_receipt IS NULL OR (fixture_receipt->>'retryAfter')::timestamptz<=clock_timestamp()) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1")).rows;
     for(const row of rows){
       const payload=repo.vault.decode(row.payload,`outbox:${row.id}`);let sent=false;
+      console.log(JSON.stringify({SQL_RUNTIME:"MAIL_OUTBOX",operation:"DELIVER",status:"STARTED"}));
       try{
         if(row.topic==="mail")await (deliverMail||realMail)(payload.to,payload.subject,payload.text);
         else await (deliverSms||((p)=>require("./minimal-delivery.cjs").sendSms(p,realHttps)))(payload);
         sent=true;
-      }catch{}
+      }catch{
+        console.error(JSON.stringify({SQL_RUNTIME:"MAIL_OUTBOX",operation:"DELIVER",status:"BLOCKED",category:"PROVIDER_REFUSED"}));
+      }
       const receipt={transport:row.topic==="mail"?"smtp-outbox-v1":"sms-outbox-v1",event:row.id,...(!sent?{retryAfter:new Date(Date.now()+60000).toISOString()}:{}),semantics:"provider-accepted-at-least-once"};
       await c.query("UPDATE dev.outbox SET attempts=attempts+1,delivered_at=CASE WHEN $2 THEN clock_timestamp() ELSE NULL END,fixture_receipt=$3::jsonb WHERE id=$1",[row.id,sent,JSON.stringify(receipt)]);
+      if(sent)console.log(JSON.stringify({SQL_RUNTIME:"MAIL_OUTBOX",operation:"DELIVER",status:"PROVIDER_ACCEPTED"}));
     }
   },"minimal-mail-outbox");
-  outboxTimer=setInterval(()=>{if(bootComplete&&!poisoned&&!stopping)(minimalRelease?deliver():repo.drainFixtureOutbox()).catch(()=>{});},1000);outboxTimer.unref();
+  let outboxQueued=false,outboxRetryAt=0;
+  outboxTimer=setInterval(()=>{
+    if(!bootComplete||poisoned||stopping||outboxQueued||Date.now()<outboxRetryAt)return;
+    outboxQueued=true;
+    (minimalRelease?deliver():repo.drainFixtureOutbox())
+      .then(result=>{if(result?.committed===false)outboxRetryAt=Date.now()+60000;})
+      .catch(()=>{outboxRetryAt=Date.now()+60000;})
+      .finally(()=>{outboxQueued=false;});
+  },1000);outboxTimer.unref();
   await ready;
   return {repo,proof,server:app.__server,close:async()=>{stopping=true;clearInterval(outboxTimer);for(const timer of jobTimers)clearInterval(timer);await new Promise(r=>app.__server.close(r));await queue;await repo.pool.end();virtual.restore();https.request=realHttps;}};
   } catch(error) {
