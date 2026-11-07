@@ -463,3 +463,36 @@ SMTP refusal/retry, database cancellation and lock contention, admission and
 full-operation deadlines, duplicate idempotency keys, interrupted committed
 registration recovery by login, and persistence across restart. None of these
 tests connects to Production or changes Production configuration.
+
+### Primary advisory-lock evidence
+
+A `READ_TIMEOUT` at `ADVISORY_LOCK` locates the outstanding client call; it
+does not establish a primary lock holder, its transaction age, or a competing
+deployment. Never change the advisory key, remove serialization, or terminate
+sessions based on that label alone. Agent's Production SQL connection is a
+read replica and cannot provide that evidence.
+
+During a recurrence, an owner can use **Database → Production → Settings**
+connection details in a trusted external SQL client, connected to the verified
+Production primary with certificate/hostname verification and channel binding.
+Do not put the connection string in source, chat or logs. Run
+`scripts/fresh/advisory-lock-snapshot.sql` as a complete script. It starts a
+read-only transaction, uses short local timeouts and rolls back. Check that
+the database is the expected `neondb` and that the result does not say
+`PRIMARY_REQUIRED` or `FULL_STATS_REQUIRED`.
+
+The result filters the single runtime key `1793705963` (bigint advisory-lock
+representation: classid 0, objid 1793705963, objsubid 1). It reports granted and
+waiting sessions, pseudonymous backend labels, blocking relationships,
+transaction/query/wait ages and fixed query/application classifications.
+It omits raw SQL, PIDs, role names and account fields. A backend label is not
+a deployment/VM identity, especially through a transaction pooler. Retain the
+capture timestamp and the Publishing revision/instance evidence separately.
+`NO_MATCHING_LOCK_AT_CAPTURE` is a point-in-time observation, not proof that
+earlier timeouts had no blocker. No extra diagnostic publication is required.
+
+`node scripts/fresh/advisory-lock-check.cjs` tests the query using two real
+competing SQL transactions and an independent observer in a temporary,
+isolated PostgreSQL instance. The observer must not alter either lock; releasing
+the holder must allow the waiter to acquire the unchanged key. A simulated
+replica context verifies refusal without claiming to provision a real replica.

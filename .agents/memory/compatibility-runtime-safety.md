@@ -39,6 +39,19 @@ decoding or storage.
 latency measurements from Production root-cause evidence, and coalesce test
 readiness probes so slow serialized reads do not create a probe flood.
 
+Even a client `READ_TIMEOUT` labelled `ADVISORY_LOCK` does not prove that the
+server was blocked on a granted advisory lock. SQL backend identity also does
+not attest a VM or release identity, particularly through transaction pooling.
+
+**Why:** A client deadline identifies an unanswered call, not its server-side
+wait event or owner; successful later acquisitions do not identify an earlier
+holder.
+
+**How to apply:** Require contemporaneous primary lock/activity/blocker
+evidence before assigning a live holder or changing concurrency behavior.
+Correlate deployment/instance evidence independently; a replica or a backend
+start timestamp cannot supply that mapping.
+
 Bound the whole serialized operation, not just its handler, and coalesce
 outbox ticks while queued as well as while active. Queue-admission expiry must
 also revoke the queued callback's right to execute.
