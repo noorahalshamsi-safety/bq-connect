@@ -1,6 +1,9 @@
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const { base, load, need, sha, canonical } = require("./config.cjs");
 async function start({ env = process.env, manifest = load(env) } = {}) {
+  // In-process comparisons only, before authority gates so a configuration
+  // mismatch remains diagnosable. Nothing here changes those gates or readiness.
+  require("./admin-startup-diagnostic.cjs").report(manifest, env);
   need(env.BQ_FRESH_ACTIVATE_APPROVAL === "activate:" + sha(canonical(manifest)), "fresh_activation_approval_required");
   const policy = require("./runtime-policy.cjs"), freshProviders = policy.providers(env);
   require("./providers.cjs").requireReady(freshProviders, env, manifest);
