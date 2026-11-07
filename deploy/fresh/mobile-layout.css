@@ -1,0 +1,122 @@
+/*
+ * BQ Connect mobile layout corrections.
+ * Loaded after the source app.css by the isolated Fresh runtime.
+ * Intentionally limited to viewport sizing, safe areas, and touch-input sizing.
+ */
+@media (max-width: 980px) {
+  body,
+  .app {
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+
+  /* Long gate forms remain reachable when the viewport is short or the keyboard is open. */
+  .gate {
+    place-items: start center;
+    padding-block: env(safe-area-inset-top) env(safe-area-inset-bottom);
+  }
+
+  .gate-card {
+    max-width: calc(100% - 2rem);
+    margin-block: 0.75rem;
+  }
+
+  .splash {
+    min-height: 100vh;
+    min-height: 100dvh;
+    padding-block-start: max(2rem, env(safe-area-inset-top));
+    padding-block-end: max(2.2rem, env(safe-area-inset-bottom));
+  }
+
+  /*
+   * iOS Safari zooms the page on focus when a form control is below 16 CSS px.
+   * Keep the deliberately larger verification / compose typography intact.
+   */
+  #gate input:not([type="file"]):not(.totp-input):not(.tfa-code-input),
+  #gate select,
+  #gate textarea,
+  #forum input:not([type="file"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not(.totp-input):not(.tfa-code-input),
+  #forum select,
+  #forum textarea:not(#idea),
+  #compose input:not([type="file"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not(.totp-input):not(.tfa-code-input),
+  #compose select,
+  #compose textarea:not(#idea),
+  #compose[data-kind="idea"] textarea#idea {
+    font-size: 16px;
+  }
+
+  /* The native compose dialog was sized only against legacy 100vh. */
+  dialog {
+    max-height: calc(100vh - 2rem);
+    max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 2rem);
+    scroll-padding-block: env(safe-area-inset-top) env(safe-area-inset-bottom);
+  }
+
+  dialog#compose {
+    position: fixed;
+    inset: 0;
+    width: min(460px, 100%);
+    height: 100vh;
+    max-height: 100vh;
+    height: 100dvh;
+    max-height: 100dvh;
+    margin: 0 auto;
+    padding-block: env(safe-area-inset-top) env(safe-area-inset-bottom);
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+  }
+
+  dialog#compose:not([data-kind="idea"]) textarea#idea {
+    font-size: 1.12rem;
+  }
+
+  .action-sheet {
+    max-height: min(80dvh, calc(100dvh - env(safe-area-inset-top) - 1rem));
+    padding-bottom: max(0.8rem, env(safe-area-inset-bottom));
+  }
+
+  .terms-dialog {
+    max-height: min(94dvh, calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 1rem));
+  }
+
+  .story-view {
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  .story-bars {
+    top: max(10px, env(safe-area-inset-top));
+  }
+
+  .story-top {
+    top: max(22px, calc(env(safe-area-inset-top) + 12px));
+  }
+
+  .story-chat-panel {
+    min-height: min(45dvh, 16rem);
+    max-height: min(72dvh, calc(100dvh - env(safe-area-inset-top) - 1rem));
+  }
+}
+
+/* Short landscape viewports need scrollable forms and sheets, not clipped content. */
+@media (max-width: 980px) and (orientation: landscape) and (max-height: 520px) {
+  .gate {
+    place-items: start center;
+  }
+
+  .gate-card {
+    margin-block: 0.5rem;
+  }
+
+  dialog#compose {
+    height: 100vh;
+    max-height: 100vh;
+    height: 100dvh;
+    max-height: 100dvh;
+  }
+
+  .story-chat-panel {
+    min-height: 0;
+    max-height: calc(100dvh - env(safe-area-inset-top) - 0.5rem);
+  }
+}

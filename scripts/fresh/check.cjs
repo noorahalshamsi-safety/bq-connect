@@ -9,7 +9,7 @@ const { Repository } = require(path.join(base, "development/postgres/repository.
 const schema = require(path.join(base, "deploy/managed/schema.cjs"));
 const { code } = require("../../development/postgres/fixtures.cjs");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "bq-pg-dev-fresh-"));
-let proof, repo, child, port, token, adminPolicy, adminEnv, stage = "setup";
+let proof, repo, child, port, token, adminPolicy, adminEnv, stage = "setup", mediaEnabled = false;
 const events = [], controls = new Map();
 const store = { readControl: async k => controls.get(k) || null,
   createControl: async (k, v) => { assert(!controls.has(k)); controls.set(k, v); } };
@@ -29,6 +29,7 @@ async function boot(off = false, adminApproved = true, fault = "", loadMode = ""
       NODE_EXTRA_CA_CERTS:path.join(root,"smtp-test.crt"),
       BQ_TEST_STARTUP_FAULT:fault,
       BQ_TEST_LOAD_MODE:loadMode,
+      BQ_TEST_MEDIA_ENABLED: mediaEnabled ? "1" : "0",
       BQ_TEST_ADMIN_POLICY: JSON.stringify({ ...adminPolicy, approved: adminApproved && adminPolicy.approved }) }, silent: true });
   child.stdout.on("data", b => logs.push(b.toString()));
   child.stderr.on("data", b => logs.push(b.toString()));
@@ -541,6 +542,12 @@ async function main() {
     if (r.status === 429) { limited = true; break; }
   }
   assert(limited);
+  stage = "streaming media, stories, profile, retry, rollback and session persistence";
+  await stop(); events.length = 0; mediaEnabled = true; await boot();
+  const mediaEvidence = await require("./media-sql-check.cjs").run({
+    root, repo, getPort: () => port, token: regularSession, otherToken: token, body: browserPost, request,
+    restart: async () => { await stop(); events.length = 0; await boot(); }
+  });
   stage = "restart and durable account";
   await stop(); events.length = 0; await boot();
   assert(ok(await request("/api/login", { badge: "101", password: body.password }, { anonymous: true })).needTotp);
@@ -551,7 +558,7 @@ async function main() {
   const client = await repo.pool.connect();
   try { await I.reconcile(client, proof, manifest, controls.get("provision-receipt.json")); }
   finally { client.release(); }
-  console.log(JSON.stringify({ result: "PASS", employees: 6311, initialAccounts: 0,
+  console.log(JSON.stringify({ result: "PASS", employees: 6311, initialAccounts: 0, mediaEvidence,
     employeeOnlyImport: "PASS", idempotency: "PASS", ownership: "PASS", realRegistration: "PASS",
     optionalTotp: "PASS", originalCodeMobileHashes: "PASS", ownerGatedAdmin: "PASS",
     loginEmailNotifications: "PASS", smsNotRequired: "PASS",

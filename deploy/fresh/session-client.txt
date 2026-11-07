@@ -1,0 +1,55 @@
+// Keep the existing signed, SQL-revocable session. A transport failure is not
+// evidence of revocation; do not delete a valid token on 408/429/5xx/offline.
+async function freshSessionRequest(url, options) {
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 12000);
+  try { return await fetch(url, { ...options, signal: controller.signal }); }
+  finally { clearTimeout(timer); }
+}
+async function restoreSession() {
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem("rd-session") || "null"); } catch { return false; }
+  if (!saved?.token) return false;
+  let response;
+  try {
+    response = await freshSessionRequest("/api/session", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: saved.token }),
+      cache: "no-store"
+    });
+  } catch { throw Error("session_temporarily_unavailable"); }
+  let current;
+  try { current = JSON.parse(localStorage.getItem("rd-session") || "null"); } catch {}
+  if (current?.token !== saved.token) return false;
+  if (response.status === 401) { clearSession(); return false; }
+  if (!response.ok) throw Error("session_temporarily_unavailable");
+  const data = await response.json();
+  if (!data.person) throw Error("session_temporarily_unavailable");
+  // Do not resurrect a session replaced/removed by another tab or logout while
+  // this network request was in flight.
+  try { current = JSON.parse(localStorage.getItem("rd-session") || "null"); } catch {}
+  if (current?.token !== saved.token) return false;
+  selectedPerson = { ...data.person, token: saved.token };
+  return true;
+}
+let freshRestoring = false;
+async function freshRestoreOnOpen() {
+  if (freshRestoring) return;
+  freshRestoring = true;
+  let note = document.querySelector("#fresh-session-retry");
+  try {
+    const ok = await restoreSession();
+    note?.remove();
+    if (ok) { showApp(); loadIdeas(); } else showGate();
+  } catch {
+    if (!note) {
+      note = document.createElement("button"); note.id = "fresh-session-retry"; note.type = "button";
+      note.style.cssText = "position:fixed;bottom:1rem;inset-inline:1rem;z-index:100000;padding:1rem;white-space:normal";
+      note.textContent = "Connection unavailable. Login is saved. Tap to retry. / الاتصال غير متاح. تسجيل الدخول محفوظ؛ اضغط للمحاولة.";
+      note.addEventListener("click", freshRestoreOnOpen); document.body.appendChild(note);
+    }
+  } finally { freshRestoring = false; }
+}
+window.addEventListener("online", freshRestoreOnOpen);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") freshRestoreOnOpen();
+});

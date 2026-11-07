@@ -3,6 +3,9 @@
 let freshPendingPost = null;
 function freshPostError(error) {
   const messages = {
+    media_uncertain: "Upload could not be confirmed. Keep this page open and retry the same media. / لم يتأكد الرفع؛ أبقِ الصفحة مفتوحة وأعد الملف نفسه.",
+    media_format: "Unsupported media. Use JPEG/PNG/WebP or a playable MP4/H.264 video. / صيغة غير مدعومة؛ استخدم صورة أو فيديو MP4/H.264.",
+    media_duration: "Video must be at most 60 seconds. Trim it and select it again. / يجب ألا يتجاوز الفيديو 60 ثانية؛ قصّه واختره مجدداً.",
     post_busy: "The service is busy. Your draft is kept; retry this same submission. / الخدمة مشغولة. المسودة محفوظة؛ أعد نفس المحاولة.",
     post_uncertain: "Publishing could not be confirmed. Your draft is kept; retry without changing it to avoid a duplicate. / لم يتأكد النشر. أعد نفس المحاولة دون تغيير المسودة.",
     post_conflict: "This submission could not be replayed safely. Check your posts before submitting again. / تحقق من منشوراتك قبل إعادة الإرسال.",

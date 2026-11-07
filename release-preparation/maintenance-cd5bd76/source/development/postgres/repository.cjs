@@ -243,7 +243,11 @@ class Repository {
   }
   async commitMedia(c,media,files) {
     for(const row of media.values())if(row.new) {
-      const key=`${this.proof.dataset}/immutable/${row.id}/${hash(row.bytes)}`;
+      const streaming=!!row.file;
+      const sha=streaming?await require("../../../../../deploy/fresh/media-ingress.cjs").hashFile(row.file):hash(row.bytes);
+      const size=streaming?fs.statSync(row.file).size:row.bytes.length;
+      if(streaming&&(sha!==row.sha||size!==row.size))throw Error("media_checksum");
+      const key=`${this.proof.dataset}/immutable/${row.id}/${sha}`;
       const dest=path.join(this.proof.objects,row.id);
       if(fs.existsSync(dest))throw Error("immutable_object_already_exists");
       // Intent durability is separate from readiness/attachment. A failed
@@ -252,16 +256,17 @@ class Repository {
       try {
         await intent.query("BEGIN");await this.verify(intent);
         await intent.query("INSERT INTO dev.media(id,legacy_path,object_key,sha256,size,mime,owner,state) VALUES($1,$2,$3,$4,$5,$6,$7,'pending')",
-          [row.id,row.legacy,key,hash(row.bytes),row.bytes.length,row.mime,row.owner]);
+          [row.id,row.legacy,key,sha,size,row.mime,row.owner]);
         await intent.query("COMMIT");
       }catch(e){await intent.query("ROLLBACK").catch(()=>{});throw e;}finally{intent.release();}
       // The bucket copy is the durable one; the local file is only a cache.
       const remote=this.staging||this.managed;
-      if(remote&&(await remote.store.put(row.id,row.bytes)).key!==key)throw Error("media_key_mismatch");
-      const fd=fs.openSync(dest,"wx",0o600);try{fs.writeFileSync(fd,row.bytes);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+      if(remote&&(await (streaming?remote.store.putFile(row.id,row.file,sha):remote.store.put(row.id,row.bytes))).key!==key)throw Error("media_key_mismatch");
+      if(streaming)fs.copyFileSync(row.file,dest,fs.constants.COPYFILE_EXCL);
+      const fd=fs.openSync(dest,streaming?"r":"wx",0o600);try{if(!streaming)fs.writeFileSync(fd,row.bytes);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
       const directory=fs.openSync(this.proof.objects,"r");
       try{fs.fsyncSync(directory);}finally{fs.closeSync(directory);}
-      if(hash(fs.readFileSync(dest))!==hash(row.bytes))throw Error("media_checksum");
+      if((streaming?await require("../../../../../deploy/fresh/media-ingress.cjs").hashFile(dest):hash(fs.readFileSync(dest)))!==sha)throw Error("media_checksum");
       await c.query("UPDATE dev.media SET state='ready' WHERE id=$1",[row.id]);
       row.object=dest;
     }
@@ -278,7 +283,7 @@ class Repository {
         const r=await c.query("SELECT * FROM dev.media WHERE legacy_path=$1 AND state IN('ready','retained') FOR SHARE",[legacy]);
         if(!r.rowCount)throw Error("referenced_media_not_ready");
         const object=path.join(this.proof.objects,r.rows[0].id);
-        if(!fs.existsSync(object)||hash(fs.readFileSync(object))!==r.rows[0].sha256)throw Error("referenced_media_missing_or_corrupt");
+        if(!fs.existsSync(object)||await require("../../../../../deploy/fresh/media-ingress.cjs").hashFile(object)!==r.rows[0].sha256)throw Error("referenced_media_missing_or_corrupt");
         await c.query("INSERT INTO dev.media_links VALUES($1,$2,$3)",[file,sourcePath,legacy]);
       }
     }

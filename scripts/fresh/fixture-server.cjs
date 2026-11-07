@@ -115,6 +115,7 @@ if(fault==="syntax"){
 const configured = process.argv[3] !== "providers-off";
 const serve=async()=>{await smtpReady;return require(path.join(base, "development/postgres/runtime.cjs")).serve(proof, repo, {
   minimalRelease: true, freshInstall: true,
+  mediaEnabled: process.env.BQ_TEST_MEDIA_ENABLED === "1",
   faults:true,
   startupTimeoutMs:fault==="timeout"?1500:120000,
   freshEmailDomains: ["binquraya.com"],

@@ -54,6 +54,23 @@ class ImmutableStore {
     await this.read(key,sha);
     return {key,sha,state:"stored"};
   }
+  // Fresh uploads use the SDK's file API. Verify by streaming the stored copy;
+  // never materialize an entire movie as a Buffer.
+  async putFile(id,file,sha){
+    const {hashFile}=require("../../../../../deploy/fresh/media-ingress.cjs");
+    if(await hashFile(file)!==sha)throw fault("object_corrupt");
+    const key=this.key(id,sha),exists=await this.call("exists",key);
+    if(!exists)await this.call("uploadFromFilename",key,file);
+    const controller=new AbortController();
+    const stream=this.client.downloadAsStream(key);
+    const timer=setTimeout(()=>{controller.abort();stream.destroy(fault("object_store_timeout"));},this.timeoutMs);
+    try {
+      const digest=crypto.createHash("sha256");
+      for await(const chunk of stream)digest.update(chunk);
+      if(controller.signal.aborted||digest.digest("hex")!==sha)throw fault("object_corrupt");
+    }finally{clearTimeout(timer);stream.destroy();}
+    return {key,sha,state:exists?"present":"stored"};
+  }
   // Provisioning records that bind a database to this bucket. Written once;
   // check-then-write, so callers must hold the database provisioning lock.
   controlKey(name){

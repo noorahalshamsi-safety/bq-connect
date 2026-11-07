@@ -17,6 +17,17 @@ verified employee ownership for registration and owner-only initial admin
 bootstrap. No first-registrant administration or default password. Do not import
 real employees into Development, write Production, or Republish automatically.
 
+Production now contains newly registered real accounts, not just the imported
+directory. Preserve those accounts and their posts, stories and media; never
+rerun initialization or employee import as an upload/login repair.
+
+**Why:** The owner explicitly confirmed real registrations and imposed this
+preservation boundary for the mobile release repair.
+
+**How to apply:** Use isolated synthetic users, PostgreSQL and storage doubles
+for destructive/fault tests. Production diagnosis remains read-only, and
+publishing, credential changes or data repair need separate authorization.
+
 Do not repeatedly request already-approved administrator, email-domain, launch
 audience or existing-provider reuse decisions; consult the current approved
 manifest instead. Keep genuinely unavailable technical evidence and separate

@@ -61,7 +61,33 @@ function transform(source, { mediaEnabled = false, emailDomains = require("./con
     if (urlPath === "/api/push") {
       send(res, 503, { error: "push_provider_unconfigured" }); return;
     }`);
-  if (!mediaEnabled) {
+  if (mediaEnabled) {
+    const beginMedia = source.indexOf("function receiveMedia(req, res) {");
+    const endMedia = source.indexOf("\nfunction serveMedia(", beginMedia);
+    need(beginMedia > 0 && endMedia > beginMedia, "fresh_media_stream_contract_changed");
+    source = source.slice(0, beginMedia) + `
+async function receiveMedia(req, res) {
+  const person = personFromToken(req.headers["x-session"]);
+  if (!person) { send(res, 401, { error: "employee_required" }); return; }
+  const quota = uploadRow(person.badge);
+  if (quota.n >= UPLOAD_MAX_FILES || quota.bytes >= UPLOAD_MAX_BYTES) {
+    res.setHeader("Retry-After", String(Math.ceil((quota.reset-Date.now())/1000)));
+    send(res, 429, { error: "limited" }); return;
+  }
+  quota.n++;
+  try {
+    if (!req.freshUpload || typeof req.stageFreshMedia !== "function") throw Error("media_ingress_required");
+    const url = await req.stageFreshMedia({ looksRight: mediaLooksRight, stripMetadata });
+    quota.bytes += req.freshUpload.size;
+    send(res, 201, { url });
+  } catch (error) {
+    const invalid = ["bad_type", "video_too_long"].includes(error.message);
+    send(res, invalid ? 415 : 503,
+      { error: invalid ? error.message : "media_unavailable" });
+  }
+}
+` + source.slice(endMedia);
+  } else {
     const media = "function receiveMedia(req, res) {";
     need(source.includes(media), "fresh_media_source_contract_changed");
     source = source.replace(media, media + `

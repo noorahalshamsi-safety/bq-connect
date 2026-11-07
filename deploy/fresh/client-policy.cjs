@@ -35,6 +35,21 @@ function transform(source) {
   return source;
 }
 function prepare(publicDir, workspace) {
+  const htmlFile = path.join(publicDir, "index.html");
+  let html = fs.readFileSync(htmlFile, "utf8");
+  need(html.includes('content="width=device-width, initial-scale=1"'), "fresh_mobile_viewport_contract_changed");
+  html = html.replace('content="width=device-width, initial-scale=1"',
+    'content="width=device-width, initial-scale=1, viewport-fit=cover"')
+    .replace("</head>", '<link rel="stylesheet" href="/css/fresh-mobile.css"></head>');
+  fs.writeFileSync(htmlFile, html);
+  const cssDir = path.join(publicDir, "css");
+  if (fs.lstatSync(cssDir).isSymbolicLink()) fs.unlinkSync(cssDir);
+  fs.mkdirSync(cssDir, { recursive: true });
+  for (const item of fs.readdirSync(path.join(workspace, "public/css"))) {
+    const dest = path.join(cssDir, item);
+    if (!fs.existsSync(dest)) fs.symlinkSync(path.join(workspace, "public/css", item), dest);
+  }
+  fs.copyFileSync(path.join(__dirname, "mobile-layout.css"), path.join(cssDir, "fresh-mobile.css"));
   const dir = path.join(publicDir, "js");
   if (fs.lstatSync(dir).isSymbolicLink()) fs.unlinkSync(dir);
   fs.mkdirSync(dir, { recursive: true });
@@ -45,10 +60,20 @@ function prepare(publicDir, workspace) {
     else if (item === "app.js") {
       // Replace only the fresh runtime's copy, not a symlink into the source.
       if (fs.existsSync(dest) && fs.lstatSync(dest).isSymbolicLink()) fs.unlinkSync(dest);
-      fs.writeFileSync(dest, require("./post-client.cjs").transform(
-        fs.readFileSync(path.join(workspace, "public/js", item), "utf8")));
+      fs.writeFileSync(dest, require("./mobile-client.cjs").transform(require("./post-client.cjs").transform(
+        fs.readFileSync(path.join(workspace, "public/js", item), "utf8"))));
     }
     else if (!fs.existsSync(dest)) fs.symlinkSync(path.join(workspace, "public/js", item), dest);
   }
+  const css = fs.readFileSync(path.join(__dirname, "mobile-layout.css"));
+  const revision = require("node:crypto").createHash("sha256").update(css)
+    .update(fs.readFileSync(path.join(dir, "app.js"))).digest("hex").slice(0, 16);
+  let worker = fs.readFileSync(path.join(workspace, "public/sw.js"), "utf8");
+  need(/const CACHE = "[^"]+";/.test(worker) && worker.includes('  "/css/app.css",'), "fresh_worker_cache_contract_changed");
+  worker = worker.replace(/const CACHE = "[^"]+";/, `const CACHE = "bq-fresh-mobile-${revision}";`)
+    .replace('  "/css/app.css",', '  "/css/app.css",\n  "/css/fresh-mobile.css",\n  "/synthetic-request.js",');
+  const swFile = path.join(publicDir, "sw.js");
+  if (fs.existsSync(swFile) && fs.lstatSync(swFile).isSymbolicLink()) fs.unlinkSync(swFile);
+  fs.writeFileSync(swFile, worker);
 }
 module.exports = { transform, prepare };

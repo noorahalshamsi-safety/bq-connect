@@ -342,9 +342,22 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
     if(ingress>=8){res.writeHead(503,{"Content-Type":"application/json"});res.end('{"error":"ingress_busy"}');return;}
     ingress++;
     let captured;
-    try{captured=await bufferRequest(req);}catch(e){res.writeHead(e.message==="body_too_large"?413:408,{"Content-Type":"application/json"});res.end(JSON.stringify({error:e.message}));return;}finally{ingress--;}
+    try{
+      captured=freshInstall&&mediaEnabled&&req.method==="POST"&&req.url.split("?")[0]==="/api/media"
+        ?await require(path.resolve(__dirname,"../../../../../deploy/fresh/media-ingress.cjs")).capture(req)
+        :await bufferRequest(req);
+      if(captured.req.freshUpload)console.log(JSON.stringify({
+        FRESH_MEDIA_UPLOAD:"RECEIVED",bytes:captured.req.freshUpload.size
+      }));
+    }catch(e){
+      if(!res.destroyed){
+        const code=e.message==="body_too_large"?413:e.message==="bad_type"?415:e.message==="employee_required"?401:408;
+        res.writeHead(code,{"Content-Type":"application/json"});res.end(JSON.stringify({error:e.message}));
+      }
+      return;
+    }finally{ingress--;}
     req=captured.req;
-    if(pending>=32){res.writeHead(503,{"Content-Type":"application/json"});res.end('{"error":"queue_busy"}');return;}
+    if(pending>=32){captured.cleanup?.();res.writeHead(503,{"Content-Type":"application/json"});res.end('{"error":"queue_busy"}');return;}
     pending++;
     const queuedAt=performance.now();
     let admitted=false,expired=false;
@@ -390,6 +403,8 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
         try{c.metrics.action=JSON.parse(captured.bytes).action||null;}catch{}
         if(!["accounts.json","employees.json","ideas.json"].every(f=>c.files.allRevisions.has(f)))throw Error("critical_entity_missing");
         c.actor=auth.readSession(req.headers["x-session"])||"";
+        if(req.freshUpload)req.stageFreshMedia=options=>
+          require(path.resolve(__dirname,"../../../../../deploy/fresh/media-ingress.cjs")).stage(req.freshUpload,{...options,context:c,owner:c.actor});
         const key=req.headers["idempotency-key"];
         if(key&&(!/^[A-Za-z0-9:_-]{8,120}$/.test(key)))throw Error("invalid_idempotency_key");
         let parsed={};try{parsed=JSON.parse(captured.bytes);}catch{}
@@ -441,6 +456,10 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
           requestRef:key?hash(key).slice(0,12):"UNKEYED",
           queueMs:Math.round(queueWaitMs),elapsedMs:Math.round(performance.now()-queuedAt)
         }));
+        if(c.path==="/api/media"&&req.freshUpload)console.log(JSON.stringify({
+          FRESH_MEDIA_UPLOAD:status===201?"COMMITTED":"REJECTED",httpStatus:status,
+          queueMs:Math.round(queueWaitMs),elapsedMs:Math.round(performance.now()-queuedAt)
+        }));
         if(c.fault==="after_commit_drop"){res.destroy();return;}
         // A killed/ambiguous connection here is recoverable with the same key.
         original.writeHead(status);original.end(response);
@@ -454,13 +473,13 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
         if(!res.headersSent){for(const k of res.getHeaderNames())res.removeHeader(k);const conflict=e.message==="idempotency_input_mismatch"||e.message==="stale_entity_revision";
           original.writeHead(conflict?409:503,{"Content-Type":"application/json","Cache-Control":"no-store"});original.end(JSON.stringify({error:conflict?"conflict":"database_unavailable"}));}
         console.error(JSON.stringify({SQL_RUNTIME:"HTTP",operation,status:"BLOCKED",category:failureCategory(e),
-          ...(req.method==="POST"&&req.url?.split("?")[0]==="/api/ideas"?{
-            endpoint:"POST_CREATE",httpStatus:503
+          ...(req.method==="POST"&&["/api/ideas","/api/media"].includes(req.url?.split("?")[0])?{
+            endpoint:req.url.split("?")[0]==="/api/media"?"MEDIA_UPLOAD":"POST_CREATE",httpStatus:503
           }:{})}));
         if(poisoned)setTimeout(()=>process.exit(1),100).unref();
       }
       finally{clearTimeout(watchdog);clearTimeout(timer);}
-    }).finally(()=>{clearTimeout(admissionTimer);pending--;});
+    }).finally(()=>{clearTimeout(admissionTimer);pending--;captured.cleanup?.();});
   }
   http.createServer=function(...args){
     const listener=args.pop(),server=realCreate.call(http,...args,(req,res)=>handle(listener,req,res).catch(()=>res.destroy()));
