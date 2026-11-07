@@ -36,10 +36,15 @@ async function start({ env = process.env, manifest = load(env) } = {}) {
     // Existing repository restores only SQL-authorized media; no source storage.
     await store.restore(media, objects);
     process.env.BQ_STORAGE_SYNC = "0"; process.env.BQ_TRANSLATE = "0";
+    const freshAdminPolicy = require("./email-ownership.cjs").adminPolicy(manifest, env);
+    // Only booleans from this process's actual environment. Never emit the
+    // approval, email, email hash, credentials or environment contents.
+    console.log(JSON.stringify({ FRESH_ADMIN_CONFIGURATION: freshAdminPolicy.approved ? "PASS" : "BLOCKED",
+      ...freshAdminPolicy.checks }));
     const running = await require(path.join(base, "development/postgres/runtime.cjs")).serve(proof, repo, {
       nativeEnabled: true, minimalRelease: true, freshInstall: true,
       freshProviders, freshEmailDomains: manifest.emailDomains,
-      freshAdminPolicy: require("./email-ownership.cjs").adminPolicy(manifest, env),
+      freshAdminPolicy,
       mediaEnabled: env.BQ_FRESH_MEDIA_ENABLED === "1"
     });
     return { ...running, close: async () => {

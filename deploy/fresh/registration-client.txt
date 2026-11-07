@@ -56,6 +56,10 @@ document.querySelector("#register-form").addEventListener("submit", async (event
       done.hidden = false; document.querySelector("#otp").focus(); return;
     }
     if (!reply.ok || !reply.data.registered) {
+      if (reply.data.error === "owner_admin_approval_required") {
+        error.textContent = "Administrator registration needs the owner's approved email and current configuration approval. Contact the owner; do not retry different identity details. / تسجيل المسؤول يحتاج البريد المعتمد وموافقة المالك على الإعدادات الحالية.";
+        return;
+      }
       error.textContent = reply.data.error === "ownership_unverified" ?
         "Directory verification failed or the ownership record is incomplete. / لم تتطابق بيانات التحقق المسجلة." :
         t(reply.status === 429 ? "limited" : REGISTER_ERRORS[reply.data.error] || "loginFailed");

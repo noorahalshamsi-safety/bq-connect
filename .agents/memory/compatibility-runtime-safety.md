@@ -27,6 +27,21 @@ background jobs must not compete with the boot transaction.
 and use value-free stage diagnostics. When testing remote-SQL startup, account
 for per-row network round trips, not just fast local PostgreSQL timings.
 
+Transaction disposition is not the same as operation acceptance or response
+delivery. Do not interpret a registration `COMMITTED` event as account creation
+without its HTTP result, or a generic posting failure as proof of rollback.
+
+**Why:** Rejected registration can commit abuse-protection state, while a
+successful post can commit before its HTTP response is lost. Existing Production
+logs did not distinguish those outcomes, and isolated tests reproduce the latter.
+
+**How to apply:** Separate commit status, accepted HTTP outcome and delivery.
+Preserve the original idempotency key for an unchanged uncertain retry; never
+blindly create a new request to resolve an ambiguous committed operation.
+Response replay may legitimately be refused after another transaction or restart
+changes its revision scope. Assert duplicate prevention and persisted identity in
+those tests, not unconditional cached-response success; preserve that guard.
+
 A coarse startup phase timeout does not identify the awaited operation that
 stalled. A read-only replica cannot attest live application lock or pool waits.
 

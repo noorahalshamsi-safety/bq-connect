@@ -342,6 +342,29 @@ retains its stronger MFA requirement: enroll optional TOTP before operator
 elevation. This is not a registration prerequisite. No public registration request can
 assign administrator privileges. There are initially zero administrators.
 
+For a registration `owner_admin_approval_required` response, do not infer the
+Production environment from Development Shell. The running fresh launcher emits
+`FRESH_ADMIN_CONFIGURATION` with only `emailPresent`, `emailAllowed`,
+`approvalPresent` and `approvalMatches` booleans. `approvalMatches` compares the
+unchanged approval formula above against that process's exact manifest and
+normalized email. A blocked admin request additionally emits
+`FRESH_ADMIN_REGISTRATION` with `approvalVerified` and `emailPinMatches`.
+These distinguish missing/invalid configuration, approval mismatch and entered
+email mismatch without exposing email, approvals or key material. A mismatch
+alone cannot distinguish a stale manifest-bound approval from an incorrectly
+calculated approval. Owner review is still required; these checks never grant a role.
+
+Fresh posting retains a request's idempotency key for unchanged manual retries
+after an uncertain response, in memory only. Keep the draft unchanged for that
+retry. A reload or changed draft is not the same retry; check the feed before a
+new submission. Conflict responses do not trigger automatic creation with a new key.
+`SQL_RUNTIME: POST_CREATE` reports commit/rollback and whether HTTP 201 was
+accepted, before sending the response (including an interrupted response).
+`requestRef` is a truncated digest of the request key, not an employee identifier.
+An HTTP 403 registration transaction logged `COMMITTED` is not a created account.
+Runtime HTTP errors identify post creation and allowlisted SQL failure categories;
+no post contents, tokens or raw database messages are logged.
+
 Only after this account has completed verification and the operator authorizes
 elevation, calculate the nonsecret explicit one-time bootstrap approval
 (it has deliberately not been generated during preparation):

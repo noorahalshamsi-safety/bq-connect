@@ -8,6 +8,9 @@
     }
     if (badge === __freshAdmin.badge && (!__freshAdmin.approved ||
       crypto.createHash("sha256").update(email).digest("hex") !== __freshAdmin.emailHash)) {
+      console.log(JSON.stringify({ FRESH_ADMIN_REGISTRATION: "BLOCKED",
+        approvalVerified: __freshAdmin.approved === true,
+        emailPinMatches: crypto.createHash("sha256").update(email).digest("hex") === __freshAdmin.emailHash }));
       send(res, 403, { error: "owner_admin_approval_required" }); return;
     }
     if (directory.some(r => String(r.badge) !== badge &&

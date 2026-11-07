@@ -54,7 +54,10 @@ function adminPolicy(manifest, env) {
   const email = normalize(env.BQ_FRESH_ADMIN_EMAIL, manifest.emailDomains);
   const expected = "register-admin:" + sha(canonical([
     sha(canonical(manifest)), manifest.initialAdminBadge, email]));
+  const checks = { emailPresent: !!env.BQ_FRESH_ADMIN_EMAIL, emailAllowed: !!email,
+    approvalPresent: !!env.BQ_FRESH_ADMIN_REGISTRATION_APPROVAL,
+    approvalMatches: !!email && env.BQ_FRESH_ADMIN_REGISTRATION_APPROVAL === expected };
   return { badge: manifest.initialAdminBadge, emailHash: sha(email),
-    approved: !!email && env.BQ_FRESH_ADMIN_REGISTRATION_APPROVAL === expected };
+    approved: checks.approvalMatches, checks };
 }
 module.exports = { normalize, complete, matches, readiness, contractFingerprint, approval, legacy, adminPolicy };

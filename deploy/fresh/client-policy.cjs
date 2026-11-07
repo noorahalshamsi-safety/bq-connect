@@ -42,6 +42,12 @@ function prepare(publicDir, workspace) {
     const dest = path.join(dir, item);
     if (item === "secure.js")
       fs.writeFileSync(dest, transform(fs.readFileSync(path.join(workspace, "public/js", item), "utf8")));
+    else if (item === "app.js") {
+      // Replace only the fresh runtime's copy, not a symlink into the source.
+      if (fs.existsSync(dest) && fs.lstatSync(dest).isSymbolicLink()) fs.unlinkSync(dest);
+      fs.writeFileSync(dest, require("./post-client.cjs").transform(
+        fs.readFileSync(path.join(workspace, "public/js", item), "utf8")));
+    }
     else if (!fs.existsSync(dest)) fs.symlinkSync(path.join(workspace, "public/js", item), dest);
   }
 }

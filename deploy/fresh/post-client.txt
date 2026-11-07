@@ -1,0 +1,52 @@
+// Keep the same key for an unchanged manual retry after an uncertain response.
+// This lives only in memory: never put session tokens or draft text in storage.
+let freshPendingPost = null;
+function freshPostError(error) {
+  const messages = {
+    post_busy: "The service is busy. Your draft is kept; retry this same submission. / الخدمة مشغولة. المسودة محفوظة؛ أعد نفس المحاولة.",
+    post_uncertain: "Publishing could not be confirmed. Your draft is kept; retry without changing it to avoid a duplicate. / لم يتأكد النشر. أعد نفس المحاولة دون تغيير المسودة.",
+    post_conflict: "This submission could not be replayed safely. Check your posts before submitting again. / تحقق من منشوراتك قبل إعادة الإرسال.",
+    post_limited: "Posting is temporarily rate limited. Keep your draft and try later. / احتفظ بالمسودة وحاول لاحقاً.",
+    post_media: "Media upload is unavailable. Keep the draft or publish text without attachments. / رفع الوسائط غير متاح.",
+    post_invalid: "Check the post's required text, title, date and attachments. / تحقق من النص والعنوان والتاريخ والمرفقات."
+  };
+  return messages[error.message] || "";
+}
+async function saveIdea(payload) {
+  if (mode !== "api") throw new Error("directory");
+  const body = JSON.stringify({
+    token: payload.token, title: payload.title, text: payload.text,
+    problem: payload.problem, pros: payload.pros, cons: payload.cons,
+    impact: payload.impact, place: payload.place, project: payload.project || "",
+    type: payload.type, thanksPid: payload.thanksPid, options: payload.options,
+    mentions: payload.mentions, media: payload.media || "", gallery: payload.gallery || [],
+    eventAt: payload.eventAt || "", groupId: payload.groupId, groupName: payload.groupName,
+    replies: payload.replies || "all", voter: voterId()
+  });
+  if (!freshPendingPost || freshPendingPost.body !== body)
+    freshPendingPost = { body, key: crypto.randomUUID() };
+  let response;
+  try {
+    response = await fetch("/api/ideas", {
+      method: "POST", headers: { "Content-Type": "application/json",
+        "Idempotency-Key": freshPendingPost.key }, body
+    });
+  } catch { throw new Error("post_uncertain"); }
+  const data = await response.clone().json().catch(() => ({}));
+  if (response.status === 401) throw new Error("employee");
+  if (response.status === 403) throw new Error(data.error === "terms" ? "terms" : "forbidden");
+  if (await conductReply(response)) throw new Error("offensive");
+  if (!response.ok) {
+    if (response.status === 409) throw new Error("post_conflict");
+    if (response.status === 429) throw new Error("post_limited");
+    if (data.error === "media_provider_unconfigured") throw new Error("post_media");
+    if (["queue_busy", "ingress_busy"].includes(data.error)) throw new Error("post_busy");
+    if (response.status >= 500) throw new Error("post_uncertain");
+    throw new Error("post_invalid");
+  }
+  if (!data.idea || !Array.isArray(data.ideas) || !data.stats) throw new Error("post_uncertain");
+  freshPendingPost = null;
+  ideas = data.ideas;
+  stats = data.stats;
+  return data;
+}

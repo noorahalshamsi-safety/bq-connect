@@ -50,7 +50,7 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
     runtimeSha256:hash(fs.readFileSync(__filename))}));
   stage("HYDRATE");
   const serial=fn=>{const work=queue.then(fn,fn);queue=work.catch(()=>{});return work;};
-  const failureCategory=e=>["55P03","57014","53300","08006","57P01"].includes(e.code)?e.code:
+  const failureCategory=e=>["55P03","57014","53300","08006","57P01","42501","23502","23503","23505","23514"].includes(e.code)?e.code:
     e.message==="Query read timeout"?"READ_TIMEOUT":"OTHER";
   function retire(c) {
     poisoned=true;stopping=true;
@@ -431,13 +431,19 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
         const response=Buffer.concat(chunks);
         if(key&&["POST","PATCH","DELETE"].includes(req.method)&&status>=200&&status<300)c.replayRecord={actor,key,digest,status,headers:res.getHeaders(),response};
         operation="PERSIST_COMMIT";await finish(c,status<500);restore();
-        if(c.fault==="after_commit_drop"){res.destroy();return;}
-        // A killed/ambiguous connection here is recoverable with the same key.
-        original.writeHead(status);original.end(response);
         if(c.path==="/api/register")console.log(JSON.stringify({
           SQL_RUNTIME:"REGISTER",status:"COMMITTED",httpStatus:status,
           queueMs:Math.round(queueWaitMs),elapsedMs:Math.round(performance.now()-queuedAt)
         }));
+        if(c.path==="/api/ideas"&&req.method==="POST")console.log(JSON.stringify({
+          SQL_RUNTIME:"POST_CREATE",status:status<500?"COMMITTED":"ROLLED_BACK",
+          accepted:status===201,httpStatus:status,operation:"PERSIST_COMMIT",
+          requestRef:key?hash(key).slice(0,12):"UNKEYED",
+          queueMs:Math.round(queueWaitMs),elapsedMs:Math.round(performance.now()-queuedAt)
+        }));
+        if(c.fault==="after_commit_drop"){res.destroy();return;}
+        // A killed/ambiguous connection here is recoverable with the same key.
+        original.writeHead(status);original.end(response);
       }catch(e){
         clearTimeout(timer);
         // Legacy module maps cannot be cancelled safely. Never run a new scope
@@ -447,7 +453,10 @@ async function serve(proof,repo,{nativeEnabled=true,faults=false,measure=false,m
         restore();
         if(!res.headersSent){for(const k of res.getHeaderNames())res.removeHeader(k);const conflict=e.message==="idempotency_input_mismatch"||e.message==="stale_entity_revision";
           original.writeHead(conflict?409:503,{"Content-Type":"application/json","Cache-Control":"no-store"});original.end(JSON.stringify({error:conflict?"conflict":"database_unavailable"}));}
-        console.error(JSON.stringify({SQL_RUNTIME:"HTTP",operation,status:"BLOCKED",category:failureCategory(e)}));
+        console.error(JSON.stringify({SQL_RUNTIME:"HTTP",operation,status:"BLOCKED",category:failureCategory(e),
+          ...(req.method==="POST"&&req.url?.split("?")[0]==="/api/ideas"?{
+            endpoint:"POST_CREATE",httpStatus:503
+          }:{})}));
         if(poisoned)setTimeout(()=>process.exit(1),100).unref();
       }
       finally{clearTimeout(watchdog);clearTimeout(timer);}

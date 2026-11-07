@@ -490,8 +490,48 @@ async function main() {
   assert(recoveredLogin.needTotp && !recoveredLogin.token);
   ok(await request("/api/login-2fa", { ticket: staleLogin.ticket,
     code: secondEnrolled.recovery[0] }, { anonymous: true }), 401);
-  assert(ok(await request("/api/login-2fa", { ticket: recoveredLogin.ticket,
-    code: secondEnrolled.recovery[0] }, { anonymous: true })).token);
+  const regularSession = ok(await request("/api/login-2fa", { ticket: recoveredLogin.ticket,
+    code: secondEnrolled.recovery[0] }, { anonymous: true })).token;
+  assert(regularSession);
+  stage = "regular employee post, ambiguous commit and restart replay";
+  ok(await request("/api/terms", { token: regularSession, accepted: true }));
+  const browserPost = { token: regularSession, type: "post", title: "", text: "Synthetic employee browser post",
+    problem: "", pros: [], cons: [], impact: "", place: "", project: "", thanksPid: "",
+    options: [], mentions: [], media: "", gallery: [], eventAt: "", groupId: "", groupName: "", replies: "all" };
+  const postKey = crypto.randomUUID();
+  const postsBefore = (await repo.pool.query("SELECT count(*)::int AS n FROM dev.posts")).rows[0].n;
+  await repo.pool.query("INSERT INTO dev.test_faults(request_key,point) VALUES($1,'after_commit_drop')", [postKey]);
+  const lostPost = await request("/api/ideas", browserPost, { key: postKey }).catch(() => null);
+  assert(!lostPost || lostPost.status === 503);
+  assert.equal((await repo.pool.query("SELECT count(*)::int AS n FROM dev.posts")).rows[0].n, postsBefore + 1);
+  const committedPostId = (await repo.pool.query("SELECT attrs->>'id' AS id FROM dev.posts WHERE attrs->>'text'=$1",
+    [browserPost.text])).rows[0].id;
+  const verifyPostRetry = reply => {
+    // The existing response-scope guard deliberately refuses cached response
+    // replay if ANY relevant file revision changed (including during restart).
+    // Never weaken that guard just to return the old HTTP 201.
+    if (reply.status === 201) assert.equal(reply.json.idea.id, committedPostId);
+    else { ok(reply, 409); assert.equal(reply.json.error, "replay_state_changed"); }
+  };
+  verifyPostRetry(await request("/api/ideas", browserPost, { key: postKey }));
+  assert.equal((await repo.pool.query("SELECT count(*)::int AS n FROM dev.posts")).rows[0].n, postsBefore + 1);
+  await stop(); events.length = 0; await boot();
+  verifyPostRetry(await request("/api/ideas", browserPost, { key: postKey }));
+  assert.equal((await repo.pool.query("SELECT attrs->>'id' AS id FROM dev.posts WHERE attrs->>'text'=$1",
+    [browserPost.text])).rows[0].id, committedPostId);
+  assert.equal((await repo.pool.query("SELECT count(*)::int AS n FROM dev.posts")).rows[0].n, postsBefore + 1);
+  ok(await request("/api/ideas", { ...browserPost, text: "Changed body" }, { key: postKey }), 409);
+  const beforeRejectedPost = (await repo.pool.query("SELECT count(*)::int AS n FROM dev.posts")).rows[0].n;
+  ok(await request("/api/ideas", { ...browserPost, text: "" }), 400);
+  assert.equal((await repo.pool.query("SELECT count(*)::int AS n FROM dev.posts")).rows[0].n, beforeRejectedPost);
+  const failedPostKey = crypto.randomUUID();
+  const retryPost = { ...browserPost, text: "Synthetic recovery post" };
+  await repo.pool.query("INSERT INTO dev.test_faults(request_key,point) VALUES($1,'before_commit')", [failedPostKey]);
+  ok(await request("/api/ideas", retryPost, { key: failedPostKey }), 503);
+  assert.equal((await repo.pool.query("SELECT count(*)::int AS n FROM dev.posts")).rows[0].n, beforeRejectedPost);
+  // The fault record's deletion rolled back with the failed transaction.
+  await repo.pool.query("DELETE FROM dev.test_faults WHERE request_key=$1", [failedPostKey]);
+  ok(await request("/api/ideas", retryPost, { key: failedPostKey }), 201);
   assert(events.filter(e => e.kind === "mail").every(e =>
     !e.text.includes(newPassword) && !e.text.includes(second.password)));
   let limited = false;
@@ -530,7 +570,10 @@ async function main() {
     boundedQueueAdmissionUnderDatabaseLock:"PASS",httpDeadlineIncludesAcquisition:"PASS",
     backgroundDeadlineIncludesAcquisition:"PASS",interruptedRegistrationNoDuplicateAccount:"PASS",
     login: "PASS", bootstrapConsumed: "PASS", directory: "PASS",
-    post: "PASS", restart: "PASS", rateLimitingAcrossRestart: "PASS",
+    post: "PASS", regularEmployeePost: "PASS", ambiguousPostCommitReplay: "PASS",
+    postDuplicateProtectionAcrossRestart: "PASS", postResponseScopeGuardPreserved: "PASS",
+    postRejectionAndRecovery: "PASS",
+    restart: "PASS", rateLimitingAcrossRestart: "PASS",
     unavailableProvidersRefused: "PASS", newBindingAndOriginalGuard: "PASS",
     activationProviderGate: "PASS", smtpAuthWithoutMessage: "PASS", companyEmailAdminGate: "PASS",
     ownerKeyGenerationRefusedInWorkspace: "PASS", productionAccess: false }));
