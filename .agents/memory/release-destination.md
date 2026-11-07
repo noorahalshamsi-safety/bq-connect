@@ -9,6 +9,18 @@ The intended final destination of PostgreSQL preparation is the existing BQ Conn
 
 **How to apply:** Keep final adoption and publication plans tied to the existing application. Do not interpret a working separate staging runtime as delivery of the production migration or approval to publish a replacement product.
 
+The owner decided not to create a separate staging Replit project and directed
+that the new PostgreSQL platform become GitHub main, preserving the old main
+under a timestamped backup before a safe update.
+
+**Why:** The owner explicitly selected this final release direction after the
+hosted-isolation prerequisite was reported.
+
+**How to apply:** Preserve the current live database, accounts, media, keys and
+approval settings. Prepare the existing app for operator-controlled publication,
+but do not publish automatically or label unperformed hosted/iPhone tests as
+passed. Full acceptance requires actual post-publication smoke evidence.
+
 Use Replit-managed PostgreSQL for BQ Connect, not an external Neon account.
 
 **Why:** The user explicitly selected Replit's managed development/production lifecycle.
